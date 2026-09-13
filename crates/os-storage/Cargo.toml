@@ -1,0 +1,20 @@
+[package]
+name = "os-storage"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file = "../../LICENSE.pending"
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+os-core.workspace = true
+os-model.workspace = true
+os-document.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+zip.workspace = true
+tempfile.workspace = true

@@ -1,0 +1,23 @@
+id = "org.openstructure.walls"
+name = "Walls"
+version = "0.1.0"
+api_version = 1
+entrypoint = "builtin:os-walls"
+dependencies = []
+capabilities = ["Modeling", "Geometry"]
+permissions = ["model.read", "model.write", "ui.tool", "ui.panel"]
+
+[[registrations]]
+id = "org.openstructure.walls.wall"
+name = "Wall"
+kind = "ElementType"
+
+[[registrations]]
+id = "org.openstructure.walls.draw"
+name = "Wall between points"
+kind = "Tool"
+
+[[registrations]]
+id = "org.openstructure.walls.properties"
+name = "Wall properties"
+kind = "PropertyPanel"

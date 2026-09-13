@@ -1,0 +1,68 @@
+[package]
+name = "os-ui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file = "../../LICENSE.pending"
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde_json.workspace = true
+os-core.workspace = true
+os-model.workspace = true
+os-document.workspace = true
+os-storage.workspace = true
+os-plugin-api.workspace = true
+os-plugin-host.workspace = true
+os-render.workspace = true
+os-geometry.workspace = true
+os-ifc.workspace = true
+os-walls.workspace = true
+eframe.workspace = true
+tempfile.workspace = true
+
+[features]
+default = []
+external-plugins = ["os-plugin-host/wasm"]
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[[example]]
+name = "column_plan_probe"
+required-features = ["external-plugins"]
+
+[[example]]
+name = "wall_gesture_probe"
+required-features = ["external-plugins"]
+
+[[example]]
+name = "plugin_tool_probe"
+required-features = ["external-plugins"]
+
+[[example]]
+name = "plugin_editor_probe"
+required-features = ["external-plugins"]
+
+[[example]]
+name = "plugin_desktop"
+required-features = ["external-plugins"]
+
+[[example]]
+name = "wall_desktop"
+required-features = ["external-plugins"]
+
+[[example]]
+name = "plugin_migration_probe"
+required-features = ["external-plugins"]
+
+[[example]]
+name = "migration_desktop"
+required-features = ["external-plugins"]
+
+[[example]]
+name = "mixed_migration_desktop"
+required-features = ["external-plugins"]

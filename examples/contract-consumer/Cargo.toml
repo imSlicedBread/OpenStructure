@@ -1,0 +1,17 @@
+[package]
+name = "openstructure-contract-consumer"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license-file = "../../LICENSE.pending"
+publish = false
+
+# Intentionally separate resolution: workspace-wide feature unification must not
+# accidentally enable the legacy host dependencies in this verification fixture.
+[workspace]
+
+[dependencies]
+os-plugin-api = { path = "../../crates/os-plugin-api", default-features = false }
+
+[lints.rust]
+unsafe_code = "forbid"

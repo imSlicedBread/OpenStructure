@@ -1,0 +1,29 @@
+id = "org.example.columns"
+name = "Independent Rust column with plan outlines"
+version = "1.0.0"
+api_version = 2
+entrypoint = "wasm:openstructure_rust_column.wasm"
+dependencies = []
+capabilities = ["Modeling", "Geometry", "Views"]
+permissions = ["model.read", "model.write", "ui.tool"]
+
+[[registrations]]
+id = "org.example.columns.rectangular"
+name = "Rectangular column"
+kind = "ElementType"
+[[registrations]]
+id = "org.example.columns.create"
+name = "Create column"
+kind = "Tool"
+[[registrations]]
+id = "org.example.columns.edit"
+name = "Edit column"
+kind = "Tool"
+[[registrations]]
+id = "org.example.columns.delete"
+name = "Delete column"
+kind = "Tool"
+[[registrations]]
+id = "org.example.columns.plan"
+name = "Column plan outline"
+kind = "ViewProvider"

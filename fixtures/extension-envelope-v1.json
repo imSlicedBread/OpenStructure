@@ -1,0 +1,16 @@
+{
+  "envelope_version": 1,
+  "id": "f46ca52f-5795-44f6-a5e0-19a3c2d160aa",
+  "owner": "org.example.columns",
+  "type_id": "org.example.columns.rectangular",
+  "name": "Preserved column",
+  "payload_schema_version": 1,
+  "relationships": {},
+  "depends_on": [],
+  "payload": {
+    "width_mm": 400,
+    "depth_mm": 600,
+    "height_mm": 3000,
+    "unknown_vendor_data": {"text": "Original Ω", "flags": [true, false, null], "revision": 42}
+  }
+}

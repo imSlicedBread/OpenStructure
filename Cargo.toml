@@ -1,0 +1,39 @@
+[workspace]
+resolver = "2"
+members = ["crates/*", "plugins/walls"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license-file = "LICENSE.pending"
+publish = false
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["arbitrary_precision", "raw_value"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+thiserror = "2"
+toml = "0.9"
+zip = { version = "6", default-features = false, features = ["deflate"] }
+tempfile = "3"
+eframe = { version = "0.33", default-features = false, features = ["default_fonts", "glow", "x11", "wayland"] }
+os-core = { path = "crates/os-core" }
+os-model = { path = "crates/os-model" }
+os-constraints = { path = "crates/os-constraints" }
+os-geometry = { path = "crates/os-geometry" }
+os-document = { path = "crates/os-document" }
+os-storage = { path = "crates/os-storage" }
+os-ifc = { path = "crates/os-ifc" }
+os-plugin-api = { path = "crates/os-plugin-api" }
+os-plugin-host = { path = "crates/os-plugin-host" }
+os-render = { path = "crates/os-render" }
+os-ui = { path = "crates/os-ui" }
+os-app = { path = "crates/os-app" }
+os-walls = { path = "plugins/walls" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[profile.dev]
+debug = 1

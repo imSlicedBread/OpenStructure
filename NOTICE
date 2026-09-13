@@ -1,0 +1,4 @@
+OpenStructure is independently authored software. It is not affiliated with
+Autodesk, Revit, or any other BIM vendor. No proprietary code, assets, or native
+proprietary file schemas are included. Third-party dependencies retain their own
+licenses; Cargo.lock records the resolved versions. See LICENSE.pending.

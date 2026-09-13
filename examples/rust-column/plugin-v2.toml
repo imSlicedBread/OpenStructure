@@ -1,0 +1,29 @@
+id = "org.example.columns"
+name = "Independent Rust column migration edition"
+version = "2.0.0"
+api_version = 2
+entrypoint = "wasm:openstructure_rust_column.wasm"
+dependencies = []
+capabilities = ["Modeling", "Geometry"]
+permissions = ["model.read", "model.write", "ui.tool"]
+
+[[registrations]]
+id = "org.example.columns.rectangular"
+name = "Rectangular column"
+kind = "ElementType"
+[[registrations]]
+id = "org.example.columns.create"
+name = "Create column"
+kind = "Tool"
+[[registrations]]
+id = "org.example.columns.edit"
+name = "Edit column"
+kind = "Tool"
+[[registrations]]
+id = "org.example.columns.delete"
+name = "Delete column"
+kind = "Tool"
+[[registrations]]
+id = "org.example.columns.migrate"
+name = "Migrate column payloads to version 2"
+kind = "Tool"

@@ -1,0 +1,24 @@
+id = "org.openstructure.walls"
+name = "Independent Rust Walls"
+version = "0.1.0"
+api_version = 2
+entrypoint = "wasm:openstructure_rust_wall.wasm"
+dependencies = []
+capabilities = ["Modeling", "Geometry"]
+permissions = ["model.read", "model.write", "ui.tool"]
+[[registrations]]
+id = "org.openstructure.walls.wall"
+name = "Straight wall"
+kind = "ElementType"
+[[registrations]]
+id = "org.openstructure.walls.create"
+name = "Create wall"
+kind = "Tool"
+[[registrations]]
+id = "org.openstructure.walls.edit"
+name = "Edit wall"
+kind = "Tool"
+[[registrations]]
+id = "org.openstructure.walls.delete"
+name = "Delete wall"
+kind = "Tool"

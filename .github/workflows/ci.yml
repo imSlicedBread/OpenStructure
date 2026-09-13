@@ -1,0 +1,172 @@
+name: Rust foundation
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  verify:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: Formatting
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - name: Tests and documentation tests
+        run: cargo test --workspace --all-features --locked
+      - name: Contract-only tests
+        run: cargo test -p os-plugin-api --no-default-features --locked
+      - name: Independent contract consumer
+        run: cargo run --manifest-path examples/contract-consumer/Cargo.toml --locked -- plugins/walls/plugin.toml
+      - name: Independent generic descriptor consumer
+        run: cargo run --manifest-path examples/contract-consumer/Cargo.toml --locked -- fixtures/generic-column/plugin.toml fixtures/generic-column/catalog.json
+      - name: Independent consumer formatting
+        run: cargo fmt --manifest-path examples/contract-consumer/Cargo.toml -- --check
+      - name: Independent consumer Clippy
+        run: cargo clippy --manifest-path examples/contract-consumer/Cargo.toml --all-targets --locked -- -D warnings
+      - name: Rust guest tests
+        run: cargo test --manifest-path examples/rust-column/Cargo.toml --locked
+      - name: Rust Wall guest tests
+        run: cargo test --manifest-path examples/rust-wall/Cargo.toml --locked
+      - name: Rust Wall guest formatting
+        run: cargo fmt --manifest-path examples/rust-wall/Cargo.toml -- --check
+      - name: Rust Wall guest Clippy
+        run: cargo clippy --manifest-path examples/rust-wall/Cargo.toml --all-targets --locked -- -D warnings
+      - name: Build native Wall probe before guest
+        run: cargo build -p os-plugin-host --features wasm --example native_wall_probe --locked
+      - name: Build independent Rust Wall Wasm guest
+        run: cargo build --manifest-path examples/rust-wall/Cargo.toml --target wasm32-unknown-unknown --release --locked
+      - name: Install and execute Rust Wall without host rebuild
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory ci-rust-wall -ErrorAction Stop
+          Copy-Item examples/rust-wall/plugin.toml ci-rust-wall/plugin.toml
+          Copy-Item examples/rust-wall/target/wasm32-unknown-unknown/release/openstructure_rust_wall.wasm ci-rust-wall/openstructure_rust_wall.wasm
+          if ($IsWindows) { & ./target/debug/examples/native_wall_probe.exe ci-rust-wall }
+          else { & ./target/debug/examples/native_wall_probe ci-rust-wall }
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Rust guest formatting
+        run: cargo fmt --manifest-path examples/rust-column/Cargo.toml -- --check
+      - name: Rust guest Clippy
+        run: cargo clippy --manifest-path examples/rust-column/Cargo.toml --all-targets --locked -- -D warnings
+      - name: Build generic host probe before guest
+        run: cargo build -p os-plugin-host --features wasm --example generic_probe --locked
+      - name: Build independent Rust Wasm guest
+        run: cargo build --manifest-path examples/rust-column/Cargo.toml --target wasm32-unknown-unknown --release --locked
+      - name: Install and execute Rust guest without host rebuild
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory ci-rust-column -ErrorAction Stop
+          Copy-Item examples/rust-column/plugin.toml ci-rust-column/plugin.toml
+          Copy-Item examples/rust-column/target/wasm32-unknown-unknown/release/openstructure_rust_column.wasm ci-rust-column/openstructure_rust_column.wasm
+          if ($IsWindows) { & ./target/debug/examples/generic_probe.exe ci-rust-column }
+          else { & ./target/debug/examples/generic_probe ci-rust-column }
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Assemble independent Wasm fixture
+        run: cargo run -p os-plugin-host --features wasm --example wasm_probe --locked -- --assemble ci-wasm-probe
+      - name: Build descriptor controller probe
+        run: cargo build -p os-ui --features external-plugins --example plugin_tool_probe --locked
+      - name: Descriptor controller with installed Wall and column
+        shell: pwsh
+        run: |
+          $probe = if ($IsWindows) { './target/debug/examples/plugin_tool_probe.exe' } else { './target/debug/examples/plugin_tool_probe' }
+          & $probe ci-rust-wall
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $probe ci-rust-column
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Load external Wasm fixture
+        run: cargo run -p os-plugin-host --features wasm --example wasm_probe --locked -- ci-wasm-probe
+      - name: Build Editor plugin worker probe
+        run: cargo build -p os-ui --features external-plugins --example plugin_editor_probe --locked
+      - name: Editor workers with installed Wall and column
+        shell: pwsh
+        run: |
+          $probe = if ($IsWindows) { './target/debug/examples/plugin_editor_probe.exe' } else { './target/debug/examples/plugin_editor_probe' }
+          & $probe ci-rust-wall
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $probe ci-rust-column
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: External Wasm worker
+        run: cargo run -p os-plugin-host --features wasm --example wasm_probe --locked -- --worker ci-wasm-probe
+      - name: Build migration host probe before upgraded guest
+        run: cargo build -p os-ui --features external-plugins --example plugin_migration_probe --locked
+      - name: Test upgraded column guest
+        run: cargo test --manifest-path examples/rust-column/Cargo.toml --features migration-v2 --locked
+      - name: Build upgraded column guest separately
+        run: cargo build --manifest-path examples/rust-column/Cargo.toml --features migration-v2 --target wasm32-unknown-unknown --release --locked --target-dir work/migration-guest-build
+      - name: Install upgraded guest and exercise migration workers
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory ci-rust-column-v2 -ErrorAction Stop
+          Copy-Item examples/rust-column/plugin-v2.toml ci-rust-column-v2/plugin.toml
+          Copy-Item work/migration-guest-build/wasm32-unknown-unknown/release/openstructure_rust_column.wasm ci-rust-column-v2/openstructure_rust_column.wasm
+          $probe = if ($IsWindows) { './target/debug/examples/plugin_migration_probe.exe' } else { './target/debug/examples/plugin_migration_probe' }
+          & $probe ci-rust-column ci-rust-column-v2
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify migration-enabled guest lint
+        run: cargo clippy --manifest-path examples/rust-column/Cargo.toml --all-features --all-targets --locked -- -D warnings
+      - name: Test mixed migration guest
+        run: cargo test --manifest-path examples/rust-column/Cargo.toml --features mixed-migration --locked
+      - name: Build mixed migration guest independently
+        run: cargo build --manifest-path examples/rust-column/Cargo.toml --features mixed-migration --target wasm32-unknown-unknown --release --locked --target-dir work/mixed-migration-build
+      - name: Install mixed guest and verify all-type migration
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory ci-rust-column-mixed -ErrorAction Stop
+          Copy-Item examples/rust-column/plugin-mixed.toml ci-rust-column-mixed/plugin.toml
+          Copy-Item work/mixed-migration-build/wasm32-unknown-unknown/release/openstructure_rust_column.wasm ci-rust-column-mixed/openstructure_rust_column.wasm
+          $probe = if ($IsWindows) { './target/debug/examples/plugin_migration_probe.exe' } else { './target/debug/examples/plugin_migration_probe' }
+          & $probe ci-rust-column ci-rust-column-v2 ci-rust-column-mixed
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build desktop executable
+        run: cargo build -p os-app --locked
+      - name: Complete vertical slice
+        run: cargo run -p os-app --locked -- --smoke ci-example.osb
+      - name: Inert plugin preservation fixture
+        run: cargo run -p os-storage --example preserved_extension --locked -- ci-preserved-extension.osb
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: License metadata
+        run: cargo metadata --all-features --locked --format-version 1 | python tools/check-license-metadata.py
+      - name: Independent contract dependency boundary
+        run: cargo metadata --manifest-path examples/contract-consumer/Cargo.toml --locked --format-version 1 | python tools/check-contract-dependencies.py
+      - name: Independent Rust guest dependency boundary
+        run: cargo metadata --manifest-path examples/rust-column/Cargo.toml --locked --format-version 1 | python tools/check-contract-dependencies.py openstructure-rust-column
+      - name: Rust guest license metadata
+        run: cargo metadata --manifest-path examples/rust-column/Cargo.toml --locked --format-version 1 | python tools/check-license-metadata.py
+      - name: Independent Rust Wall dependency boundary
+        run: cargo metadata --manifest-path examples/rust-wall/Cargo.toml --locked --format-version 1 | python tools/check-contract-dependencies.py openstructure-rust-wall
+      - name: Rust Wall license metadata
+        run: cargo metadata --manifest-path examples/rust-wall/Cargo.toml --locked --format-version 1 | python tools/check-license-metadata.py
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install cargo-audit --locked
+      - run: cargo audit
+  ifc:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r tools/ifc-validation-requirements.txt
+      - run: python tools/validate-ifc.py fixtures/wall-exchange.ifc
+      - run: python tools/validate-ifc.py fixtures/rotated-walls.ifc
+      - run: cargo run -p os-app --locked -- --smoke ci-ifc.osb
+      - run: cargo run -p os-app --locked -- --export-ifc ci-ifc.osb ci-ifc.ifc --allow-loss
+      - run: python tools/validate-ifc.py ci-ifc.ifc ci-ifc.osb
+      - run: cargo run -p os-app --locked -- --import-ifc ci-ifc.ifc ci-imported.osb

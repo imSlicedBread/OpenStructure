@@ -1,0 +1,31 @@
+[package]
+name = "openstructure-rust-column"
+version = "1.0.0"
+edition = "2024"
+rust-version = "1.88"
+publish = false
+license-file = "../../LICENSE.pending"
+
+[workspace]
+
+[features]
+default = []
+plan-graphics = []
+migration-v2 = []
+mixed-migration = ["migration-v2"]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+os-plugin-api = { path = "../../crates/os-plugin-api", default-features = false }
+serde_json = { version = "1", features = ["arbitrary_precision", "raw_value"] }
+
+[lints.rust]
+unsafe_code = "deny"
+
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"
+strip = true

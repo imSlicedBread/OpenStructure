@@ -1,0 +1,19 @@
+[package]
+name = "os-ifc"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file = "../../LICENSE.pending"
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+os-core.workspace = true
+os-model.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+os-geometry.workspace = true
+os-walls.workspace = true

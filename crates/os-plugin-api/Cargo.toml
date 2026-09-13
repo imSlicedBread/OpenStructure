@@ -1,0 +1,25 @@
+[package]
+name = "os-plugin-api"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file = "../../LICENSE.pending"
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+# Existing host/bundled Wall users retain their v1 API. Independent contract
+# consumers disable defaults and cannot import document or kernel internals.
+default = ["legacy-v1"]
+legacy-v1 = ["dep:os-core", "dep:os-model", "dep:os-document", "dep:os-geometry"]
+
+[dependencies]
+os-core = { workspace = true, optional = true }
+os-model = { workspace = true, optional = true }
+os-document = { workspace = true, optional = true }
+os-geometry = { workspace = true, optional = true }
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true

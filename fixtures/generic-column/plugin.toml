@@ -1,0 +1,25 @@
+id = "org.example.columns"
+name = "Generic column protocol fixture"
+version = "1.0.0"
+api_version = 2
+entrypoint = "builtin:generic-column-test"
+dependencies = []
+capabilities = ["Modeling"]
+permissions = ["model.read", "model.write", "ui.tool"]
+
+[[registrations]]
+id = "org.example.columns.rectangular"
+name = "Rectangular column"
+kind = "ElementType"
+[[registrations]]
+id = "org.example.columns.create"
+name = "Create column"
+kind = "Tool"
+[[registrations]]
+id = "org.example.columns.edit"
+name = "Edit column"
+kind = "Tool"
+[[registrations]]
+id = "org.example.columns.delete"
+name = "Delete column"
+kind = "Tool"

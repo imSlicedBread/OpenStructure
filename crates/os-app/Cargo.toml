@@ -1,0 +1,28 @@
+[package]
+name = "os-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file = "../../LICENSE.pending"
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = []
+external-plugins = ["os-ui/external-plugins"]
+
+[dependencies]
+os-ui.workspace = true
+os-core.workspace = true
+os-document.workspace = true
+os-storage.workspace = true
+os-plugin-host.workspace = true
+os-plugin-api.workspace = true
+os-model.workspace = true
+os-geometry.workspace = true
+os-walls.workspace = true
+os-ifc.workspace = true
+tempfile.workspace = true
+eframe.workspace = true

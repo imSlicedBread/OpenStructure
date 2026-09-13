@@ -1,0 +1,41 @@
+[package]
+name = "os-plugin-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file = "../../LICENSE.pending"
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = []
+wasm = ["dep:wasmi"]
+
+[dependencies]
+os-core.workspace = true
+os-model.workspace = true
+os-document.workspace = true
+os-plugin-api.workspace = true
+os-geometry.workspace = true
+serde_json.workspace = true
+wasmi = { version = "=1.0.9", optional = true, default-features = false, features = ["std", "extra-checks"] }
+
+[dev-dependencies]
+wat = "=1.240.0"
+tempfile.workspace = true
+os-storage.workspace = true
+os-geometry.workspace = true
+
+[[example]]
+name = "wasm_probe"
+required-features = ["wasm"]
+
+[[example]]
+name = "generic_probe"
+required-features = ["wasm"]
+
+[[example]]
+name = "native_wall_probe"
+required-features = ["wasm"]

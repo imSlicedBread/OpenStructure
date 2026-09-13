@@ -1,0 +1,58 @@
+{
+  "schema_version": 2,
+  "project": {
+    "header": {"id":"11111111-1111-4111-8111-111111111111","type_id":"core.project","schema_version":2,"properties":{"vendor":{"keep":true}},"relationships":{}},
+    "parameters": {"name":"Original schema two plan fixture"}
+  },
+  "sites": {
+    "22222222-2222-4222-8222-222222222222": {
+      "header":{"id":"22222222-2222-4222-8222-222222222222","type_id":"core.site","schema_version":2,"properties":{},"relationships":{}},
+      "parameters":{"name":"Site","project":"11111111-1111-4111-8111-111111111111"}
+    }
+  },
+  "buildings": {
+    "33333333-3333-4333-8333-333333333333": {
+      "header":{"id":"33333333-3333-4333-8333-333333333333","type_id":"core.building","schema_version":2,"properties":{},"relationships":{}},
+      "parameters":{"name":"Building","site":"22222222-2222-4222-8222-222222222222"}
+    }
+  },
+  "levels": {
+    "44444444-4444-4444-8444-444444444444": {
+      "header":{"id":"44444444-4444-4444-8444-444444444444","type_id":"core.level","schema_version":2,"properties":{},"relationships":{}},
+      "parameters":{"name":"Upper","elevation":2.5,"building":"33333333-3333-4333-8333-333333333333"}
+    }
+  },
+  "walls": {
+    "66666666-6666-4666-8666-666666666666": {
+      "header":{"id":"66666666-6666-4666-8666-666666666666","type_id":"org.openstructure.walls.wall","schema_version":2,"properties":{"original":"wall metadata"},"relationships":{}},
+      "parameters":{"name":"Wall","start":{"x":0.0,"y":0.0},"end":{"x":5.0,"y":0.0},"thickness":0.2,"height":3.0,"level":"44444444-4444-4444-8444-444444444444","material":null}
+    }
+  },
+  "materials": {},
+  "views": {
+    "55555555-5555-4555-8555-555555555555": {
+      "header":{"id":"55555555-5555-4555-8555-555555555555","type_id":"core.view","schema_version":2,"properties":{"vendor":{"notes":["keep","exactly"]}},"relationships":{"reference":["66666666-6666-4666-8666-666666666666"]}},
+      "parameters":{"name":"Upper plan","kind":"Plan","level":"44444444-4444-4444-8444-444444444444"}
+    },
+    "77777777-7777-4777-8777-777777777777": {
+      "header":{"id":"77777777-7777-4777-8777-777777777777","type_id":"core.view","schema_version":2,"properties":{},"relationships":{}},
+      "parameters":{"name":"3D","kind":"Perspective","level":null}
+    },
+    "88888888-8888-4888-8888-888888888888": {
+      "header":{"id":"88888888-8888-4888-8888-888888888888","type_id":"core.view","schema_version":2,"properties":{},"relationships":{}},
+      "parameters":{"name":"Legacy unassigned plan","kind":"Plan","level":null}
+    },
+    "99999999-9999-4999-8999-999999999999": {
+      "header":{"id":"99999999-9999-4999-8999-999999999999","type_id":"core.view","schema_version":2,"properties":{},"relationships":{}},
+      "parameters":{"name":"Reserved section","kind":"Section","level":"44444444-4444-4444-8444-444444444444"}
+    }
+  },
+  "extensions": {
+    "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa": {
+      "envelope_version":1,"id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","owner":"org.example.archive","type_id":"org.example.archive.element","name":"Unknown preserved element","payload_schema_version":7,
+      "relationships":{"view":["55555555-5555-4555-8555-555555555555"]},"depends_on":["44444444-4444-4444-8444-444444444444"],
+      "payload":{"precise":123456789012345678901234567890.0123456789,"vendor":[true,"unchanged"]}
+    }
+  },
+  "plugin_requirements": {"org.example.archive":{"version":"9.8.7"}}
+}

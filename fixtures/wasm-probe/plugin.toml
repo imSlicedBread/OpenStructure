@@ -1,0 +1,9 @@
+id = "org.openstructure.probe"
+name = "Wasm geometry transport probe (not a modeling tool)"
+version = "0.1.0"
+api_version = 1
+entrypoint = "wasm:probe.wasm"
+dependencies = []
+capabilities = ["Geometry"]
+permissions = ["model.read"]
+registrations = []
