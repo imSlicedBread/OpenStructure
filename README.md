@@ -181,6 +181,4 @@ replacement. A failed open preserves the current document.
 
 ## Name and legal note
 
-OpenStructure is a working project name pending trademark clearance. The project must maintain an independent visual identity and must not imply affiliation with Autodesk, Revit, or any other vendor.
-
-The project license is intentionally pending a dependency and legal review before the first public software release.
+OpenStructure is a working project name pending trademark clearance.
