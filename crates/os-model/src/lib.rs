@@ -3,7 +3,37 @@ use os_core::{Id, Point2, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub const SCHEMA_VERSION: u32 = 4;
+pub const SCHEMA_VERSION: u32 = 28;
+mod plan_graphics;
+pub use plan_graphics::*;
+mod columns;
+pub use columns::*;
+mod wall_types;
+pub use wall_types::*;
+mod wall_joins;
+pub use wall_joins::*;
+mod detail_lines;
+pub use detail_lines::*;
+mod schedules;
+pub use schedules::*;
+mod sheets;
+pub use sheets::*;
+mod sections;
+pub use sections::*;
+mod floors;
+pub use floors::*;
+mod dimensions;
+pub use dimensions::*;
+mod room_separation_lines;
+pub use room_separation_lines::*;
+mod rooms;
+pub use rooms::*;
+mod room_tags;
+pub use room_tags::*;
+mod openings;
+pub use openings::*;
+mod opening_family;
+pub use opening_family::*;
 mod extensions;
 mod grids;
 mod memory;
@@ -84,6 +114,9 @@ pub struct ViewParams {
     /// Host-managed state version; document revision also guards undo/redo.
     pub settings_revision: u64,
     pub plan: Option<PlanSettings>,
+    /// Persisted section plane and vertical range for native Section views.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub section: Option<SectionViewSettings>,
 }
 impl ViewParams {
     pub fn floor_plan(name: impl Into<String>, level: Id) -> Self {
@@ -93,17 +126,29 @@ impl ViewParams {
             level: Some(level),
             settings_revision: 0,
             plan: Some(PlanSettings::default()),
+            section: None,
         }
     }
     pub fn validate(&self) -> Result<()> {
-        match (self.kind, self.plan) {
-            (ViewKind::Plan, Some(settings)) => settings.validate(),
-            (ViewKind::Plan, None) => Err(os_core::Error::Invalid(
+        match (self.kind, self.plan, self.section) {
+            (ViewKind::Plan, Some(plan), None) => plan.validate(),
+            (ViewKind::Plan, None, _) => Err(os_core::Error::Invalid(
                 "floor plan settings missing".into(),
             )),
-            (_, None) => Ok(()),
-            (_, Some(_)) => Err(os_core::Error::Invalid(
-                "plan settings require a Plan view".into(),
+            (ViewKind::Plan, Some(_), Some(_)) => Err(os_core::Error::Invalid(
+                "section settings cannot be attached to a Plan view".into(),
+            )),
+            (ViewKind::Section, None, Some(section)) => {
+                ensure(self.level.is_some(), "section view needs a marker level")?;
+                section.validate()
+            }
+            (ViewKind::Section, None, None) => Ok(()),
+            (ViewKind::Section, Some(_), _) => Err(os_core::Error::Invalid(
+                "plan settings cannot be attached to a Section view".into(),
+            )),
+            (ViewKind::Perspective, None, None) => Ok(()),
+            (ViewKind::Perspective, _, _) => Err(os_core::Error::Invalid(
+                "model-view settings cannot be attached to a Perspective view".into(),
             )),
         }
     }
@@ -120,6 +165,10 @@ impl ViewParams {
         ensure(
             self.kind != ViewKind::Plan || self.level.is_some(),
             "floor plan needs an associated level",
+        )?;
+        ensure(
+            self.kind != ViewKind::Section || (self.level.is_some() && self.section.is_some()),
+            "section view needs a marker level and section definition",
         )
     }
 }
@@ -193,9 +242,25 @@ pub struct Model {
     pub buildings: BTreeMap<Id, Building>,
     pub levels: BTreeMap<Id, Level>,
     pub walls: BTreeMap<Id, Wall>,
+    pub wall_types: BTreeMap<Id, WallType>,
+    pub wall_type_assignments: BTreeMap<Id, WallTypeAssignment>,
+    pub wall_joins: BTreeMap<Id, WallJoin>,
+    pub floors: BTreeMap<Id, Floor>,
+    pub columns: BTreeMap<Id, Column>,
+    pub openings: BTreeMap<Id, Opening>,
+    pub opening_types: BTreeMap<Id, OpeningType>,
+    pub rooms: BTreeMap<Id, Room>,
+    pub room_separation_lines: BTreeMap<Id, RoomSeparationLine>,
+    pub room_tags: BTreeMap<Id, RoomTag>,
+    pub detail_lines: BTreeMap<Id, DetailLine>,
+    pub dimensions: BTreeMap<Id, Dimension>,
     pub grids: BTreeMap<Id, Grid>,
     pub materials: BTreeMap<Id, Material>,
     pub views: BTreeMap<Id, View>,
+    pub plan_graphics_templates: BTreeMap<Id, PlanGraphicsTemplate>,
+    pub plan_graphics: BTreeMap<Id, PlanGraphicsBinding>,
+    pub sheets: BTreeMap<Id, Sheet>,
+    pub schedules: BTreeMap<Id, Schedule>,
     pub extensions: BTreeMap<Id, ExtensionEntity>,
     pub plugin_requirements: BTreeMap<String, PluginRequirement>,
 }
@@ -233,6 +298,7 @@ impl Model {
                 level: None,
                 settings_revision: 0,
                 plan: None,
+                section: None,
             },
         );
         Self {
@@ -242,9 +308,25 @@ impl Model {
             buildings: BTreeMap::from([(building.id(), building)]),
             levels: BTreeMap::from([(level.id(), level)]),
             walls: BTreeMap::new(),
+            wall_types: BTreeMap::new(),
+            wall_type_assignments: BTreeMap::new(),
+            wall_joins: BTreeMap::new(),
+            floors: BTreeMap::new(),
+            columns: BTreeMap::new(),
+            openings: BTreeMap::new(),
+            opening_types: BTreeMap::new(),
+            rooms: BTreeMap::new(),
+            room_separation_lines: BTreeMap::new(),
+            room_tags: BTreeMap::new(),
+            detail_lines: BTreeMap::new(),
+            dimensions: BTreeMap::new(),
             grids: BTreeMap::new(),
             materials: BTreeMap::new(),
             views: BTreeMap::from([(view.id(), view)]),
+            plan_graphics_templates: BTreeMap::new(),
+            plan_graphics: BTreeMap::new(),
+            sheets: BTreeMap::new(),
+            schedules: BTreeMap::new(),
             extensions: BTreeMap::new(),
             plugin_requirements: BTreeMap::new(),
         }
@@ -282,11 +364,50 @@ impl Model {
         check_map!(sites, "core.site");
         check_map!(buildings, "core.building");
         check_map!(levels, "core.level");
+        check_map!(columns, "core.column");
         check_map!(grids, "core.grid");
         check_map!(walls, "org.openstructure.walls.wall");
+        check_map!(wall_types, "core.wall_type");
+        ensure(
+            self.wall_types.len() <= MAX_WALL_TYPES,
+            "wall type limit exceeded",
+        )?;
+        for ty in self.wall_types.values() {
+            ty.parameters.validate(self)?;
+        }
+        for id in self.wall_type_assignments.keys() {
+            ensure(
+                self.walls.contains_key(id),
+                "wall type assignment wall missing",
+            )?;
+            self.resolve_wall(*id)?;
+        }
+        check_map!(wall_joins, "core.wall_join");
+        validate_wall_joins(self)?;
+        check_map!(openings, "core.opening");
+        check_map!(opening_types, "core.opening_type");
+        check_map!(rooms, "core.room");
+        check_map!(room_separation_lines, "core.room_separation_line");
+        room_separation_lines::validate(self)?;
+        check_map!(room_tags, "core.room_tag");
+        check_map!(detail_lines, "core.detail_line");
+        detail_lines::validate(self)?;
+        check_map!(floors, "core.floor");
+        check_map!(dimensions, "core.dimension");
         check_map!(materials, "core.material");
         check_map!(views, "core.view");
+        check_map!(plan_graphics_templates, "core.plan_graphics_template");
+        self.validate_plan_graphics()?;
+        check_map!(sheets, "core.sheet");
+        check_map!(schedules, "core.schedule");
+        schedules::validate(self)?;
+        sheets::validate(self, &mut ids)?;
         extensions::validate(self, &mut ids)?;
+        for ty in self.wall_types.values() {
+            for layer in &ty.parameters.layers {
+                ensure(ids.insert(layer.id), "wall layer identity already in use")?;
+            }
+        }
         for h in headers {
             for targets in h.relationships.values() {
                 for target in targets {
@@ -342,6 +463,43 @@ impl Model {
             if let Some(id) = e.parameters.material {
                 ensure(self.materials.contains_key(&id), "wall material missing")?;
             }
+        }
+        openings::validate(self)?;
+        for column in self.columns.values() {
+            column.parameters.validate_in(self)?;
+        }
+        for floor in self.floors.values() {
+            let p = &floor.parameters;
+            p.validate()?;
+            let level = self
+                .levels
+                .get(&p.level)
+                .ok_or_else(|| os_core::Error::Invalid("floor level missing".into()))?;
+            let top = level.parameters.elevation + p.top_offset;
+            ensure(
+                top.is_finite() && (top - p.thickness).is_finite() && top - p.thickness < top,
+                "floor elevation overflow",
+            )?;
+            if let Some(id) = p.material {
+                ensure(self.materials.contains_key(&id), "floor material missing")?;
+            }
+        }
+        dimensions::validate(self)?;
+        room_tags::validate(self)?;
+        let mut room_numbers = BTreeSet::new();
+        for room in self.rooms.values() {
+            room.parameters.validate()?;
+            ensure(
+                self.levels.contains_key(&room.parameters.level),
+                "room level missing",
+            )?;
+            ensure(
+                room_numbers.insert((
+                    room.parameters.level,
+                    room.parameters.number.trim().to_ascii_lowercase(),
+                )),
+                "room number must be unique on its level",
+            )?;
         }
         for e in self.materials.values() {
             ensure(

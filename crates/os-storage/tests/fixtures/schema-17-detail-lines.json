@@ -1,0 +1,10 @@
+{
+  "schema_version": 17,
+  "project": {"header": {"id": "00000000-0000-4000-8000-000000000001", "type_id": "core.project", "schema_version": 17, "properties": {"fixture": "preserve"}, "relationships": {}}, "parameters": {"name": "Frozen schema 17"}},
+  "sites": {"00000000-0000-4000-8000-000000000002": {"header": {"id": "00000000-0000-4000-8000-000000000002", "type_id": "core.site", "schema_version": 17, "properties": {}, "relationships": {}}, "parameters": {"name": "Site", "project": "00000000-0000-4000-8000-000000000001"}}},
+  "buildings": {"00000000-0000-4000-8000-000000000003": {"header": {"id": "00000000-0000-4000-8000-000000000003", "type_id": "core.building", "schema_version": 17, "properties": {}, "relationships": {}}, "parameters": {"name": "Building", "site": "00000000-0000-4000-8000-000000000002"}}},
+  "levels": {"00000000-0000-4000-8000-000000000004": {"header": {"id": "00000000-0000-4000-8000-000000000004", "type_id": "core.level", "schema_version": 17, "properties": {}, "relationships": {}}, "parameters": {"name": "Ground", "elevation": 0.0, "building": "00000000-0000-4000-8000-000000000003"}}},
+  "walls": {}, "floors": {}, "openings": {}, "opening_types": {}, "rooms": {}, "room_tags": {}, "dimensions": {}, "grids": {}, "materials": {},
+  "views": {"00000000-0000-4000-8000-000000000005": {"header": {"id": "00000000-0000-4000-8000-000000000005", "type_id": "core.view", "schema_version": 17, "properties": {}, "relationships": {}}, "parameters": {"name": "Plan", "kind": "Plan", "level": "00000000-0000-4000-8000-000000000004", "settings_revision": 0, "plan": {"schema_version": 1, "range": {"top": 2.5, "cut": 1.2, "bottom": 0.0, "depth": -1.0}, "basis": {"origin": {"x": 0.0, "y": 0.0}, "rotation": 0.0}, "crop": null, "scale_denominator": 100.0, "visibility": {"walls": true, "extensions": true}}}}},
+  "sheets": {}, "schedules": {}, "extensions": {}, "plugin_requirements": {}
+}

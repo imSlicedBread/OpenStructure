@@ -2,8 +2,6 @@
 use crate::{DesktopApp, Editor};
 use os_core::{Error, Id, Result, ensure};
 use os_document::Document;
-use os_geometry::{GeometryKernel, PrismKernel};
-use os_plugin_api::{Request, Response};
 use os_plugin_host::worker::{JobOutcome, PendingJob};
 use os_render::Scene;
 use os_storage::{StorageBackend, ZipJsonStorage};
@@ -15,7 +13,6 @@ use std::{
 
 #[derive(Clone)]
 enum Route {
-    Legacy,
     Generic(String),
 }
 
@@ -61,21 +58,7 @@ impl Editor {
         let mut queue = BTreeMap::new();
         let mut unavailable = Vec::new();
         for id in document.model().walls.keys() {
-            if self.host.catalog(os_plugin_api::wall::OWNER).is_some() {
-                queue.insert(*id, Route::Generic(os_plugin_api::wall::OWNER.into()));
-            } else if self.host.worker_supported(os_plugin_api::wall::OWNER) {
-                queue.insert(*id, Route::Legacy);
-            } else {
-                let Response::Solid(solid) = self.host.request(
-                    os_plugin_api::wall::OWNER,
-                    document.model(),
-                    Request::GenerateWall { id: *id },
-                )?
-                else {
-                    return Err(Error::Invalid("expected native wall geometry".into()));
-                };
-                scene.insert(*id, PrismKernel.tessellate(&solid)?);
-            }
+            scene.insert(*id, super::opening_tools::host_mesh(document.model(), *id)?);
         }
         for (id, entity) in &document.model().extensions {
             if self.host.catalog(&entity.owner).is_some()
@@ -85,6 +68,24 @@ impl Editor {
             } else {
                 unavailable.push(*id);
             }
+        }
+        for id in document.model().openings.keys() {
+            scene.insert(
+                *id,
+                super::opening_tools::panel_mesh(document.model(), *id)?,
+            );
+        }
+        for (id, floor) in &document.model().floors {
+            let level = &document.model().levels[&floor.parameters.level];
+            let top_z = level.parameters.elevation + floor.parameters.top_offset;
+            scene.insert(
+                *id,
+                os_geometry::floors::extrude_floor(
+                    &floor.parameters.boundary,
+                    top_z,
+                    floor.parameters.thickness,
+                )?,
+            );
         }
         ensure(
             Instant::now() < deadline,
@@ -149,16 +150,6 @@ impl Editor {
                     ensure(target == id, "candidate geometry identity mismatch")?;
                     staged.scene.insert(id, mesh.clone());
                 }
-                Some(JobOutcome::Geometry(result)) if matches!(route, Route::Legacy) => {
-                    staged.scene.insert(
-                        id,
-                        PrismKernel.tessellate(
-                            result
-                                .solid(&staged.document, None)
-                                .map_err(|e| Error::Invalid(e.to_string()))?,
-                        )?,
-                    );
-                }
                 Some(_) => {
                     return Err(Error::Invalid(
                         "candidate returned unexpected geometry outcome".into(),
@@ -173,7 +164,6 @@ impl Editor {
             .collect();
         for (id, route) in queued {
             let owner = match &route {
-                Route::Legacy => os_plugin_api::wall::OWNER,
                 Route::Generic(owner) => owner.as_str(),
             };
             ensure(
@@ -189,13 +179,6 @@ impl Editor {
                 .min(Duration::from_secs(5));
             ensure(!remaining.is_zero(), "project open deadline expired")?;
             let job = match &route {
-                Route::Legacy => self.host.start_job(
-                    owner,
-                    &staged.document,
-                    Request::GenerateWall { id },
-                    None,
-                    remaining,
-                )?,
                 Route::Generic(_) => {
                     let mut read = std::collections::BTreeSet::from([id]);
                     if let Some(w) = staged.document.model().walls.get(&id) {

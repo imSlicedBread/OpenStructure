@@ -11,4 +11,5 @@ workspace = true
 
 [dependencies]
 os-core.workspace = true
+os-model.workspace = true
 serde.workspace = true

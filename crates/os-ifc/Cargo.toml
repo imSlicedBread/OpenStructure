@@ -12,8 +12,8 @@ workspace = true
 [dependencies]
 os-core.workspace = true
 os-model.workspace = true
+os-geometry.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
-os-geometry.workspace = true
 os-walls.workspace = true

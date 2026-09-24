@@ -14,17 +14,75 @@ not the implementation used by the CLI. This is not a general IFC importer.
 - UTF-16 STEP string escaping, including quotes, backslashes and Unicode names.
 - Native wall name, identity, endpoints, length, thickness, height and level are
   reconstructed from actual IFC entities; there is no hidden native JSON payload.
+- Default rectangular hosted doors/windows through `IfcOpeningElement`,
+  `IfcRelVoidsElement`, `IfcDoor`/`IfcWindow`, `IfcRelFillsElement`, and optional
+  `IfcDoorType`/`IfcWindowType` with `IfcRelDefinesByType`. See the bounded
+  opening contract below; the historical viewer acceptance covers walls only.
 
 The importer deliberately rejects other entity types, units, schemas, placement
-forms, nonvertical/offset solids, extra representations, properties, materials,
-openings and unsupported optional fields. It does not import arbitrary files
+forms, unsupported solid transforms, extra representations, properties, materials,
+custom opening families and unsupported optional fields. It does not import arbitrary files
 produced by other applications. Malformed references, duplicate IDs, incomplete
 hierarchies, invalid dimensions and oversized/deeply nested input fail explicitly.
 Limits: 16 MiB input/output, 100,000 STEP entities, 1,000,000 parsed values, depth
-32; export fewer than 3,000 spatial/wall entities and names at most 255 characters.
+32; export fewer than 3,000 spatial/wall/opening/type entities and names at most 255 characters.
 STEP comments, alternate header layouts, typed property values and alternate
 string escape forms are outside this reader. Export uses a fixed serialization
 header timestamp for reproducibility, not the actual filesystem creation time.
+
+## Bounded hosted opening contract
+
+The host body remains the uncut source wall prism (stored start/end, full length,
+thickness and height). Each opening is placed relative to that wall at
+`(offset, 0, sill)`. Its solid has origin `(0, thickness/2, 0)`, axis
+`(0,-1,0)` and reference direction `(1,0,0)`: the rectangular profile lies in
+wall XZ and extrudes through the full wall thickness toward wall -Y. The
+filling's placement is relative to the opening. Only the wall and filling are
+contained in the storey; the opening is never spatially contained.
+
+Instance UUID/name live on the filling root; type UUID/name live on the type
+root. Void and relationship roots receive new UUIDs. Native offset, sill,
+dimensions, kind, type assignment and door orientation are reconstructed from
+the entities and placements. `Description` on each filling is strictly
+`OpenStructure.Typed.v1` or `OpenStructure.Legacy.v1`; this dialect discriminator
+prevents a missing type link from silently converting a typed instance to Legacy.
+Dimensions and sill on all occurrences of one type must agree exactly. Unused
+types are rejected because these values could not be reconstructed.
+
+The mapping follows [IfcDoor placement and operation](https://standards.buildingsmart.org/IFC/RELEASE/IFC4/ADD2_TC1/HTML/schema/ifcsharedbldgelements/lexical/ifcdoor.htm)
+and [IfcDoorTypeOperationEnum](https://standards.buildingsmart.org/IFC/RELEASE/IFC4/ADD2_TC1/HTML/schema/ifcsharedbldgelements/lexical/ifcdoortypeoperationenum.htm),
+using host-relative jambs rather than national handedness names:
+
+| Native hinge / swing | Filling origin relative to void | Filling X direction | IFC operation |
+| --- | --- | --- | --- |
+| Start / Left | `(0,0,0)` | `+X` | `SINGLE_SWING_LEFT` |
+| End / Left | `(0,0,0)` | `+X` | `SINGLE_SWING_RIGHT` |
+| Start / Right | `(width,0,0)` | `-X` | `SINGLE_SWING_RIGHT` |
+| End / Right | `(width,0,0)` | `-X` | `SINGLE_SWING_LEFT` |
+
+Filling +Y determines swing; -X above is a 180-degree yaw, with +Z still up.
+Typed occurrences take operation from the type and leave occurrence
+PredefinedType/OperationType unset. One shared native type is never split or
+merged: occurrences requiring different IFC operation values cause export to
+fail. Opposite hinge **and** swing can share one type through the placement
+mapping. Windows use `SINGLE_PANEL`, centered pane alignment and identity
+placement relative to the void.
+
+Only the exact default `OpeningFamily` is supported. Any changed component or
+cut profile, family parameter/frame setting, noncenter pane position, custom
+property/map, tilt, mirror, transverse displacement or partial-depth cut is
+rejected. The parser accepts exactly 9 arguments for OpeningElement, 13 for
+Door/Window and their types, and 6 for Voids/Fills/DefinesByType relationships.
+Missing, duplicate, wrong-kind and orphan relationships fail. Every filling
+must share its host's storey. Import constructs a temporary model and runs
+`Model::validate` (including clearance/overlap checks) before returning it.
+
+Fillings deliberately have no IFC Body: native panels, panes, frames, component
+geometry, family parameters and materials are not exported. This omission is
+reported by `export_report`; ordinary `IfcAdapter::export` requires loss
+acknowledgement. Import reports regeneration of the native default family.
+This increment is a restricted bidirectional exchange, not general third-party
+IFC import or new viewer qualification.
 
 ## Data loss and commands
 
@@ -84,13 +142,38 @@ python tools/validate-ifc.py fixtures/rotated-walls.ifc
 cargo test --workspace --all-features --locked
 ```
 
-On this development machine the validator is isolated under `work/ifc-validation`;
-set `PYTHONPATH` to that absolute directory. No Python runtime is needed by the
+On this development machine the validator is isolated under `work/venv`;
+invoke `work/venv/Scripts/python.exe` for the commands above. No Python runtime is needed by the
 application. IfcOpenShell metadata declares LGPLv3+; it is development-only, not
 linked or bundled into the Rust binary. Project license/legal review is still
 pending. The Rust adapter adds no third-party runtime packages beyond existing
 workspace dependencies. Validation transitive Python dependencies are not a
 fully locked supply-chain environment.
+
+Hosted-opening evidence (2026-09-23): `cargo test -p os-ifc --all-features`
+passes 17 tests, with one independent gate ignored by default. The tests include
+both kinds, typed/Legacy/mixed instances, shared and equal-but-distinct types,
+all four door orientations, reversed/rotated/elevated hosts, regenerated cut
+geometry, malformed links/transforms, nondefault families, atomic failure and
+the STEP entity/value/size/depth limits. Package all-target Clippy with warnings
+denied and the workspace formatting check pass.
+
+The configured environment is now `work/venv/Scripts/python.exe` with
+IfcOpenShell 0.8.5. `tools/validate-ifc.py` passes both existing wall fixtures;
+it intentionally expects gross wall volumes and is not the hosted-hole gate.
+`crates/os-ifc/tests/validate_hosted.py`, invoked by the ignored Rust test,
+independently validates 20 generated fixtures / 80 openings using IFC4 EXPRESS
+rules, source UUID/name/type comparisons, physical hinge/swing and placement
+checks, Open CASCADE void bounds and net host volumes. Generated IFC and source
+TSV evidence is retained in a unique temporary directory printed by the test.
+No Python dependency is added to the application.
+
+```powershell
+$env:OS_IFC_PYTHON = (Resolve-Path work/venv/Scripts/python.exe).Path
+cargo test -p os-ifc --test exchange independently_validate_hosted -- --ignored --nocapture
+cargo clippy -p os-ifc --all-features --all-targets -- -D warnings
+cargo fmt --all -- --check
+```
 
 ## Desktop workflow
 
@@ -113,7 +196,7 @@ and dependency limitations. The desktop acceptance tests additionally exercise
 File-menu input, acknowledgement/cancellation, overwrite races, blocked shortcuts,
 compact/DPI layouts and the import→native-save dirty-state lifecycle.
 
-General third-party IFC import, material/property mappings, wall openings and
+General third-party IFC import, material/property mappings, custom opening families and
 multiple unit systems are later work. Native proprietary BIM formats remain out
 of scope.
 

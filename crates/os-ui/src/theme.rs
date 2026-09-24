@@ -69,6 +69,7 @@ pub fn apply(ctx: &egui::Context) {
 #[derive(Clone, Copy)]
 pub(crate) enum Icon {
     Wall,
+    Room,
     Level,
     Fit,
     Apply,
@@ -76,6 +77,7 @@ pub(crate) enum Icon {
     Save,
     Undo,
     Redo,
+    Measure,
 }
 
 fn icon(painter: &egui::Painter, rect: egui::Rect, kind: Icon, color: Color32) {
@@ -99,6 +101,17 @@ fn icon(painter: &egui::Painter, rect: egui::Rect, kind: Icon, color: Color32) {
             }
             line((0.45, 0.15), (0.45, 0.5));
             line((0.65, 0.5), (0.65, 0.85));
+        }
+        Icon::Room => {
+            for (a, b) in [
+                ((0.15, 0.15), (0.85, 0.15)),
+                ((0.85, 0.15), (0.85, 0.85)),
+                ((0.85, 0.85), (0.15, 0.85)),
+                ((0.15, 0.85), (0.15, 0.15)),
+                ((0.28, 0.5), (0.72, 0.5)),
+            ] {
+                line(a, b);
+            }
         }
         Icon::Level => {
             line((0.1, 0.75), (0.9, 0.75));
@@ -164,6 +177,14 @@ fn icon(painter: &egui::Painter, rect: egui::Rect, kind: Icon, color: Color32) {
             ] {
                 line((flip(a.0), a.1), (flip(b.0), b.1));
             }
+        }
+        Icon::Measure => {
+            line((0.15, 0.72), (0.85, 0.72));
+            line((0.15, 0.56), (0.15, 0.88));
+            line((0.85, 0.56), (0.85, 0.88));
+            line((0.22, 0.78), (0.34, 0.66));
+            line((0.48, 0.78), (0.60, 0.66));
+            line((0.72, 0.78), (0.84, 0.66));
         }
     }
 }

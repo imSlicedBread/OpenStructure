@@ -37,3 +37,20 @@ The locked all-feature workspace suite passes (188 tests including the doctest).
 Native visual evidence is limited to the observed Windows window; automated DPI
 tests do not establish other OS/compositor behavior. Snapping, exact pointer tools,
 external plan providers and production drawing/output workflows remain unfinished.
+
+## Graphical rectangular crop editing
+
+When the active floor plan has an enabled rectangular crop, **Edit Crop** exposes
+its boundary and eight edge/corner handles. Dragging changes the view-plane bounds;
+the boundary preview is transient, while plan graphics stay clipped to the saved
+crop until release regenerates them. A valid release commits only the crop in one
+view update. Escape, an invalid/collapsed/outside release, or a stale view/document/
+provider/drawing context cancels without changing the model. Empty-canvas drags
+continue to pan, and Plan settings remains the exact numeric-edit path. This adds
+no schema or storage change.
+
+Headless egui acceptance covers all eight handles at 0 and 0.63 radians, 10-pixel
+hit acquisition, preview non-mutation, selection/pan precedence, commit, one-step
+undo/redo, save/reopen, stale/cancel paths, crop clipping/picking regeneration,
+and ordinary canvas panning at 1280×800/1.0 and 1000×650/1.5. Native-window and
+print/output inspection are not established by these tests.

@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 pub type Scene = BTreeMap<Id, Mesh>;
 pub mod plan;
 mod raster;
+pub mod sheet;
 pub mod snapping;
 pub use raster::{MAX_PIXELS, RasterFrame, RasterStyle};
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -33,6 +34,7 @@ pub struct ProjectedPoint {
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct Triangle {
+    pub surface: os_geometry::SurfaceIdentity,
     pub entity: Id,
     pub points: [ProjectedPoint; 3],
     pub shade: f32,
@@ -95,7 +97,7 @@ pub fn project_scene(scene: &Scene, camera: &Camera, width: f32, height: f32) ->
     let (sp, cp) = camera.pitch.sin_cos();
     let toward_camera = Vec3::new(-sy * cp, cy * cp, sp);
     for (id, mesh) in scene {
-        for indices in &mesh.triangles {
+        for (index, indices) in mesh.triangles.iter().enumerate() {
             let [Some(a), Some(b), Some(c)] =
                 indices.map(|i| mesh.vertices.get(i as usize).copied())
             else {
@@ -124,6 +126,7 @@ pub fn project_scene(scene: &Scene, camera: &Camera, width: f32, height: f32) ->
                 continue;
             }
             triangles.push(Triangle {
+                surface: mesh.surfaces.get(index).copied().unwrap_or_default(),
                 entity: *id,
                 points,
                 shade: (0.52 + 0.48 * light) as f32,
@@ -183,6 +186,7 @@ mod tests {
         let id = Id::new();
         let p = |x, y| ProjectedPoint { x, y, depth: 0.0 };
         let tris = vec![Triangle {
+            surface: Default::default(),
             entity: id,
             points: [p(0.0, 0.0), p(100.0, 0.0), p(0.0, 100.0)],
             shade: 1.0,

@@ -1,7 +1,13 @@
 //! Replaceable geometry kernel with plain serializable boundary types.
 use os_core::{Error, Point2, Result, ensure};
 use serde::{Deserialize, Serialize};
+pub mod columns;
+pub mod floors;
+pub mod openings;
 pub mod plan;
+pub mod rooms;
+pub mod section;
+pub mod walls;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Vec3 {
@@ -42,8 +48,25 @@ pub struct Solid {
 }
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Mesh {
+    /// Empty for unclassified geometry, otherwise one identity per triangle.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub surfaces: Vec<SurfaceIdentity>,
     pub vertices: Vec<Vec3>,
     pub triangles: Vec<[u32; 3]>,
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SurfaceIdentity {
+    pub layer: Option<os_core::Id>,
+    pub material: Option<os_core::Id>,
+}
+impl SurfaceIdentity {
+    /// Stable display swatch; actual material UUID remains available to consumers.
+    pub fn color(self) -> Option<[u8; 3]> {
+        self.material.or(self.layer).map(|id| {
+            let b = id.0.as_bytes();
+            [140 + b[0] % 80, 140 + b[1] % 80, 140 + b[2] % 80]
+        })
+    }
 }
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub enum BooleanOperation {
@@ -116,6 +139,7 @@ impl GeometryKernel for PrismKernel {
             }
         }
         let mesh = Mesh {
+            surfaces: vec![],
             vertices,
             triangles: vec![
                 [0, 2, 1],
@@ -137,7 +161,27 @@ impl GeometryKernel for PrismKernel {
     }
 }
 impl Mesh {
+    /// Combine disjoint rectangular cells without filling the apertures between them.
+    /// Cell boundaries retain internal faces; this is not a welded boolean B-rep.
+    pub fn from_prisms(solids: &[Solid]) -> Result<Self> {
+        let mut result = Self::default();
+        for solid in solids {
+            let mesh = PrismKernel.tessellate(solid)?;
+            let offset = u32::try_from(result.vertices.len())
+                .map_err(|_| Error::Invalid("mesh too large".into()))?;
+            result
+                .triangles
+                .extend(mesh.triangles.iter().map(|t| t.map(|i| i + offset)));
+            result.vertices.extend(mesh.vertices);
+        }
+        result.validate()?;
+        Ok(result)
+    }
     pub fn validate(&self) -> Result<()> {
+        ensure(
+            self.surfaces.is_empty() || self.surfaces.len() == self.triangles.len(),
+            "mesh surface identity count mismatch",
+        )?;
         ensure(
             !self.vertices.is_empty() && !self.triangles.is_empty(),
             "empty mesh",

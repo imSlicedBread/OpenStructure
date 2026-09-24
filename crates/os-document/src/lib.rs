@@ -19,6 +19,110 @@ pub use history::{HistoryLimits, HistoryStats};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "command", content = "data")]
 pub enum Command {
+    AddPlanGraphicsTemplate(PlanGraphicsTemplate),
+    UpdatePlanGraphicsTemplate {
+        id: Id,
+        parameters: PlanGraphicsTemplateParams,
+    },
+    RemovePlanGraphicsTemplate(Id),
+    SetPlanGraphics {
+        view: Id,
+        binding: Option<PlanGraphicsBinding>,
+    },
+    AddMaterial(Material),
+    UpdateMaterial {
+        id: Id,
+        parameters: MaterialParams,
+    },
+    RemoveMaterial(Id),
+    AddWallType(WallType),
+    UpdateWallType {
+        id: Id,
+        parameters: WallTypeParams,
+    },
+    RemoveWallType(Id),
+    AssignWallType {
+        wall: Id,
+        assignment: Option<WallTypeAssignment>,
+    },
+    AddButtJoin(ButtJoin),
+    AddWallJoin(WallJoin),
+    UpdateWallJoin {
+        id: Id,
+        parameters: WallJoinParams,
+    },
+    RemoveWallJoin(Id),
+    UpdateButtJoin {
+        id: Id,
+        parameters: ButtJoinParams,
+    },
+    RemoveButtJoin(Id),
+    AddSchedule(Schedule),
+    UpdateSchedule {
+        id: Id,
+        parameters: ScheduleParams,
+    },
+    RemoveSchedule(Id),
+    AddSheet(Sheet),
+    UpdateSheet {
+        id: Id,
+        parameters: SheetParams,
+    },
+    RemoveSheet(Id),
+    AddRoomTag(RoomTag),
+    AddDetailLine(DetailLine),
+    UpdateDetailLine {
+        id: Id,
+        parameters: DetailLineParams,
+    },
+    RemoveDetailLine(Id),
+    AddRoomSeparationLine(RoomSeparationLine),
+    UpdateRoomSeparationLine {
+        id: Id,
+        parameters: RoomSeparationLineParams,
+    },
+    RemoveRoomSeparationLine(Id),
+    UpdateRoomTag {
+        id: Id,
+        parameters: RoomTagParams,
+    },
+    RemoveRoomTag(Id),
+    AddFloor(Floor),
+    AddColumn(Column),
+    UpdateColumn {
+        id: Id,
+        parameters: ColumnParams,
+    },
+    RemoveColumn(Id),
+    UpdateFloor {
+        id: Id,
+        parameters: FloorParams,
+    },
+    RemoveFloor(Id),
+    AddOpeningType(OpeningType),
+    UpdateOpeningType {
+        id: Id,
+        parameters: OpeningTypeParams,
+    },
+    RemoveOpeningType(Id),
+    AddDimension(Dimension),
+    UpdateDimension {
+        id: Id,
+        parameters: DimensionParams,
+    },
+    RemoveDimension(Id),
+    AddRoom(Room),
+    UpdateRoom {
+        id: Id,
+        parameters: RoomParams,
+    },
+    RemoveRoom(Id),
+    AddOpening(Opening),
+    UpdateOpening {
+        id: Id,
+        parameters: OpeningParams,
+    },
+    RemoveOpening(Id),
     AddWall(Wall),
     UpdateWall {
         id: Id,
@@ -135,10 +239,373 @@ impl Document {
         let mut changed = BTreeSet::new();
         for command in commands {
             let id = match command {
+                Command::AddMaterial(material) => {
+                    let id = material.id();
+                    ensure(
+                        !candidate.materials.contains_key(&id),
+                        "material already exists",
+                    )?;
+                    candidate.materials.insert(id, material);
+                    id
+                }
+                Command::UpdateMaterial { id, parameters } => {
+                    candidate
+                        .materials
+                        .get_mut(&id)
+                        .ok_or_else(|| Error::Invalid("material missing".into()))?
+                        .parameters = parameters;
+                    id
+                }
+                Command::RemoveMaterial(id) => {
+                    ensure(
+                        candidate.materials.remove(&id).is_some(),
+                        "material missing",
+                    )?;
+                    id
+                }
+                Command::AddWallType(ty) => {
+                    let id = ty.id();
+                    ensure(
+                        !candidate.wall_types.contains_key(&id),
+                        "wall type already exists",
+                    )?;
+                    candidate.wall_types.insert(id, ty);
+                    id
+                }
+                Command::UpdateWallType { id, parameters } => {
+                    candidate
+                        .wall_types
+                        .get_mut(&id)
+                        .ok_or_else(|| Error::Invalid("wall type missing".into()))?
+                        .parameters = parameters;
+                    id
+                }
+                Command::RemoveWallType(id) => {
+                    ensure(
+                        candidate.wall_types.remove(&id).is_some(),
+                        "wall type missing",
+                    )?;
+                    id
+                }
+                Command::AssignWallType { wall, assignment } => {
+                    ensure(candidate.walls.contains_key(&wall), "wall missing")?;
+                    if let Some(assignment) = assignment {
+                        candidate.wall_type_assignments.insert(wall, assignment);
+                    } else {
+                        candidate.wall_type_assignments.remove(&wall);
+                    }
+                    wall
+                }
+                Command::AddSheet(sheet) => {
+                    let id = sheet.id();
+                    ensure(!candidate.sheets.contains_key(&id), "sheet already exists")?;
+                    candidate.sheets.insert(id, sheet);
+                    id
+                }
+                Command::UpdateSheet { id, parameters } => {
+                    candidate
+                        .sheets
+                        .get_mut(&id)
+                        .ok_or_else(|| Error::Invalid("sheet missing".into()))?
+                        .parameters = parameters;
+                    id
+                }
+                Command::RemoveSheet(id) => {
+                    ensure(candidate.sheets.remove(&id).is_some(), "sheet missing")?;
+                    id
+                }
+                Command::AddFloor(floor) => {
+                    let id = floor.id();
+                    ensure(!candidate.floors.contains_key(&id), "floor already exists")?;
+                    candidate.floors.insert(id, floor);
+                    id
+                }
+                Command::AddColumn(column) => {
+                    let id = column.id();
+                    ensure(
+                        !candidate.columns.contains_key(&id),
+                        "column already exists",
+                    )?;
+                    candidate.columns.insert(id, column);
+                    id
+                }
+                Command::UpdateColumn { id, parameters } => {
+                    candidate
+                        .columns
+                        .get_mut(&id)
+                        .ok_or_else(|| Error::Invalid("column missing".into()))?
+                        .parameters = parameters;
+                    id
+                }
+                Command::RemoveColumn(id) => {
+                    ensure(candidate.columns.remove(&id).is_some(), "column missing")?;
+                    id
+                }
+                Command::UpdateFloor { id, parameters } => {
+                    candidate
+                        .floors
+                        .get_mut(&id)
+                        .ok_or_else(|| Error::Invalid("floor missing".into()))?
+                        .parameters = parameters;
+                    id
+                }
+                Command::RemoveFloor(id) => {
+                    ensure(candidate.floors.remove(&id).is_some(), "floor missing")?;
+                    id
+                }
+                Command::AddOpeningType(ty) => {
+                    let id = ty.id();
+                    ensure(
+                        !candidate.opening_types.contains_key(&id),
+                        "opening type already exists",
+                    )?;
+                    candidate.opening_types.insert(id, ty);
+                    id
+                }
+                Command::UpdateOpeningType { id, parameters } => {
+                    let ty = candidate
+                        .opening_types
+                        .get_mut(&id)
+                        .ok_or_else(|| Error::Invalid("opening type missing".into()))?;
+                    ensure(
+                        ty.parameters.kind == parameters.kind,
+                        "opening type kind is immutable",
+                    )?;
+                    ty.parameters = parameters;
+                    id
+                }
+                Command::RemoveOpeningType(id) => {
+                    ensure(
+                        candidate.opening_types.remove(&id).is_some(),
+                        "opening type missing",
+                    )?;
+                    // Whole-candidate validation below rejects remaining references,
+                    // allowing reassignment/removal in the same atomic transaction.
+                    id
+                }
+                Command::AddDimension(dimension) => {
+                    dimension.parameters.validate_creation(&candidate)?;
+                    let id = dimension.id();
+                    ensure(
+                        !candidate.dimensions.contains_key(&id),
+                        "dimension already exists",
+                    )?;
+                    candidate.dimensions.insert(id, dimension);
+                    id
+                }
+                Command::AddSchedule(schedule) => {
+                    let id = schedule.id();
+                    ensure(
+                        !candidate.schedules.contains_key(&id),
+                        "schedule already exists",
+                    )?;
+                    candidate.schedules.insert(id, schedule);
+                    id
+                }
+                Command::UpdateSchedule { id, parameters } => {
+                    candidate
+                        .schedules
+                        .get_mut(&id)
+                        .ok_or_else(|| Error::Invalid("schedule missing".into()))?
+                        .parameters = parameters;
+                    id
+                }
+                Command::RemoveSchedule(id) => {
+                    ensure(
+                        candidate.schedules.remove(&id).is_some(),
+                        "schedule missing",
+                    )?;
+                    id
+                }
+                Command::AddRoomTag(tag) => {
+                    tag.parameters.validate_creation(&candidate)?;
+                    let id = tag.id();
+                    ensure(
+                        !candidate.room_tags.contains_key(&id),
+                        "room tag already exists",
+                    )?;
+                    candidate.room_tags.insert(id, tag);
+                    id
+                }
+                Command::AddDetailLine(line) => {
+                    let id = line.id();
+                    ensure(
+                        !candidate.detail_lines.contains_key(&id),
+                        "detail line already exists",
+                    )?;
+                    candidate.detail_lines.insert(id, line);
+                    id
+                }
+                Command::UpdateDetailLine { id, parameters } => {
+                    candidate
+                        .detail_lines
+                        .get_mut(&id)
+                        .ok_or_else(|| Error::Invalid("detail line missing".into()))?
+                        .parameters = parameters;
+                    id
+                }
+                Command::RemoveDetailLine(id) => {
+                    ensure(
+                        candidate.detail_lines.remove(&id).is_some(),
+                        "detail line missing",
+                    )?;
+                    id
+                }
+                Command::AddRoomSeparationLine(line) => {
+                    let id = line.id();
+                    ensure(
+                        !candidate.room_separation_lines.contains_key(&id),
+                        "room separation line already exists",
+                    )?;
+                    candidate.room_separation_lines.insert(id, line);
+                    id
+                }
+                Command::UpdateRoomSeparationLine { id, parameters } => {
+                    candidate
+                        .room_separation_lines
+                        .get_mut(&id)
+                        .ok_or_else(|| Error::Invalid("room separation line missing".into()))?
+                        .parameters = parameters;
+                    id
+                }
+                Command::RemoveRoomSeparationLine(id) => {
+                    ensure(
+                        candidate.room_separation_lines.remove(&id).is_some(),
+                        "room separation line missing",
+                    )?;
+                    id
+                }
+                Command::UpdateRoomTag { id, parameters } => {
+                    let tag = candidate
+                        .room_tags
+                        .get_mut(&id)
+                        .ok_or_else(|| Error::Invalid("room tag missing".into()))?;
+                    ensure(
+                        tag.parameters.view == parameters.view
+                            && tag.parameters.room == parameters.room,
+                        "room tag view and target cannot change",
+                    )?;
+                    tag.parameters = parameters;
+                    id
+                }
+                Command::RemoveRoomTag(id) => {
+                    ensure(
+                        candidate.room_tags.remove(&id).is_some(),
+                        "room tag missing",
+                    )?;
+                    id
+                }
+                Command::UpdateDimension { id, parameters } => {
+                    candidate
+                        .dimensions
+                        .get_mut(&id)
+                        .ok_or_else(|| Error::Invalid("dimension missing".into()))?
+                        .parameters = parameters;
+                    id
+                }
+                Command::RemoveDimension(id) => {
+                    ensure(
+                        candidate.dimensions.remove(&id).is_some(),
+                        "dimension missing",
+                    )?;
+                    id
+                }
+                Command::AddRoom(room) => {
+                    let id = room.id();
+                    ensure(!candidate.rooms.contains_key(&id), "room already exists")?;
+                    candidate.rooms.insert(id, room);
+                    id
+                }
+                Command::UpdateRoom { id, parameters } => {
+                    candidate
+                        .rooms
+                        .get_mut(&id)
+                        .ok_or_else(|| Error::Invalid("room missing".into()))?
+                        .parameters = parameters;
+                    id
+                }
+                Command::RemoveRoom(id) => {
+                    ensure(candidate.rooms.remove(&id).is_some(), "room missing")?;
+                    id
+                }
+                Command::AddOpening(opening) => {
+                    let id = opening.id();
+                    ensure(
+                        !candidate.openings.contains_key(&id),
+                        "opening already exists",
+                    )?;
+                    candidate.openings.insert(id, opening);
+                    id
+                }
+                Command::UpdateOpening { id, parameters } => {
+                    candidate
+                        .openings
+                        .get_mut(&id)
+                        .ok_or_else(|| Error::Invalid("opening missing".into()))?
+                        .parameters = parameters;
+                    id
+                }
+                Command::RemoveOpening(id) => {
+                    ensure(candidate.openings.remove(&id).is_some(), "opening missing")?;
+                    id
+                }
                 Command::AddWall(wall) => {
                     let id = wall.id();
                     ensure(!candidate.walls.contains_key(&id), "wall already exists")?;
                     candidate.walls.insert(id, wall);
+                    id
+                }
+                Command::AddButtJoin(join) => {
+                    ensure(
+                        join.header.type_id == "core.wall_butt_join",
+                        "invalid legacy butt join type",
+                    )?;
+                    let id = join.id();
+                    ensure(
+                        !candidate.wall_joins.contains_key(&id),
+                        "butt join already exists",
+                    )?;
+                    let mut header = join.header;
+                    header.type_id = "core.wall_join".into();
+                    candidate.wall_joins.insert(
+                        id,
+                        WallJoin {
+                            header,
+                            parameters: join.parameters.into(),
+                        },
+                    );
+                    id
+                }
+                Command::AddWallJoin(join) => {
+                    let id = join.id();
+                    ensure(
+                        !candidate.wall_joins.contains_key(&id),
+                        "wall join already exists",
+                    )?;
+                    candidate.wall_joins.insert(id, join);
+                    id
+                }
+                Command::UpdateWallJoin { id, parameters } => {
+                    candidate
+                        .wall_joins
+                        .get_mut(&id)
+                        .ok_or_else(|| Error::Invalid("wall join missing".into()))?
+                        .parameters = parameters;
+                    id
+                }
+                Command::UpdateButtJoin { id, parameters } => {
+                    candidate
+                        .wall_joins
+                        .get_mut(&id)
+                        .ok_or_else(|| Error::Invalid("butt join missing".into()))?
+                        .parameters = parameters.into();
+                    id
+                }
+                Command::RemoveButtJoin(id) | Command::RemoveWallJoin(id) => {
+                    ensure(
+                        candidate.wall_joins.remove(&id).is_some(),
+                        "butt join missing",
+                    )?;
                     id
                 }
                 Command::UpdateWall { id, parameters } => {
@@ -164,6 +631,7 @@ impl Document {
                     id
                 }
                 Command::RemoveWall(id) => {
+                    candidate.wall_type_assignments.remove(&id);
                     ensure(candidate.walls.remove(&id).is_some(), "wall missing")?;
                     id
                 }
@@ -225,6 +693,24 @@ impl Document {
                     id
                 }
                 Command::RemoveView(id) => {
+                    candidate.plan_graphics.remove(&id);
+                    ensure(
+                        !candidate.sheets.values().any(|sheet| {
+                            sheet
+                                .parameters
+                                .viewports
+                                .iter()
+                                .any(|viewport| viewport.view == id)
+                        }),
+                        "remove sheet placements before removing their view",
+                    )?;
+                    ensure(
+                        !candidate
+                            .dimensions
+                            .values()
+                            .any(|d| d.parameters.view == id),
+                        "remove owned dimensions before removing their view",
+                    )?;
                     ensure(candidate.views.remove(&id).is_some(), "view missing")?;
                     id
                 }
@@ -236,6 +722,52 @@ impl Document {
                     )?;
                     candidate.extensions.insert(id, entity);
                     id
+                }
+                Command::AddPlanGraphicsTemplate(template) => {
+                    let id = template.id();
+                    ensure(
+                        !candidate.plan_graphics_templates.contains_key(&id),
+                        "graphics template already exists",
+                    )?;
+                    candidate.plan_graphics_templates.insert(id, template);
+                    id
+                }
+                Command::UpdatePlanGraphicsTemplate { id, parameters } => {
+                    candidate
+                        .plan_graphics_templates
+                        .get_mut(&id)
+                        .ok_or_else(|| Error::Invalid("graphics template missing".into()))?
+                        .parameters = parameters;
+                    id
+                }
+                Command::RemovePlanGraphicsTemplate(id) => {
+                    ensure(
+                        !candidate
+                            .plan_graphics
+                            .values()
+                            .any(|b| b.template == Some(id)),
+                        "unlink all views before removing this graphics template",
+                    )?;
+                    ensure(
+                        candidate.plan_graphics_templates.remove(&id).is_some(),
+                        "graphics template missing",
+                    )?;
+                    id
+                }
+                Command::SetPlanGraphics { view, binding } => {
+                    ensure(
+                        candidate
+                            .views
+                            .get(&view)
+                            .is_some_and(|v| v.parameters.kind == ViewKind::Plan),
+                        "graphics settings require a native plan view",
+                    )?;
+                    if let Some(binding) = binding {
+                        candidate.plan_graphics.insert(view, binding);
+                    } else {
+                        candidate.plan_graphics.remove(&view);
+                    }
+                    view
                 }
                 Command::ReplaceExtension {
                     expected_schema_version,
@@ -297,6 +829,25 @@ impl Document {
         if candidate == self.model {
             return Ok(());
         }
+        // Embedded viewport UUIDs participate in change events as well as identity
+        // validation. Retaining a UUID during an edit preserves its identity.
+        let sheet_changes: Vec<_> = changed.iter().copied().collect();
+        for id in sheet_changes {
+            let before = self.model.sheets.get(&id);
+            let after = candidate.sheets.get(&id);
+            for (source, other) in [(before, after), (after, before)] {
+                if let Some(sheet) = source {
+                    for viewport in &sheet.parameters.viewports {
+                        if other.and_then(|s| {
+                            s.parameters.viewports.iter().find(|v| v.id == viewport.id)
+                        }) != Some(viewport)
+                        {
+                            changed.insert(viewport.id);
+                        }
+                    }
+                }
+            }
+        }
         let history = History::new(
             label,
             &self.model,
@@ -312,6 +863,40 @@ impl Document {
     fn emit(&mut self, h: &History, label: &str) {
         let mut invalidated = os_constraints::affected_entities(&h.before, &h.changed);
         invalidated.extend(os_constraints::affected_entities(&h.after, &h.changed));
+        // Sheet placement edits invalidate both old and new referenced plans.
+        // Conversely, changed plan contents/settings invalidate placed viewports
+        // and sheets. Resolve to a fixed point so extension dependents also see
+        // sheet/viewport UUIDs, including removal and undo/redo transitions.
+        let mut seeds = h.changed.clone();
+        loop {
+            seeds.extend(invalidated.iter().copied());
+            let previous = seeds.len();
+            for model in [&h.before, &h.after] {
+                for (view, binding) in &model.plan_graphics {
+                    if binding.template.is_some_and(|id| seeds.contains(&id)) {
+                        invalidated.insert(*view);
+                    }
+                }
+                for sheet in model.sheets.values() {
+                    let edited = h.changed.contains(&sheet.id());
+                    for viewport in &sheet.parameters.viewports {
+                        if edited || h.changed.contains(&viewport.id) {
+                            invalidated.extend([sheet.id(), viewport.id, viewport.view]);
+                        } else if seeds.contains(&viewport.view) {
+                            invalidated.extend([sheet.id(), viewport.id]);
+                        }
+                    }
+                    if edited {
+                        invalidated.insert(sheet.id());
+                    }
+                }
+                invalidated.extend(os_constraints::affected_entities(model, &seeds));
+            }
+            seeds.extend(invalidated.iter().copied());
+            if seeds.len() == previous {
+                break;
+            }
+        }
         self.revision += 1;
         self.events.push(ChangeEvent {
             revision: self.revision,
@@ -339,6 +924,22 @@ impl Document {
         true
     }
 }
+
+#[cfg(test)]
+#[path = "tests/openings.rs"]
+mod opening_tests;
+
+#[cfg(test)]
+#[path = "tests/floors.rs"]
+mod floor_tests;
+
+#[cfg(test)]
+#[path = "tests/columns.rs"]
+mod column_tests;
+
+#[cfg(test)]
+#[path = "tests/sheets.rs"]
+mod sheet_tests;
 
 #[cfg(test)]
 mod tests {

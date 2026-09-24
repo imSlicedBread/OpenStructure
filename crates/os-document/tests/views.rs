@@ -1,6 +1,9 @@
 use os_core::{Id, Point2};
 use os_document::{Command, Document};
-use os_model::{PlanViewCrop, View, ViewKind, ViewParams};
+use os_model::{
+    PlanGraphicsBinding, PlanGraphicsStyles, PlanGraphicsTemplate, PlanGraphicsTemplateParams,
+    PlanViewCrop, View, ViewKind, ViewParams,
+};
 
 fn plan(document: &Document) -> View {
     View::new(
@@ -210,4 +213,125 @@ fn creation_validation_kind_changes_revision_overflow_and_level_invalidation() {
     assert_eq!(document.model(), &original);
     assert_eq!(document.revision(), 0);
     assert!(!document.can_undo());
+}
+
+#[test]
+fn graphics_template_link_guard_and_removal_are_atomic_and_undoable() {
+    let mut document = Document::new("Graphics templates").unwrap();
+    let first = plan(&document);
+    let first_id = first.id();
+    let second = plan(&document);
+    let second_id = second.id();
+    document
+        .execute(
+            "Create plans",
+            vec![Command::AddView(first), Command::AddView(second)],
+        )
+        .unwrap();
+    let template = PlanGraphicsTemplate::new(
+        "core.plan_graphics_template",
+        PlanGraphicsTemplateParams {
+            name: "Office standards".into(),
+            styles: PlanGraphicsStyles::default(),
+        },
+    );
+    let template_id = template.id();
+    document
+        .execute(
+            "Create and link standards",
+            vec![
+                Command::AddPlanGraphicsTemplate(template),
+                Command::SetPlanGraphics {
+                    view: first_id,
+                    binding: Some(PlanGraphicsBinding {
+                        template: Some(template_id),
+                        local: PlanGraphicsStyles::default(),
+                    }),
+                },
+                Command::SetPlanGraphics {
+                    view: second_id,
+                    binding: Some(PlanGraphicsBinding {
+                        template: Some(template_id),
+                        local: PlanGraphicsStyles::default(),
+                    }),
+                },
+            ],
+        )
+        .unwrap();
+    let original = document.model().clone();
+    let mut edited_template = document.model().plan_graphics_templates[&template_id]
+        .parameters
+        .clone();
+    edited_template.styles.walls.cut.weight_mm = 0.75;
+    document.drain_events();
+    document
+        .execute(
+            "Edit linked standards",
+            vec![Command::UpdatePlanGraphicsTemplate {
+                id: template_id,
+                parameters: edited_template,
+            }],
+        )
+        .unwrap();
+    let linked = document.model().clone();
+    let events = document.drain_events();
+    assert!(events.iter().any(|event| {
+        event.invalidated.contains(&first_id) && event.invalidated.contains(&second_id)
+    }));
+    assert_eq!(
+        document
+            .model()
+            .plan_graphics_styles(second_id)
+            .unwrap()
+            .walls
+            .cut
+            .weight_mm,
+        0.75
+    );
+    assert!(document.undo());
+    assert_eq!(document.model(), &original);
+    assert!(document.redo());
+    assert_eq!(document.model(), &linked);
+
+    let linked = document.model().clone();
+    let history = document.history_stats();
+    let revision = document.revision();
+    document.drain_events();
+    assert!(
+        document
+            .execute(
+                "Delete linked template",
+                vec![Command::RemovePlanGraphicsTemplate(template_id)]
+            )
+            .is_err()
+    );
+    assert_eq!(document.model(), &linked);
+    assert_eq!(document.history_stats(), history);
+    assert_eq!(document.revision(), revision);
+    assert!(document.drain_events().is_empty());
+
+    document
+        .execute(
+            "Unlink and remove standards",
+            vec![
+                Command::SetPlanGraphics {
+                    view: first_id,
+                    binding: None,
+                },
+                Command::SetPlanGraphics {
+                    view: second_id,
+                    binding: None,
+                },
+                Command::RemovePlanGraphicsTemplate(template_id),
+            ],
+        )
+        .unwrap();
+    assert!(
+        !document
+            .model()
+            .plan_graphics_templates
+            .contains_key(&template_id)
+    );
+    assert!(document.undo());
+    assert_eq!(document.model(), &linked);
 }

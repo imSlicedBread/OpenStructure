@@ -3,8 +3,36 @@ use crate::{
     step::{guid, quote},
 };
 use os_core::{Id, Result, ensure};
-use os_model::Model;
+use os_model::{DoorHinge, DoorSwing, Model, OpeningFamily, OpeningKind, WindowPanePosition};
 use std::collections::BTreeMap;
+
+#[cfg(test)]
+mod floor_tests {
+    use super::*;
+    #[test]
+    fn floors_are_explicitly_refused_instead_of_dropped() {
+        let mut m = Model::new("Floors");
+        let floor = os_model::Floor::new(
+            "core.floor",
+            os_model::FloorParams {
+                name: "Slab".into(),
+                level: *m.levels.keys().next().unwrap(),
+                material: None,
+                boundary: vec![
+                    os_core::Point2::new(0., 0.),
+                    os_core::Point2::new(2., 0.),
+                    os_core::Point2::new(0., 2.),
+                ],
+                thickness: 0.2,
+                top_offset: 0.0,
+            },
+        );
+        m.floors.insert(floor.id(), floor);
+        let error = export(&m).unwrap_err();
+        assert!(matches!(error, os_core::Error::Unsupported(_)));
+        assert!(error.to_string().contains("floors/slabs"));
+    }
+}
 
 #[derive(Default)]
 struct Writer {
@@ -32,6 +60,35 @@ impl Writer {
             format!("{},#{a}", parent.map_or("$".into(), |p| format!("#{p}"))),
         )
     }
+    fn opening_body(&mut self, context: u32, width: f64, height: f64, depth: f64) -> u32 {
+        // Profile XY is wall XZ; profile +Z points across the wall toward -Y.
+        let center = self.add(
+            "IFCCARTESIANPOINT",
+            format!("({:?},{:?})", width / 2., height / 2.),
+        );
+        let pa = self.add("IFCAXIS2PLACEMENT2D", format!("#{center},$"));
+        let profile = self.add(
+            "IFCRECTANGLEPROFILEDEF",
+            format!(".AREA.,$,#{pa},{width:?},{height:?}"),
+        );
+        let origin = self.point(0., depth / 2., 0.);
+        let across = self.add("IFCDIRECTION", "(0.,-1.,0.)".into());
+        let along = self.add("IFCDIRECTION", "(1.,0.,0.)".into());
+        let axis = self.add(
+            "IFCAXIS2PLACEMENT3D",
+            format!("#{origin},#{across},#{along}"),
+        );
+        let extrusion = self.add("IFCDIRECTION", "(0.,0.,1.)".into());
+        let solid = self.add(
+            "IFCEXTRUDEDAREASOLID",
+            format!("#{profile},#{axis},#{extrusion},{depth:?}"),
+        );
+        let shape = self.add(
+            "IFCSHAPEREPRESENTATION",
+            format!("#{context},'Body','SweptSolid',(#{solid})"),
+        );
+        self.add("IFCPRODUCTDEFINITIONSHAPE", format!("$,$,(#{shape})"))
+    }
     fn relation(&mut self, parent: u32, children: &[u32], containment: bool) {
         if children.is_empty() {
             return;
@@ -56,8 +113,59 @@ impl Writer {
         );
     }
 }
+
+// IFC4 swing is toward filling +Y. A 180-degree yaw reverses both X and Y,
+// so the native jamb must be inverted when determining the IFC hinge side.
+fn operation(kind: OpeningKind, hinge: DoorHinge, swing: DoorSwing) -> &'static str {
+    if kind == OpeningKind::Window {
+        "SINGLE_PANEL"
+    } else if (hinge == DoorHinge::Start) == (swing == DoorSwing::Left) {
+        "SINGLE_SWING_LEFT"
+    } else {
+        "SINGLE_SWING_RIGHT"
+    }
+}
+
 pub fn export(m: &Model) -> Result<Exchange<Vec<u8>>> {
     m.validate()?;
+    if !m.wall_types.is_empty() || !m.wall_type_assignments.is_empty() {
+        return Err(os_core::Error::Unsupported("IFC export cannot preserve reusable compound wall types/layers; keep the native .osb document".into()));
+    }
+    if !m.wall_joins.is_empty() {
+        return Err(os_core::Error::Unsupported(
+            "IFC wall export cannot preserve explicit butt joins; keep the native .osb document"
+                .into(),
+        ));
+    }
+    if !m.floors.is_empty() {
+        return Err(os_core::Error::Unsupported(
+            "IFC wall export does not support floors/slabs; keep the native .osb document".into(),
+        ));
+    }
+    if !m.columns.is_empty() {
+        return Err(os_core::Error::Unsupported(
+            "IFC export does not support native columns; keep the native .osb document".into(),
+        ));
+    }
+    let mut type_operations = BTreeMap::new();
+    for e in m.openings.values() {
+        let p = m.resolve_opening(&e.parameters)?;
+        if p.family != OpeningFamily::default() || p.pane_position != WindowPanePosition::Center {
+            return Err(os_core::Error::Unsupported("IFC hosted openings require the exact default rectangular family and centered pane".into()));
+        }
+        if let Some(id) = p.type_id {
+            let op = operation(p.kind, p.hinge, p.swing);
+            if type_operations.insert(id, op).is_some_and(|old| old != op) {
+                return Err(os_core::Error::Unsupported("IFC shared door type requires one operation type; native instances require conflicting IFC hands (type splitting is not supported)".into()));
+            }
+        }
+    }
+    if m.opening_types
+        .keys()
+        .any(|id| !type_operations.contains_key(id))
+    {
+        return Err(os_core::Error::Unsupported("IFC cannot preserve unused opening types: dimensions and sill are reconstructed from their occurrences".into()));
+    }
     if !m.extensions.is_empty() {
         return Err(os_core::Error::Unsupported(format!(
             "IFC wall export has no mapping for {} plugin elements; keep the native .osb document",
@@ -69,6 +177,8 @@ pub fn export(m: &Model) -> Result<Exchange<Vec<u8>>> {
         .chain(m.buildings.values().map(|e| e.parameters.name.as_str()))
         .chain(m.levels.values().map(|e| e.parameters.name.as_str()))
         .chain(m.walls.values().map(|e| e.parameters.name.as_str()))
+        .chain(m.openings.values().map(|e| e.parameters.name.as_str()))
+        .chain(m.opening_types.values().map(|e| e.parameters.name.as_str()))
     {
         ensure(
             name.chars().count() <= 255,
@@ -76,10 +186,19 @@ pub fn export(m: &Model) -> Result<Exchange<Vec<u8>>> {
         )?;
     }
     ensure(
-        m.sites.len() + m.buildings.len() + m.levels.len() + m.walls.len() < 3000,
-        "IFC subset supports fewer than 3000 spatial/wall entities",
+        m.sites.len()
+            + m.buildings.len()
+            + m.levels.len()
+            + m.walls.len()
+            + m.openings.len()
+            + m.opening_types.len()
+            < 3000,
+        "IFC subset supports fewer than 3000 spatial/wall/opening/type entities",
     )?;
     let mut warnings = Vec::new();
+    if !m.openings.is_empty() {
+        warnings.push("Hosted opening voids, filling identity/dimensions/orientation and shared types are exported. Door panels, window panes, frames, component geometry, family parameters and materials are not represented in IFC; fillings have no Body. Import regenerates only the native default rectangular family. Keep the native .osb document.".into());
+    }
     if !m.grids.is_empty() {
         warnings.push(format!("{} native architectural grids and their metadata are not exported; keep the native .osb document.", m.grids.len()));
     }
@@ -98,7 +217,9 @@ pub fn export(m: &Model) -> Result<Exchange<Vec<u8>>> {
         .chain(m.sites.values().map(|e| &e.header))
         .chain(m.buildings.values().map(|e| &e.header))
         .chain(m.levels.values().map(|e| &e.header))
-        .chain(m.walls.values().map(|e| &e.header));
+        .chain(m.walls.values().map(|e| &e.header))
+        .chain(m.openings.values().map(|e| &e.header))
+        .chain(m.opening_types.values().map(|e| &e.header));
     if headers
         .into_iter()
         .any(|h| !h.properties.is_empty() || !h.relationships.is_empty())
@@ -171,9 +292,11 @@ pub fn export(m: &Model) -> Result<Exchange<Vec<u8>>> {
     }
     for e in m.walls.values() {
         let v = &e.parameters;
+        let derived = os_geometry::walls::NativeWall::from_model(m, e.id())?;
+        // IFC void relationships subtract from the complete, uncut wall body.
         let len = v.length();
         ensure(
-            (len * v.thickness * v.height).is_finite(),
+            derived.net_volume()?.is_finite(),
             "IFC wall volume overflow",
         )?;
         let p = w.placement(
@@ -181,6 +304,7 @@ pub fn export(m: &Model) -> Result<Exchange<Vec<u8>>> {
             [v.start.x, v.start.y, 0.],
             [(v.end.x - v.start.x) / len, (v.end.y - v.start.y) / len],
         );
+        placements.insert(e.id(), p);
         let cp = w.add("IFCCARTESIANPOINT", format!("({:?},0.)", len / 2.));
         let pa = w.add("IFCAXIS2PLACEMENT2D", format!("#{cp},$"));
         let profile = w.add(
@@ -207,6 +331,88 @@ pub fn export(m: &Model) -> Result<Exchange<Vec<u8>>> {
             ),
         );
         entities.insert(e.id(), wall);
+    }
+    for e in m.opening_types.values() {
+        let door = e.parameters.kind == OpeningKind::Door;
+        let kind = if door { "IFCDOORTYPE" } else { "IFCWINDOWTYPE" };
+        let predefined = if door { "DOOR" } else { "WINDOW" };
+        let op = type_operations[&e.id()];
+        let id = w.add(
+            kind,
+            format!(
+                "'{}',$,{},$,$,$,$,$,$,.{predefined}.,.{op}.,$,$",
+                guid(e.id()),
+                quote(&e.parameters.name)
+            ),
+        );
+        entities.insert(e.id(), id);
+    }
+    for e in m.openings.values() {
+        let v = m.resolve_opening(&e.parameters)?;
+        let host = &m.walls[&v.host].parameters;
+        let p = w.placement(Some(placements[&v.host]), [v.offset, 0., v.sill], [1., 0.]);
+        let body = w.opening_body(context, v.width, v.height, host.thickness);
+        let void = w.add(
+            "IFCOPENINGELEMENT",
+            format!(
+                "'{}',$,{},$,$,#{p},#{body},$,.OPENING.",
+                guid(Id::new()),
+                quote(&v.name)
+            ),
+        );
+        w.add(
+            "IFCRELVOIDSELEMENT",
+            format!("'{}',$,$,$,#{},#{void}", guid(Id::new()), entities[&v.host]),
+        );
+        let reverse = v.kind == OpeningKind::Door && v.swing == DoorSwing::Right;
+        let fill_p = w.placement(
+            Some(p),
+            [if reverse { v.width } else { 0. }, 0., 0.],
+            [if reverse { -1. } else { 1. }, 0.],
+        );
+        let door = v.kind == OpeningKind::Door;
+        let kind = if door { "IFCDOOR" } else { "IFCWINDOW" };
+        let predefined = if door { "DOOR" } else { "WINDOW" };
+        let op = operation(v.kind, v.hinge, v.swing);
+        // Description is an explicit bounded dialect discriminator: deleting a
+        // type relationship must not silently turn a Typed instance into Legacy.
+        let (description, classification) = if v.type_id.is_some() {
+            ("OpenStructure.Typed.v1", "$,$".into())
+        } else {
+            ("OpenStructure.Legacy.v1", format!(".{predefined}.,.{op}."))
+        };
+        let fill = w.add(
+            kind,
+            format!(
+                "'{}',$,{},'{description}',$,#{fill_p},$,$,{:?},{:?},{classification},$",
+                guid(e.id()),
+                quote(&v.name),
+                v.height,
+                v.width
+            ),
+        );
+        entities.insert(e.id(), fill);
+        w.add(
+            "IFCRELFILLSELEMENT",
+            format!("'{}',$,$,$,#{void},#{fill}", guid(Id::new())),
+        );
+    }
+    for e in m.opening_types.values() {
+        let fills = m
+            .openings
+            .values()
+            .filter(|o| o.parameters.type_id() == Some(e.id()))
+            .map(|o| format!("#{}", entities[&o.id()]))
+            .collect::<Vec<_>>()
+            .join(",");
+        w.add(
+            "IFCRELDEFINESBYTYPE",
+            format!(
+                "'{}',$,$,$,({fills}),#{}",
+                guid(Id::new()),
+                entities[&e.id()]
+            ),
+        );
     }
     w.relation(
         project,
@@ -242,6 +448,12 @@ pub fn export(m: &Model) -> Result<Exchange<Vec<u8>>> {
                 .values()
                 .filter(|v| v.parameters.level == e.id())
                 .map(|v| entities[&v.id()])
+                .chain(
+                    m.openings
+                        .values()
+                        .filter(|o| m.walls[&o.parameters.host].parameters.level == e.id())
+                        .map(|o| entities[&o.id()]),
+                )
                 .collect::<Vec<_>>(),
             true,
         );

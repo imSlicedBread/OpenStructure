@@ -162,7 +162,7 @@ impl RasterFrame {
             let base = if selected == Some(t.entity) {
                 style.selected
             } else {
-                style.normal
+                t.surface.color().unwrap_or(style.normal)
             };
             let mut color = [0; 4];
             for i in 0..3 {

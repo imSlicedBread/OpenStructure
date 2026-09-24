@@ -54,3 +54,22 @@ system settings were changed to work around it.
 Follow-up: [untitled quick-Save correction](untitled-save-destination.md) now
 implements destination prompting and routing with passing desktop input tests.
 The observations above describe the original inspected build, not the correction.
+
+## Endpoint handles — automated follow-up, 2026-09-20
+
+The [endpoint handle slice](plan-wall-edit-gestures.md#endpoint-handle-slice--2026-09-20-automated-evidence)
+adds direct start/end dragging for selected visible native straight walls.
+Headless egui desktop tests at 1280×800/1.0 and 1000×650/1.5 verify 6-point
+circles, 10-point Euclidean hits, nearest/start tie handling, transient previews,
+preserved identity/properties/fixed endpoints, one-step undo/redo, cancellation
+and ordinary pan/selection precedence. Visibility and stale-drawing guards, snap
+and exact-input reuse, invalid/outside release and cleared state are asserted.
+An explicitly executed test with the existing installed Rust Wall guest also
+verifies deferred worker submission/completion and pending Escape cancellation
+for both endpoints at both profiles.
+
+The all-feature locked offline `os-ui` tests pass using
+`--target-dir work/endpoint-handles-astra`; commands and counts are recorded in
+the linked slice document. These are automated input/shape/model assertions,
+not native visual inspection. The earlier 2026-09-12 observations do not verify
+the new handles. Native manual endpoint-handle acceptance remains open.

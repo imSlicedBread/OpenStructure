@@ -123,7 +123,7 @@ impl DesktopApp {
     pub(super) fn begin_grid_form(&mut self, target: Option<Id>) {
         match GridDraft::begin(&self.editor, self.plans.active, target) {
             Ok(draft) => {
-                self.wall_gesture = None;
+                self.cancel_plan_wall();
                 self.grid_draft = Some(draft);
             }
             Err(error) => self.report(Err(error), ""),

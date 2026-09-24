@@ -1,0 +1,180 @@
+{
+  "schema_version": 11,
+  "project": {
+    "header": {
+      "id": "fd6860b7-757c-4c2a-9158-951ddf4e3f89",
+      "type_id": "core.project",
+      "schema_version": 11,
+      "properties": {},
+      "relationships": {}
+    },
+    "parameters": {
+      "name": "Schema ten dimension fixture"
+    }
+  },
+  "sites": {
+    "17dceb4e-5a0f-4cff-8831-830dbfa4b0a4": {
+      "header": {
+        "id": "17dceb4e-5a0f-4cff-8831-830dbfa4b0a4",
+        "type_id": "core.site",
+        "schema_version": 11,
+        "properties": {},
+        "relationships": {}
+      },
+      "parameters": {
+        "name": "Site",
+        "project": "fd6860b7-757c-4c2a-9158-951ddf4e3f89"
+      }
+    }
+  },
+  "buildings": {
+    "94b6f9cd-bf98-4a14-b427-72d4435eb074": {
+      "header": {
+        "id": "94b6f9cd-bf98-4a14-b427-72d4435eb074",
+        "type_id": "core.building",
+        "schema_version": 11,
+        "properties": {},
+        "relationships": {}
+      },
+      "parameters": {
+        "name": "Building",
+        "site": "17dceb4e-5a0f-4cff-8831-830dbfa4b0a4"
+      }
+    }
+  },
+  "levels": {
+    "0c06a349-2590-430a-bc37-558679305b3d": {
+      "header": {
+        "id": "0c06a349-2590-430a-bc37-558679305b3d",
+        "type_id": "core.level",
+        "schema_version": 11,
+        "properties": {},
+        "relationships": {}
+      },
+      "parameters": {
+        "name": "Ground",
+        "elevation": 0,
+        "building": "94b6f9cd-bf98-4a14-b427-72d4435eb074"
+      }
+    }
+  },
+  "walls": {
+    "b86efa79-b686-4ed2-8e89-d90140572597": {
+      "header": {
+        "id": "b86efa79-b686-4ed2-8e89-d90140572597",
+        "type_id": "org.openstructure.walls.wall",
+        "schema_version": 11,
+        "properties": {},
+        "relationships": {}
+      },
+      "parameters": {
+        "name": "Wall",
+        "start": {
+          "x": 0,
+          "y": 0
+        },
+        "end": {
+          "x": 4,
+          "y": 0
+        },
+        "thickness": 0.2,
+        "height": 3,
+        "level": "0c06a349-2590-430a-bc37-558679305b3d",
+        "material": null
+      }
+    }
+  },
+  "floors": {},
+  "openings": {},
+  "opening_types": {},
+  "rooms": {},
+  "dimensions": {
+    "51c19f1c-45f2-4baf-939c-ed4217ce426a": {
+      "header": {
+        "id": "51c19f1c-45f2-4baf-939c-ed4217ce426a",
+        "type_id": "core.dimension",
+        "schema_version": 11,
+        "properties": {},
+        "relationships": {}
+      },
+      "parameters": {
+        "view": "f4abfb66-8087-440f-b5dd-000b51d4ad3c",
+        "first": {
+          "wall": "b86efa79-b686-4ed2-8e89-d90140572597",
+          "endpoint": "Start"
+        },
+        "second": {
+          "wall": "b86efa79-b686-4ed2-8e89-d90140572597",
+          "endpoint": "End"
+        },
+        "offset_m": 0.5,
+        "orphan_hint": {
+          "x": 2,
+          "y": 0.5
+        },
+        "layout": "Aligned",
+        "additional": [],
+        "baseline_spacing_m": 0.25
+      }
+    }
+  },
+  "grids": {},
+  "materials": {},
+  "views": {
+    "28cb89d7-4091-46b3-bf40-a09bca0c2dca": {
+      "header": {
+        "id": "28cb89d7-4091-46b3-bf40-a09bca0c2dca",
+        "type_id": "core.view",
+        "schema_version": 11,
+        "properties": {},
+        "relationships": {}
+      },
+      "parameters": {
+        "name": "3D",
+        "kind": "Perspective",
+        "level": null,
+        "settings_revision": 0,
+        "plan": null
+      }
+    },
+    "f4abfb66-8087-440f-b5dd-000b51d4ad3c": {
+      "header": {
+        "id": "f4abfb66-8087-440f-b5dd-000b51d4ad3c",
+        "type_id": "core.view",
+        "schema_version": 11,
+        "properties": {},
+        "relationships": {}
+      },
+      "parameters": {
+        "name": "Plan",
+        "kind": "Plan",
+        "level": "0c06a349-2590-430a-bc37-558679305b3d",
+        "settings_revision": 0,
+        "plan": {
+          "schema_version": 1,
+          "range": {
+            "top": 2.5,
+            "cut": 1.2,
+            "bottom": 0,
+            "depth": -1
+          },
+          "basis": {
+            "origin": {
+              "x": 0,
+              "y": 0
+            },
+            "rotation": 0
+          },
+          "crop": null,
+          "scale_denominator": 100,
+          "visibility": {
+            "walls": true,
+            "extensions": true
+          }
+        }
+      }
+    }
+  },
+  "extensions": {},
+  "plugin_requirements": {}
+}

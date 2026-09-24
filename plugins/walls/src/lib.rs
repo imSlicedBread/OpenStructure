@@ -1,12 +1,14 @@
 //! Reference built-in plugin using the same versioned messages as future runtimes.
-use os_core::{Error, Point2, Result, ensure};
+use os_core::{Error, Result, ensure};
 use os_document::Command;
-use os_geometry::{Profile, Solid, Transform, Vec3};
-use os_model::{Wall, WallParams};
+pub use os_geometry::walls::wall_solid;
+use os_model::Wall;
 use os_plugin_api::*;
 
 pub const PLUGIN_ID: &str = "org.openstructure.walls";
 pub const WALL_TYPE: &str = "org.openstructure.walls.wall";
+mod openings;
+pub use openings::wall_prisms;
 pub struct WallsPlugin;
 impl Plugin for WallsPlugin {
     fn manifest(&self) -> Manifest {
@@ -26,6 +28,10 @@ impl Plugin for WallsPlugin {
         let model = request
             .model
             .ok_or_else(|| Error::Permission("wall plugin requires model.read".into()))?;
+        ensure(
+            model.schema_version == REQUIRED_MODEL_SCHEMA_VERSION,
+            "native Model request requires schema 28",
+        )?;
         let response = match request.request {
             Request::CreateWall(parameters) => {
                 parameters.validate()?;
@@ -37,15 +43,15 @@ impl Plugin for WallsPlugin {
                 Response::Commands(vec![Command::UpdateWall { id, parameters }])
             }
             Request::GenerateWall { id } => {
-                let wall = model
-                    .walls
-                    .get(&id)
-                    .ok_or_else(|| Error::Invalid("wall not found".into()))?;
-                let level = model
-                    .levels
-                    .get(&wall.parameters.level)
-                    .ok_or_else(|| Error::Invalid("level not found".into()))?;
-                Response::Solid(wall_solid(&wall.parameters, level.parameters.elevation)?)
+                os_core::ensure(
+                    !model.wall_type_assignments.contains_key(&id),
+                    "single-Solid provider cannot preserve typed wall layers; use native layer geometry",
+                )?;
+                let mut cells = os_geometry::walls::NativeWall::from_model(&model, id)?.cells()?;
+                if cells.len() != 1 {
+                    return Err(Error::Unsupported("legacy single-solid response cannot represent hosted openings; use native host geometry".into()));
+                }
+                Response::Solid(cells.remove(0))
             }
         };
         serde_json::to_string(&ResponseEnvelope {
@@ -55,31 +61,82 @@ impl Plugin for WallsPlugin {
         .map_err(|e| Error::Invalid(e.to_string()))
     }
 }
-pub fn wall_solid(wall: &WallParams, elevation: f64) -> Result<Solid> {
-    wall.validate()?;
-    ensure(elevation.is_finite(), "invalid level elevation")?;
-    let length = wall.length();
-    let half = wall.thickness / 2.0;
-    Ok(Solid {
-        profile: Profile {
-            vertices: vec![
-                Point2::new(0.0, -half),
-                Point2::new(length, -half),
-                Point2::new(length, half),
-                Point2::new(0.0, half),
-            ],
-        },
-        height: wall.height,
-        transform: Transform {
-            translation: Vec3::new(wall.start.x, wall.start.y, elevation),
-            rotation_z: (wall.end.y - wall.start.y).atan2(wall.end.x - wall.start.x),
-        },
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use os_core::Point2;
+    use os_model::WallParams;
+    #[test]
+    fn butt_join_plugin_geometry_uses_model_aware_derivation() {
+        use os_model::{Model, WallAnchor, WallEndpoint, WallJoin, WallJoinParams};
+        let mut model = Model::new("Joined plugin walls");
+        let level = *model.levels.keys().next().unwrap();
+        let a = Wall::new(
+            WALL_TYPE,
+            WallParams {
+                name: "A".into(),
+                start: Point2::new(0., 0.),
+                end: Point2::new(3., 0.),
+                height: 3.,
+                thickness: 0.2,
+                level,
+                material: None,
+            },
+        );
+        let b = Wall::new(
+            WALL_TYPE,
+            WallParams {
+                name: "B".into(),
+                start: Point2::new(6., 0.),
+                end: Point2::new(3., 0.),
+                ..a.parameters.clone()
+            },
+        );
+        let (aid, bid) = (a.id(), b.id());
+        model.walls.insert(aid, a);
+        model.walls.insert(bid, b);
+        let join = WallJoin::new(
+            "core.wall_join",
+            WallJoinParams::Butt {
+                a: WallAnchor {
+                    wall: aid,
+                    endpoint: WallEndpoint::End,
+                },
+                b: WallAnchor {
+                    wall: bid,
+                    endpoint: WallEndpoint::End,
+                },
+            },
+        );
+        model.wall_joins.insert(join.id(), join);
+        model.validate().unwrap();
+        let request = |model: Model, id| {
+            serde_json::to_string(&RequestEnvelope {
+                api_version: API_VERSION,
+                request: Request::GenerateWall { id },
+                model: Some(model),
+            })
+            .unwrap()
+        };
+        for id in [aid, bid] {
+            let response = WallsPlugin
+                .invoke_json(&request(model.clone(), id))
+                .unwrap();
+            let response: ResponseEnvelope = serde_json::from_str(&response).unwrap();
+            let Response::Solid(solid) = response.response else {
+                panic!("expected solid")
+            };
+            assert_eq!(
+                solid,
+                os_geometry::walls::NativeWall::from_model(&model, id)
+                    .unwrap()
+                    .cells()
+                    .unwrap()[0]
+            );
+        }
+        model.walls.get_mut(&bid).unwrap().parameters.end.x += 0.1;
+        assert!(WallsPlugin.invoke_json(&request(model, aid)).is_err());
+    }
     use os_geometry::{GeometryKernel, PrismKernel};
     #[test]
     fn wall_regenerates_after_parameter_and_elevation_changes() {

@@ -174,7 +174,7 @@ impl PluginHost {
         let native = doc.model().walls.get(&element);
         let entity = if let Some(wall) = native {
             ensure(view_context.show_walls, "native walls hidden in plan")?;
-            crate::native_wall::project(wall)?
+            crate::native_wall::project_checked(doc.model(), wall)?
         } else {
             ensure(view_context.show_extensions, "extensions hidden in plan")?;
             entity_to_wire(

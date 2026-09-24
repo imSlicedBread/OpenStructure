@@ -3,6 +3,7 @@ use os_render::{MAX_PIXELS, ProjectedPoint, RasterFrame, RasterStyle, Triangle, 
 
 fn triangle(id: Id, depths: [f64; 3]) -> Triangle {
     Triangle {
+        surface: Default::default(),
         entity: id,
         points: [(0., 0.), (100., 0.), (0., 100.)]
             .into_iter()

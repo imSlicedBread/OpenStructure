@@ -163,6 +163,108 @@ fn worker_commands_commit_exactly_once_and_preserve_history() {
 }
 
 #[test]
+fn legacy_model_guest_is_rejected_before_activation_or_model_dispatch() {
+    let legacy = wall_manifest().replace("api_version = 9", "api_version = 4");
+    // The normal install helper parses manifests through the current host and
+    // therefore rejects API 4 before the directory loader sees the fixture.
+    // Write the old guest package directly to exercise that load boundary.
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::write(directory.path().join("plugin.toml"), &legacy).unwrap();
+    std::fs::write(
+        directory.path().join("probe.wasm"),
+        response_module(&json(vec![])),
+    )
+    .unwrap();
+    let mut host = PluginHost::default();
+    let error = host
+        .load_wasm_directory(directory.path(), grants())
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("rebuild and reinstall"), "{error}");
+    assert_eq!(host.manifests().count(), 0);
+    assert_eq!(host.active_jobs(), 0);
+}
+
+#[test]
+fn schema21_worker_member_edits_validate_whole_join_graph_and_remain_atomic() {
+    use os_model::{WallAnchor, WallEndpoint, WallJoin, WallJoinParams};
+    for detached in [false, true] {
+        let mut doc = Document::new("Joined worker model").unwrap();
+        let a = Wall::new("org.openstructure.walls.wall", params(doc.model()));
+        let mut p = a.parameters.clone();
+        p.start = a.parameters.end;
+        p.end = Point2::new(5., 4.);
+        let b = Wall::new("org.openstructure.walls.wall", p);
+        let join = WallJoin::new(
+            "core.wall_join",
+            WallJoinParams::Corner {
+                a: WallAnchor {
+                    wall: a.id(),
+                    endpoint: WallEndpoint::End,
+                },
+                b: WallAnchor {
+                    wall: b.id(),
+                    endpoint: WallEndpoint::Start,
+                },
+                owner: a.id(),
+            },
+        );
+        doc.execute(
+            "Connected",
+            vec![
+                Command::AddWall(a.clone()),
+                Command::AddWall(b),
+                Command::AddWallJoin(join),
+            ],
+        )
+        .unwrap();
+        let before = doc.model().clone();
+        let revision = doc.revision();
+        let mut parameters = a.parameters.clone();
+        if detached {
+            parameters.end.x += 1.;
+        } else {
+            parameters.start.x -= 1.;
+        }
+        let directory = install(
+            &wall_manifest(),
+            &response_module(&json(vec![Command::UpdateWall {
+                id: a.id(),
+                parameters: parameters.clone(),
+            }])),
+        );
+        let mut host = PluginHost::default();
+        host.load_wasm_directory(directory.path(), grants())
+            .unwrap();
+        let mut job = host
+            .start_job(
+                "org.openstructure.walls",
+                &doc,
+                Request::EditWall {
+                    id: a.id(),
+                    parameters,
+                },
+                None,
+                Duration::from_secs(5),
+            )
+            .unwrap();
+        let outcome = finish(&host, &mut job, &mut doc, None);
+        if detached {
+            assert!(outcome.is_err());
+            assert_eq!(doc.model(), &before);
+            assert_eq!(doc.revision(), revision);
+        } else {
+            assert!(matches!(outcome, Ok(JobOutcome::Committed)));
+            assert_eq!(doc.model().wall_joins, before.wall_joins);
+            assert!(doc.undo());
+            assert_eq!(doc.model(), &before);
+            assert!(doc.redo());
+        }
+        drained(&host);
+    }
+}
+
+#[test]
 fn worker_rejects_changed_reverted_and_reopened_documents() {
     for case in ["edit", "undo", "reopen"] {
         let mut doc = Document::new("Worker").unwrap();
@@ -509,7 +611,7 @@ fn params(model: &Model) -> WallParams {
 }
 fn json(commands: Vec<Command>) -> Vec<u8> {
     serde_json::to_vec(&ResponseEnvelope {
-        api_version: 1,
+        api_version: os_plugin_api::API_VERSION,
         response: Response::Commands(commands),
     })
     .unwrap()
@@ -805,7 +907,7 @@ fn loading_errors_leave_no_registrations_or_plugins() {
     for manifest in [
         PROBE_MANIFEST.replace("wasm:probe.wasm", "wasm:../probe.wasm"),
         PROBE_MANIFEST.replace("wasm:probe.wasm", "wasm:C:\\probe.wasm"),
-        PROBE_MANIFEST.replace("api_version = 1", "api_version = 999"),
+        PROBE_MANIFEST.replace("api_version = 9", "api_version = 999"),
         PROBE_MANIFEST.replace(
             "dependencies = []",
             "dependencies = [{ id = 'org.example.missing', version = '1.0.0' }]",

@@ -1,0 +1,47 @@
+{
+  "schema_version": 22,
+  "project": {
+    "header": {"id":"00000000-0000-4000-8000-000000000001","type_id":"core.project","schema_version":22,"properties":{"fixture":"frozen schema 22"},"relationships":{}},
+    "parameters":{"name":"Window pane position migration"}
+  },
+  "sites":{"00000000-0000-4000-8000-000000000002":{
+    "header":{"id":"00000000-0000-4000-8000-000000000002","type_id":"core.site","schema_version":22,"properties":{},"relationships":{}},
+    "parameters":{"name":"Site","project":"00000000-0000-4000-8000-000000000001"}
+  }},
+  "buildings":{"00000000-0000-4000-8000-000000000003":{
+    "header":{"id":"00000000-0000-4000-8000-000000000003","type_id":"core.building","schema_version":22,"properties":{},"relationships":{}},
+    "parameters":{"name":"Building","site":"00000000-0000-4000-8000-000000000002"}
+  }},
+  "levels":{"00000000-0000-4000-8000-000000000004":{
+    "header":{"id":"00000000-0000-4000-8000-000000000004","type_id":"core.level","schema_version":22,"properties":{},"relationships":{}},
+    "parameters":{"name":"Ground","elevation":2.5,"building":"00000000-0000-4000-8000-000000000003"}
+  }},
+  "walls":{"00000000-0000-4000-8000-000000000006":{
+    "header":{"id":"00000000-0000-4000-8000-000000000006","type_id":"org.openstructure.walls.wall","schema_version":22,"properties":{"retained":123},"relationships":{}},
+    "parameters":{"name":"Wall","start":{"x":0,"y":0},"end":{"x":4,"y":0},"thickness":0.2,"height":3,"level":"00000000-0000-4000-8000-000000000004","material":null}
+  }},
+  "wall_types":{},
+  "wall_type_assignments":{},
+  "wall_joins":{},
+  "openings":{"00000000-0000-4000-8000-000000000008":{
+    "header":{"id":"00000000-0000-4000-8000-000000000008","type_id":"core.opening","schema_version":22,"properties":{},"relationships":{}},
+    "parameters":{"name":"Legacy window","host":"00000000-0000-4000-8000-000000000006","offset":1,"definition":{"Legacy":{"kind":"Window","width":1,"height":1.2,"sill":0.8}},"hinge":"Start","swing":"Left"}
+  }},
+  "opening_types":{"00000000-0000-4000-8000-000000000011":{
+    "header":{"id":"00000000-0000-4000-8000-000000000011","type_id":"core.opening_type","schema_version":22,"properties":{"retained":"opening type metadata"},"relationships":{}},
+    "parameters":{"name":"Shared window","kind":"Window","width":1,"height":1.2,"sill":0.8}
+  }},
+  "materials":{},
+  "floors":{},
+  "rooms":{},
+  "room_tags":{},
+  "room_separation_lines":{},
+  "detail_lines":{},
+  "dimensions":{},
+  "grids":{},
+  "views":{},
+  "sheets":{},
+  "schedules":{},
+  "extensions":{},
+  "plugin_requirements":{}
+}

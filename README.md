@@ -8,7 +8,7 @@ The project aims to provide a practical alternative for parametric building desi
 
 OpenStructure has a 13-package Rust workspace with a native egui/eframe desktop,
 typed semantic model, atomic edits and bounded snapshot undo/redo, versioned
-`.osb` storage, restricted IFC4 wall exchange, and a depth-buffered 3D viewport
+`.osb` storage, restricted IFC4 wall and hosted door/window exchange, and a depth-buffered 3D viewport
 with matching entity selection.
 
 The [B/C development baseline](docs/bc-baseline-audit.md) is verified on Windows.
@@ -24,18 +24,58 @@ rebuilding the host after installation. Native workflows are recorded for
 [Plugin-owned migrations](docs/plugin-migration-service.md) use isolated candidate
 batches and one final validated transaction; independent single/mixed-type examples
 cover cancellation, late failures, undo/redo and persistence. Container 2 preserves
-bounded opaque auxiliary files; model schema 4 preserves plugin envelopes, exact
-provider requirements and versioned named plan settings. Opening a file never installs or automatically executes a
-plugin from that file.
+bounded opaque auxiliary files; model schema 28 preserves plugin envelopes, exact
+provider requirements and versioned named plan settings. Opening a file never
+installs or automatically executes a plugin from that file.
+
+Model schema 5 added [native hosted doors and windows](docs/native-hosted-openings.md)
+for straight walls, with repeatable click-to-place previews and real 3D/plan
+apertures. Schema 8 adds reusable project door/window types with type-shared
+dimensions, typed placement, legacy conversion and atomic regeneration. Model
+schema 6 added [native wall-bounded
+rooms](docs/native-rooms.md) with derived centerline areas, plan labels,
+enclosure diagnostics, and stable topology identity.
+Level-owned straight room-separation lines now participate in room enclosure
+and plan authoring. Schema 24 introduced a visual profile-extrusion editor for
+reusable door/window types; one bounded component profile drives the 3D panel/pane
+and plan-cut symbol. Schema 25 adds an optional editable frame around the inset
+panel/pane. Hosted voids are still rectangular, and advanced family
+operations, nesting, formulas and content libraries remain outside the implemented
+scope. Curved or plugin-defined opening hosts are also unsupported.
+
+Schema 11 extends native wall-endpoint dimensions with **Chain** and
+**Baseline** layouts. One reporting annotation retains ordered wall endpoints;
+chains measure consecutive segments, while baselines measure each later point
+from the first on successive parallel lines. This remains a focused native
+subset, not Revit-equivalent dimensioning.
+
+Schema 10 adds per-door hinge jamb and swing side, a pickable quarter-circle plan
+arc and a matching open 3D leaf. Existing and new doors default to Start / Left
+(positive host normal), preserving the previous leaf geometry through schema-9
+migration. Exact opening properties preview and apply these instance settings in
+one undoable edit. Windows, shared dimensions and wall apertures are unchanged;
+orientation follows the wall's stored start→end direction.
+
+Schema 9 adds [native floors/slabs](docs/native-floor-slabs.md): straight-edged
+concave boundaries, level-relative elevation, thickness, plan fill/picking,
+split-view 3D extrusion, and one-transaction undo/redo. Holes, slopes, layered
+assemblies, joins, floor property editing, and IFC slab exchange remain future work.
+
+Schema 7 introduced [native aligned dimensions](docs/native-dimensions.md): a
+three-click plan tool, live wall-endpoint measurements, editable offsets and
+visible orphan diagnostics. Schema 11 adds chain and baseline annotations.
+Driving constraints, reference repair and print-faithful annotation remain
+future work.
 
 [History retention](docs/history-retention.md) now has measured synthetic cost,
 entry/estimated-byte limits and atomic over-budget rejection. The estimate is not
-a total application-memory guarantee. [IFC4 wall exchange](docs/ifc-roadmap.md)
+a total application-memory guarantee. [IFC4 exchange](docs/ifc-roadmap.md)
 has independent validation and native desktop controls, with explicit subset/loss
 limits.
 
 D linked floor-plan authoring is in progress, starting with the tested
-[cut/projection and semantic drawing foundation](docs/plan-geometry-foundation.md).
+[cut/projection and semantic drawing foundation](docs/plan-geometry-foundation.md)
+and native [floor/slab sketch workflow](docs/native-floor-slabs.md).
 [Named plan commands and persisted settings](docs/persisted-plan-settings.md)
 now support migration, undo/redo and save/reopen at the model/controller layer.
 [The native plan/split workspace](docs/native-plan-workspace.md) now supports
@@ -141,18 +181,24 @@ replacement. A failed open preserves the current document.
   adds bounded Wasm execution, desktop activation and descriptor forms. Deadlines
   revoke late results; they do not forcibly terminate compiler/file IO work.
   See the B/C audit for runtime, installation and qualification boundaries.
-- Geometry supports rectangular wall prisms. Booleans, sections, openings, joins,
-  curved walls, constraints solving and CAD kernel integration are unimplemented.
+- Geometry supports rectangular wall prisms, segmented hosted doors/windows, and
+  contour-only linked building sections through native walls and floors. General
+  booleans, wall joins, curved walls, constraints solving and CAD kernel
+  integration remain unimplemented. See [native sections](docs/native-sections.md).
 - The viewport uses cached CPU depth-buffered rendering and visible-pixel picking,
   fixing triangle-order artifacts at wall intersections. Resolution is capped at
-  two million pixels; no production GPU renderer, antialiasing, snapping or drawing
-  sheets are implemented. See [viewport verification](docs/viewport-depth-buffer.md).
+  two million pixels; no production GPU renderer or antialiasing is implemented.
+  Plan workflows include native snapping and a basic A3 single-view sheet preview
+  with one-page vector PDF export, not full sheet sets or production printing. See
+  [viewport verification](docs/viewport-depth-buffer.md) and
+  [native sheet preview](docs/native-sheet-preview.md).
 - Site, building, material and view types exist; their general authoring tools,
   reports, analysis services and associative drawings remain future work.
-- IFC exchange supports a restricted rectangular-wall subset, not arbitrary
-  third-party models. Native views/materials/extension data are not preserved;
-  desktop exchange uses explicit loss and replacement confirmations. See
-  [the IFC guide](docs/ifc-roadmap.md).
+- IFC exchange supports straight rectangular walls and bounded rectangular hosted
+  door/window voids with linked IFC fillings and types; fillings have no IFC Body,
+  and custom opening families or arbitrary third-party models remain unsupported.
+  Native views/materials/extension data are not preserved; desktop exchange uses
+  explicit loss and replacement confirmations. See [the IFC guide](docs/ifc-roadmap.md).
 - Licensing and dependency legal review remain pending. Packages cannot be
   published; `LICENSE.pending` makes no open-source license grant.
 

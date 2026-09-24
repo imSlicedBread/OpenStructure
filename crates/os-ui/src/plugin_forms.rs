@@ -40,7 +40,7 @@ impl DesktopApp {
             draft: Some(draft),
             ..Default::default()
         };
-        self.wall_gesture = None;
+        self.cancel_plan_wall();
         Ok(())
     }
     fn plugin_view_context(&self) -> Option<ViewContext> {
@@ -176,9 +176,15 @@ impl DesktopApp {
         if commands.is_empty() {
             return;
         }
+        // Prefer lower-right placement so the floating palette leaves plan actions usable.
+        let content = ctx.content_rect();
+        let default_position = egui::pos2(
+            (content.right() - 350.0).max(content.left()),
+            (content.bottom() - 340.0).max(content.top()),
+        );
         egui::Window::new("Plugin tools")
             .collapsible(!self.plugin_form.from_gesture)
-            .default_pos(egui::pos2(650.0, 260.0))
+            .default_pos(default_position)
             .default_width(330.0)
             .vscroll(true)
             .show(ctx, |ui| {

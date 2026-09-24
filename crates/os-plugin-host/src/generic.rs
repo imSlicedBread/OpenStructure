@@ -319,7 +319,9 @@ impl PluginHost {
             if let Some(entity) = doc.model().extensions.get(key) {
                 snapshot.elements.push(entity_to_wire(entity));
             } else if let Some(wall) = doc.model().walls.get(key) {
-                snapshot.elements.push(crate::native_wall::project(wall)?);
+                snapshot
+                    .elements
+                    .push(crate::native_wall::project_checked(doc.model(), wall)?);
             } else if let Some(level) = doc.model().levels.get(key) {
                 snapshot.levels.push(wire::Level {
                     id: key.to_string(),
@@ -518,6 +520,10 @@ impl PluginHost {
                     (
                         key,
                         if doc.model().walls.contains_key(&key) {
+                            ensure(
+                                !doc.model().wall_type_assignments.contains_key(&key),
+                                "generic API 2 cannot delete typed walls",
+                            )?;
                             Command::RemoveWall(key)
                         } else {
                             Command::RemoveExtension(key)

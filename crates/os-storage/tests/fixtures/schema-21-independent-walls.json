@@ -1,0 +1,42 @@
+{
+  "schema_version": 21,
+  "project": {
+    "header": {"id":"00000000-0000-4000-8000-000000000001","type_id":"core.project","schema_version":21,"properties":{"fixture":"frozen schema 21"},"relationships":{}},
+    "parameters":{"name":"Independent walls with explicit join and opening"}
+  },
+  "sites":{"00000000-0000-4000-8000-000000000002":{
+    "header":{"id":"00000000-0000-4000-8000-000000000002","type_id":"core.site","schema_version":21,"properties":{},"relationships":{}},
+    "parameters":{"name":"Site","project":"00000000-0000-4000-8000-000000000001"}
+  }},
+  "buildings":{"00000000-0000-4000-8000-000000000003":{
+    "header":{"id":"00000000-0000-4000-8000-000000000003","type_id":"core.building","schema_version":21,"properties":{},"relationships":{}},
+    "parameters":{"name":"Building","site":"00000000-0000-4000-8000-000000000002"}
+  }},
+  "levels":{"00000000-0000-4000-8000-000000000004":{
+    "header":{"id":"00000000-0000-4000-8000-000000000004","type_id":"core.level","schema_version":21,"properties":{},"relationships":{}},
+    "parameters":{"name":"Ground","elevation":2.5,"building":"00000000-0000-4000-8000-000000000003"}
+  }},
+  "walls":{
+    "00000000-0000-4000-8000-000000000006":{
+      "header":{"id":"00000000-0000-4000-8000-000000000006","type_id":"org.openstructure.walls.wall","schema_version":21,"properties":{"retained":123},"relationships":{}},
+      "parameters":{"name":"Wall A","start":{"x":0,"y":0},"end":{"x":4,"y":0},"thickness":0.2,"height":3,"level":"00000000-0000-4000-8000-000000000004","material":"00000000-0000-4000-8000-000000000010"}
+    },
+    "00000000-0000-4000-8000-000000000007":{
+      "header":{"id":"00000000-0000-4000-8000-000000000007","type_id":"org.openstructure.walls.wall","schema_version":21,"properties":{},"relationships":{}},
+      "parameters":{"name":"Wall B","start":{"x":4,"y":0},"end":{"x":8,"y":0},"thickness":0.2,"height":3,"level":"00000000-0000-4000-8000-000000000004","material":"00000000-0000-4000-8000-000000000010"}
+    }
+  },
+  "wall_joins":{"00000000-0000-4000-8000-000000000009":{
+    "header":{"id":"00000000-0000-4000-8000-000000000009","type_id":"core.wall_join","schema_version":21,"properties":{"intent":"butt"},"relationships":{}},
+    "parameters":{"kind":"Butt","a":{"wall":"00000000-0000-4000-8000-000000000006","endpoint":"End"},"b":{"wall":"00000000-0000-4000-8000-000000000007","endpoint":"Start"}}
+  }},
+  "openings":{"00000000-0000-4000-8000-000000000008":{
+    "header":{"id":"00000000-0000-4000-8000-000000000008","type_id":"core.opening","schema_version":21,"properties":{},"relationships":{}},
+    "parameters":{"name":"Door","host":"00000000-0000-4000-8000-000000000006","offset":1,"definition":{"Legacy":{"kind":"Door","width":0.9,"height":2.1,"sill":0}},"hinge":"Start","swing":"Left"}
+  }},
+  "materials":{"00000000-0000-4000-8000-000000000010":{
+    "header":{"id":"00000000-0000-4000-8000-000000000010","type_id":"core.material","schema_version":21,"properties":{},"relationships":{}},
+    "parameters":{"name":"Masonry","density_kg_m3":1800}
+  }},
+  "floors":{},"opening_types":{},"rooms":{},"room_tags":{},"room_separation_lines":{},"detail_lines":{},"dimensions":{},"grids":{},"views":{},"sheets":{},"schedules":{},"extensions":{},"plugin_requirements":{}
+}

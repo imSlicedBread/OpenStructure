@@ -116,6 +116,55 @@ impl DesktopApp {
                     .show(ui, |ui| {
                         ui.horizontal_top(|ui| match self.ribbon_tab {
                             RibbonTab::Architecture => {
+                                ribbon_group(ui, "Openings", |ui| self.opening_commands(ui));
+                                ribbon_group(ui, "Spaces", |ui| {
+                                    if command(ui, Icon::Room, "Room", true)
+                                        .on_hover_text(
+                                            "Place a named room inside an enclosed native wall boundary.",
+                                        )
+                                        .clicked()
+                                    {
+                                        self.begin_room_placement();
+                                    }
+                                    if ui.add_enabled(self.plans.active.is_some(),egui::Button::new("Room Tag")).clicked() {
+                                        self.begin_room_tag();
+                                    }
+                                    if ui.add_enabled(self.plans.active.is_some(), egui::Button::new("Room Separator"))
+                                        .on_hover_text("Draw or edit a level-owned room boundary line.")
+                                        .clicked()
+                                    {
+                                        self.begin_room_separation_line();
+                                    }
+                                });
+                                ribbon_group(ui, "Annotate", |ui| {
+                                    if ui.add_enabled(self.plans.active.is_some(), egui::Button::new("Detail Line")).clicked() {
+                                        self.begin_detail_line();
+                                    }
+                                    if ui
+                                        .add_enabled_ui(self.plans.active.is_some(), |ui| {
+                                            command(
+                                                ui,
+                                                Icon::Measure,
+                                                "Aligned dimension",
+                                                true,
+                                            )
+                                        })
+                                        .inner
+                                        .on_hover_text(
+                                            "Dimension between two native wall endpoints in the active floor plan.",
+                                        )
+                                        .clicked()
+                                        && let Some(view) = self.plans.active
+                                    {
+                                        self.begin_aligned_dimension(view);
+                                    }
+                                    for (label, layout) in [("Chain", os_model::DimensionLayout::Chain), ("Baseline", os_model::DimensionLayout::Baseline), ("Angular", os_model::DimensionLayout::Angular)] {
+                                        if ui.add_enabled(self.plans.active.is_some(), egui::Button::new(label)).clicked()
+                                            && let Some(view) = self.plans.active {
+                                            self.begin_dimension(view, layout);
+                                        }
+                                    }
+                                });
                                 ribbon_group(ui, "Build", |ui| {
                                     if command(ui, Icon::Wall, "Wall", true)
                                         .on_hover_text(
@@ -144,9 +193,15 @@ impl DesktopApp {
                                         self.fit_requested = true;
                                     }
                                 });
+                                ribbon_group(ui, "Schedules", |ui| {
+                                    if ui.button("Door/window schedule").clicked() {
+                                        self.opening_schedule.open = true;
+                                    }
+                                });
                             }
                             RibbonTab::Manage => self.manage_commands(ui),
                             RibbonTab::ModifyWalls => {
+                                ribbon_group(ui, "Openings", |ui| self.opening_commands(ui));
                                 ribbon_group(ui, "Edit selection", |ui| {
                                     ui.horizontal(|ui| {
                                         if command(ui, Icon::Apply, "Apply changes", true)

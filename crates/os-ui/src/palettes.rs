@@ -75,6 +75,353 @@ impl DesktopApp {
 
     fn properties_contents(&mut self, ui: &mut egui::Ui) {
         ui.heading("Properties");
+        if self.column_properties(ui) {
+            return;
+        }
+        if let Some(ty) = self
+            .selected
+            .and_then(|id| self.editor.document.model().opening_types.get(&id).cloned())
+        {
+            let id = ty.id();
+            let p = &ty.parameters;
+            let instances = self
+                .editor
+                .document
+                .model()
+                .openings
+                .values()
+                .filter(|opening| opening.parameters.type_id() == Some(id))
+                .count();
+            ui.label(format!("{:?} type: {}", p.kind, p.name));
+            ui.label(format!(
+                "Width: {:.3} m · Height: {:.3} m · Sill: {:.3} m",
+                p.width, p.height, p.sill
+            ));
+            ui.label(format!("Placed instances: {instances}"));
+            if ui.button("Manage opening type…").clicked() {
+                self.begin_edit_opening_type(id);
+            }
+            return;
+        }
+        if let Some(floor) = self
+            .selected
+            .and_then(|id| self.editor.document.model().floors.get(&id).cloned())
+        {
+            let id = floor.id();
+            let model = self.editor.document.model();
+            let level_name = model
+                .levels
+                .get(&floor.parameters.level)
+                .map_or("Missing level", |level| level.parameters.name.as_str());
+            ui.label("Native floor / slab");
+            ui.label(&floor.parameters.name);
+            ui.label(format!("Level: {level_name}"));
+            ui.label(format!("Area: {:.2} m²", floor.parameters.area()));
+            ui.label(format!(
+                "Thickness: {:.3} m · top offset: {:+.3} m",
+                floor.parameters.thickness, floor.parameters.top_offset
+            ));
+            if ui.button("Delete floor").clicked() {
+                let result = self
+                    .editor
+                    .command("Delete floor", Command::RemoveFloor(id));
+                if result.is_ok() {
+                    self.select(None);
+                }
+                self.report(result, "Floor deleted.");
+            }
+            ui.label(format!("Stable ID: {id}"));
+            return;
+        }
+        if let Some(opening) = self
+            .selected
+            .and_then(|id| self.editor.document.model().openings.get(&id).cloned())
+        {
+            let p = &opening.parameters;
+            let resolved = match self.editor.document.model().resolve_opening(p) {
+                Ok(resolved) => resolved,
+                Err(error) => {
+                    ui.colored_label(theme::ERROR, error.to_string());
+                    return;
+                }
+            };
+            ui.label(format!("{:?}: {}", resolved.kind, p.name));
+            ui.label(format!(
+                "Host: {}",
+                self.editor.document.model().walls[&p.host].parameters.name
+            ));
+            ui.label(format!("Offset: {} m", p.offset));
+            if resolved.kind == os_model::OpeningKind::Door {
+                ui.label(format!(
+                    "Hinge: wall {:?} · Swing: {:?} of wall",
+                    p.hinge, p.swing
+                ));
+            }
+            ui.label(format!(
+                "{} · {:.3} × {:.3} m · sill {:.3} m",
+                resolved.type_name.as_deref().unwrap_or("Legacy dimensions"),
+                resolved.width,
+                resolved.height,
+                resolved.sill
+            ));
+            if ui.button("Edit opening properties").clicked() {
+                self.begin_opening(None);
+            }
+            if let Some(type_id) = resolved.type_id {
+                if ui.button("Edit assigned type").clicked() {
+                    self.begin_edit_opening_type(type_id);
+                }
+            } else if ui.button("Create reusable type from opening").clicked() {
+                self.begin_type_from_opening(opening.id());
+            }
+            return;
+        }
+        if let Some(dimension) = self
+            .selected
+            .and_then(|id| self.editor.document.model().dimensions.get(&id).cloned())
+        {
+            let id = dimension.id();
+            let parameters = &dimension.parameters;
+            ui.add(
+                egui::Label::new(format!(
+                    "{:?} dimension · live wall references",
+                    parameters.layout
+                ))
+                .wrap(),
+            );
+            for (index, reference) in parameters.references().enumerate() {
+                ui.add(
+                    egui::Label::new(format!(
+                        "{}: {} {:?}",
+                        index + 1,
+                        reference.wall,
+                        reference.endpoint
+                    ))
+                    .wrap(),
+                );
+            }
+            if parameters.layout == os_model::DimensionLayout::Angular {
+                match parameters.resolve_angular(self.editor.document.model()) {
+                    Ok(angle) => {
+                        ui.label(format!("{:.2}°", angle.degrees()));
+                    }
+                    Err(reason) => {
+                        ui.colored_label(theme::ERROR, format!("Broken reference: {reason:?}"));
+                    }
+                }
+            } else {
+                match parameters.resolve_points(self.editor.document.model()) {
+                    Ok(points) => {
+                        for i in 1..points.len() {
+                            let from = if parameters.layout == os_model::DimensionLayout::Chain {
+                                i - 1
+                            } else {
+                                0
+                            };
+                            ui.label(format!(
+                                "{}–{}: {:.3} m",
+                                from + 1,
+                                i + 1,
+                                points[from].distance(points[i])
+                            ));
+                        }
+                    }
+                    Err(reason) => {
+                        ui.colored_label(theme::ERROR, format!("Broken reference: {reason:?}"));
+                    }
+                }
+            }
+            if let Some(view) = self.editor.document.model().views.get(&parameters.view) {
+                ui.label(format!("Plan: {}", view.parameters.name));
+                if self.plans.active != Some(parameters.view)
+                    && ui.button("Open owning plan").clicked()
+                {
+                    self.focus_plan(Some(parameters.view));
+                }
+            }
+            ui.horizontal(|ui| {
+                ui.label(if parameters.layout == os_model::DimensionLayout::Angular {
+                    "Arc radius (m)"
+                } else {
+                    "Offset (m)"
+                });
+                ui.add(
+                    egui::DragValue::new(&mut self.dimension_offset_draft)
+                        .speed(0.01)
+                        .range(-1_000_000.0..=1_000_000.0),
+                );
+            });
+            if parameters.layout == os_model::DimensionLayout::Baseline {
+                ui.horizontal(|ui| {
+                    ui.label("Baseline spacing (model m)");
+                    ui.add(
+                        egui::DragValue::new(&mut self.dimension_spacing_draft)
+                            .speed(0.01)
+                            .range(0.000001..=1_000_000.0),
+                    );
+                });
+            }
+            ui.small(
+                "Values follow current endpoints; spacing is in model metres, not paper scale.",
+            );
+            if ui.button("Apply dimension offset").clicked() {
+                self.apply_dimension_properties();
+            }
+            if ui.button("Delete dimension").clicked() {
+                self.delete_selected_dimension();
+            }
+            ui.label(format!("Stable ID: {id}"));
+            return;
+        }
+        if let Some(line) = self
+            .selected
+            .and_then(|id| self.editor.document.model().room_separation_lines.get(&id))
+            .cloned()
+        {
+            ui.label("Room separator · level-owned room boundary");
+            ui.label(format!(
+                "Length: {:.3} m",
+                line.parameters.start.distance(line.parameters.end)
+            ));
+            ui.label("Same-level plans · no thickness or 3D geometry");
+            ui.small("Drag the selected line to move; drag an endpoint to resize.");
+            if ui.button("Delete room separator").clicked() {
+                let result = self.editor.command(
+                    "Delete room separator",
+                    Command::RemoveRoomSeparationLine(line.id()),
+                );
+                if result.is_ok() {
+                    self.select(None);
+                }
+                self.report(result, "Room separator deleted.");
+            }
+            ui.label(format!("ID: {}", line.id()));
+            return;
+        }
+        if let Some(line) = self
+            .selected
+            .and_then(|id| self.editor.document.model().detail_lines.get(&id))
+            .cloned()
+        {
+            ui.label("Detail line · independent plan drafting");
+            ui.label(format!(
+                "Length: {:.3} m",
+                line.parameters.start.distance(line.parameters.end)
+            ));
+            ui.label("Solid black · 0.25 mm on paper");
+            ui.small("Drag the selected line to move; drag an endpoint to resize.");
+            if ui.button("Delete detail line").clicked() {
+                let result = self
+                    .editor
+                    .command("Delete detail line", Command::RemoveDetailLine(line.id()));
+                if result.is_ok() {
+                    self.select(None);
+                }
+                self.report(result, "Detail line deleted.");
+            }
+            ui.label(format!("ID: {}", line.id()));
+            return;
+        }
+        if let Some(tag) = self
+            .selected
+            .and_then(|id| self.editor.document.model().room_tags.get(&id))
+            .cloned()
+        {
+            ui.label("Room tag · live room number and name");
+            ui.label(format!("Room: {}", tag.parameters.room));
+            match tag.parameters.resolve(self.editor.document.model()) {
+                Ok(room) => {
+                    ui.label(format!(
+                        "{} · {}",
+                        room.parameters.number, room.parameters.name
+                    ));
+                }
+                Err(reason) => {
+                    ui.colored_label(theme::ERROR, reason);
+                }
+            }
+            ui.horizontal(|ui| {
+                ui.label("X (m)");
+                ui.add(egui::DragValue::new(&mut self.room_tag_position.x).speed(0.05));
+                ui.label("Y (m)");
+                ui.add(egui::DragValue::new(&mut self.room_tag_position.y).speed(0.05));
+            });
+            if ui.button("Apply tag position").clicked() {
+                self.apply_room_tag_properties();
+            }
+            if ui.button("Delete room tag").clicked() {
+                let result = self
+                    .editor
+                    .command("Delete room tag", Command::RemoveRoomTag(tag.id()));
+                if result.is_ok() {
+                    self.select(None);
+                }
+                self.report(result, "Room tag deleted.");
+            }
+            ui.label(format!("ID: {}", tag.id()));
+            return;
+        }
+        if let Some(room) = self
+            .selected
+            .and_then(|id| self.editor.document.model().rooms.get(&id))
+        {
+            let room_id = room.id();
+            let level = room.parameters.level;
+            ui.label("Native room · area derived from wall boundaries");
+            if let Some(view) = self.plans.active.filter(|view| {
+                self.editor
+                    .document
+                    .model()
+                    .views
+                    .get(view)
+                    .is_some_and(|view| view.parameters.level == Some(level))
+            }) {
+                let derived = self
+                    .editor
+                    .native_plan_context(view)
+                    .ok()
+                    .and_then(|context| {
+                        self.plans
+                            .drawing
+                            .as_ref()?
+                            .rooms(context)
+                            .ok()?
+                            .iter()
+                            .find(|item| item.entity == room_id)
+                            .cloned()
+                    });
+                match derived {
+                    Some(item) if item.diagnostic.is_none() => {
+                        ui.label(format!("Area: {:.2} m²", item.area_m2));
+                    }
+                    Some(item) => {
+                        ui.colored_label(
+                            theme::ERROR,
+                            item.diagnostic
+                                .as_deref()
+                                .unwrap_or("Room boundary unavailable"),
+                        );
+                    }
+                    None => {
+                        ui.label("Room area is updating in the floor plan…");
+                    }
+                }
+            } else {
+                ui.label("Open a floor plan on this room’s level to inspect its area.");
+            }
+            ui.separator();
+            ui.label("Number");
+            ui.text_edit_singleline(&mut self.room_number_draft);
+            ui.label("Name");
+            ui.text_edit_singleline(&mut self.room_name_draft);
+            if ui.button("Apply room properties").clicked() {
+                self.apply_room_properties();
+            }
+            if ui.button("Delete room").clicked() {
+                self.delete_selected_room();
+            }
+            return;
+        }
         if let Some(grid) = self
             .selected
             .and_then(|id| self.editor.document.model().grids.get(&id))
@@ -111,6 +458,7 @@ impl DesktopApp {
                 .is_none_or(|id| self.editor.document.model().walls.contains_key(&id))
         {
             ui.label("External Wall provider");
+            self.wall_join_controls(ui);
             ui.label("Wall parameters come from the registered Plugin tools form.");
             if ui.button("Review Wall parameters").clicked() {
                 self.apply_wall();
@@ -186,14 +534,24 @@ impl DesktopApp {
         );
         actions.set_clip_rect(footer);
         actions.separator();
-        actions.label(
-            egui::RichText::new(format!(
-                "Volume: {:.3} m³",
+        let volume = match self
+            .selected
+            .filter(|id| self.editor.document.model().walls.contains_key(id))
+        {
+            Some(id) => {
+                match os_geometry::walls::NativeWall::from_model(self.editor.document.model(), id)
+                    .and_then(|w| w.net_volume())
+                {
+                    Ok(volume) => format!("Model net volume: {volume:.3} m³"),
+                    Err(_) => "Model net volume unavailable".into(),
+                }
+            }
+            None => format!(
+                "Draft gross volume: {:.3} m³",
                 self.draft.length() * self.draft.height * self.draft.thickness
-            ))
-            .size(12.0)
-            .color(theme::MUTED),
-        );
+            ),
+        };
+        actions.label(egui::RichText::new(volume).size(12.0).color(theme::MUTED));
         if actions
             .add_sized(
                 [actions.available_width(), 24.0],
@@ -217,6 +575,8 @@ impl DesktopApp {
     }
 
     fn wall_fields(&mut self, ui: &mut egui::Ui) {
+        self.wall_join_controls(ui);
+        self.wall_type_controls(ui);
         theme::section(ui, "Identity");
         ui.horizontal(|ui| {
             ui.add_sized([78.0, 24.0], egui::Label::new("Name"));
@@ -281,7 +641,15 @@ impl DesktopApp {
                 }
                 ui.end_row();
                 ui.label("Thickness");
-                ui.add(
+                ui.add_enabled(
+                    self.selected.is_none_or(|id| {
+                        !self
+                            .editor
+                            .document
+                            .model()
+                            .wall_type_assignments
+                            .contains_key(&id)
+                    }),
                     egui::DragValue::new(&mut self.draft.thickness)
                         .speed(0.01)
                         .range(0.001..=1000.0)
@@ -354,6 +722,128 @@ impl DesktopApp {
                         });
                     }
                 });
+                if !model.columns.is_empty() {
+                    egui::CollapsingHeader::new(format!("Columns ({})", model.columns.len())).id_salt("native_columns").default_open(true).show(ui, |ui| {
+                        for (id, column) in &model.columns {
+                            if ui.selectable_label(self.selected == Some(*id), &column.parameters.name).clicked() { self.select(Some(*id)); }
+                        }
+                    });
+                }
+                if !model.floors.is_empty() {
+                    egui::CollapsingHeader::new(format!("Floors / Slabs ({})", model.floors.len()))
+                        .id_salt("floors")
+                        .default_open(true)
+                        .show(ui, |ui| {
+                            for (id, floor) in &model.floors {
+                                ui.push_id(id, |ui| {
+                                    if ui
+                                        .selectable_label(self.selected == Some(*id), &floor.parameters.name)
+                                        .clicked()
+                                    {
+                                        self.select(Some(*id));
+                                    }
+                                });
+                            }
+                        });
+                }
+                if !model.openings.is_empty() {
+                    egui::CollapsingHeader::new(format!("Doors / Windows ({})", model.openings.len())).id_salt("openings").default_open(true).show(ui, |ui| {
+                        for (id, opening) in &model.openings {
+                            ui.push_id(id, |ui| {
+                                let label = model.resolve_opening(&opening.parameters).map_or_else(
+                                    |_| format!("Opening: {} (invalid type)", opening.parameters.name),
+                                    |resolved| format!("{:?}: {}", resolved.kind, opening.parameters.name),
+                                );
+                                if ui.selectable_label(self.selected == Some(*id), label).clicked() { self.select(Some(*id)); }
+                            });
+                        }
+                    });
+                }
+                if !model.opening_types.is_empty() {
+                    egui::CollapsingHeader::new(format!("Door / Window Types ({})", model.opening_types.len()))
+                        .id_salt("opening_types").default_open(true).show(ui, |ui| {
+                            for (id, ty) in &model.opening_types {
+                                ui.push_id(id, |ui| {
+                                    if ui.selectable_label(self.selected == Some(*id),
+                                        format!("{:?}: {} · {:.2} × {:.2} m", ty.parameters.kind,
+                                            ty.parameters.name, ty.parameters.width, ty.parameters.height))
+                                        .clicked() { self.select(Some(*id)); }
+                                });
+                            }
+                        });
+                }
+                if !model.rooms.is_empty() {
+                    egui::CollapsingHeader::new(format!("Rooms ({})", model.rooms.len()))
+                        .id_salt("rooms")
+                        .default_open(true)
+                        .show(ui, |ui| {
+                            for (id, room) in &model.rooms {
+                                ui.push_id(id, |ui| {
+                                    let label = format!(
+                                        "{} · {}",
+                                        room.parameters.number, room.parameters.name
+                                    );
+                                    if ui
+                                        .selectable_label(self.selected == Some(*id), label)
+                                        .clicked()
+                                    {
+                                        self.select(Some(*id));
+                                    }
+                                });
+                            }
+                        });
+                }
+                if !model.room_tags.is_empty() {
+                    egui::CollapsingHeader::new("Room Tags").id_salt("room_tags").default_open(true).show(ui,|ui| {
+                        for view in model.views.values().filter(|view|model.room_tags.values().any(|tag|tag.parameters.view == view.id())) {
+                            egui::CollapsingHeader::new(&view.parameters.name).id_salt(("tag_view",view.id())).default_open(true).show(ui,|ui| {
+                                for tag in model.room_tags.values().filter(|tag|tag.parameters.view == view.id()) {
+                                    let label = tag.parameters.resolve(&model).map_or_else(|reason| format!("Room tag · {reason}"), |room| format!("Tag: {} · {}",room.parameters.number,room.parameters.name));
+                                    ui.push_id(tag.id(),|ui| {
+                                        if ui.selectable_label(self.selected == Some(tag.id()),label).clicked() { self.select(Some(tag.id())); }
+                                    });
+                                }
+                            });
+                        }
+                    });
+                }
+                if !model.dimensions.is_empty() {
+                    egui::CollapsingHeader::new(format!(
+                        "Dimensions ({})",
+                        model.dimensions.len()
+                    ))
+                    .id_salt("aligned_dimensions")
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        for (id, dimension) in &model.dimensions {
+                            let anchor_label = |reference: os_model::DimensionReference| {
+                                model.walls.get(&reference.wall).map_or_else(
+                                    || "Missing wall".to_owned(),
+                                    |wall| {
+                                        format!(
+                                            "{} {:?}",
+                                            wall.parameters.name, reference.endpoint
+                                        )
+                                    },
+                                )
+                            };
+                            let label = format!(
+                                "{:?}: {}",
+                                dimension.parameters.layout,
+                                dimension.parameters.references().map(anchor_label).collect::<Vec<_>>().join(" → ")
+                            );
+                            ui.push_id(id, |ui| {
+                                if ui
+                                    .selectable_label(self.selected == Some(*id), label)
+                                    .clicked()
+                                {
+                                    self.focus_plan(Some(dimension.parameters.view));
+                                    self.select(Some(*id));
+                                }
+                            });
+                        }
+                    });
+                }
                 if !model.grids.is_empty() {
                     egui::CollapsingHeader::new(format!("Grids ({})", model.grids.len())).id_salt("architectural_grids").default_open(true).show(ui, |ui| {
                         for (id, grid) in &model.grids {

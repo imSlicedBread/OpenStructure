@@ -294,13 +294,7 @@ impl Editor {
                 self.plugin_jobs.managed.insert(*id, e.owner.clone());
             }
         }
-        if self.host.catalog(os_plugin_api::wall::OWNER).is_some() {
-            for id in self.document.model().walls.keys() {
-                self.plugin_jobs
-                    .managed
-                    .insert(*id, os_plugin_api::wall::OWNER.into());
-            }
-        }
+        // Native walls, including worker-created walls, always use host geometry.
         self.pending_geometry
             .extend(self.plugin_jobs.managed.keys().copied());
         self.plugin_jobs.stamp = Some(stamp);

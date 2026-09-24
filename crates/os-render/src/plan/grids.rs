@@ -19,6 +19,8 @@ impl PlanDrawing {
         ensure(self.snaps.is_none(), "attach grids before snap features")?;
         ensure(
             self.provider_segment_count
+                .saturating_add(self.detail_segment_count)
+                .saturating_add(self.separator_segment_count)
                 .saturating_add(self.grid_segment_count)
                 .saturating_add(grids.len())
                 <= MAX_PLAN_ELEMENTS,
@@ -81,12 +83,30 @@ impl PlanDrawing {
                 && radius_pixels <= 64.0,
             "invalid plan pick query",
         )?;
+        if let Some(id) = self.pick_room_tag_screen(current, camera, viewport, pointer)? {
+            return Ok(Some(id));
+        }
+        if let Some(id) =
+            self.pick_dimension_screen(current, camera, viewport, pointer, radius_pixels)?
+        {
+            return Ok(Some(id));
+        }
         let point = camera.unproject(pointer, viewport)?;
+        if let Some(id) =
+            self.pick_detail_line_screen(current, camera, viewport, pointer, radius_pixels)?
+        {
+            return Ok(Some(id));
+        }
+        if let Some(id) =
+            self.pick_provider_line(current, camera, viewport, pointer, radius_pixels, true)?
+        {
+            return Ok(Some(id));
+        }
         if let Some(id) = self.pick(current, point)? {
             return Ok(Some(id));
         }
         if let Some(id) =
-            self.pick_provider_line(current, camera, viewport, pointer, radius_pixels)?
+            self.pick_provider_line(current, camera, viewport, pointer, radius_pixels, false)?
         {
             return Ok(Some(id));
         }

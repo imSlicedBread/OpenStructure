@@ -1,6 +1,9 @@
-# Plugin protocols: legacy v1 and generic v2
+# Plugin protocols: native Model API 9 and generic API 2
 
-Current status: the [B/C baseline audit](bc-baseline-audit.md) verifies independently
+Current compatibility boundary: native Wall guests that receive the full model
+must use API 9 with model schema 28. API-8 and older native guests are rejected and must be
+rebuilt/reinstalled; API 2 remains the independent generic DTO protocol. The
+[B/C baseline audit](bc-baseline-audit.md) verifies independently
 installed Wall/column commands, descriptor forms, checked geometry, workers,
 durability and migrations. The original v1/spike descriptions below are historical
 where they say desktop/generic integration is still pending. For current API-2
@@ -12,8 +15,8 @@ synchronous/worker host call with bounded line output. Native integration and
 independent plan services acceptance remain required implementation work in D.
 
 Contract metadata can now be consumed with `default-features = false`, without
-host/model/document/kernel dependencies. Wall-specific messages and the built-in
-Rust trait require the default `legacy-v1` feature. See the separately resolved
+host/model/document/kernel dependencies. The Cargo feature named `legacy-v1` is
+historical: it enables the native message structs now transported as API 9. See the separately resolved
 [contract consumer and compatibility notes](independent-contract.md).
 The independent [API-2 command service](generic-plugin-commands.md) now supports
 registered extension create/edit/delete with descriptors and scoped transactions.
@@ -29,7 +32,8 @@ private model pointers, document mutation handles or database connections cross
 the boundary. `plugins/walls` is the working reference plugin.
 
 A manifest declares its ID, display name, numeric major.minor.patch version,
-numeric `api_version = 1`, dependencies with exact versions, entrypoint,
+numeric `api_version = 9` for native Model guests or `api_version = 2` for
+generic DTO guests, dependencies with exact versions, entrypoint,
 capabilities, requested permissions and registrations. The prototype master
 prompt used a string API version; the implemented TOML protocol uses an integer
 consistently in manifests and messages. `builtin:os-walls` is the current
@@ -91,9 +95,42 @@ Model schema 2 now accepts bounded inert [extension envelopes](semantic-extensio
 with generic callable commands and payload validators on API 2. V1
 replies cannot add/replace/remove these envelopes or change plugin requirements,
 even for a registered owner. Those commands are core transaction APIs, not a v1
-SDK expansion. Native headers in current v1 wall replies must use model schema 4;
-old guests that construct schema-1 or schema-2 headers fail validation without mutation and
-must be rebuilt for this development model. There is no stable independent model
+SDK expansion. Native headers in the retired API-1 wall replies used model schema 8;
+old guests that construct schema-1 or schema-2 headers failed validation without mutation and
+had to be rebuilt for the then-current development model. The API-1 full-model
+wire is now retired; API 9 formerly required schema 27 and currently requires
+schema 28. There is no stable independent model
 DTO compatibility promise in this wall-specific v1 protocol. The Wasm buffer ABI
 and geometry-only probe remain unchanged. Do not advertise arbitrary third-party
 element authoring yet; the generic negotiated SDK must resolve model DTO independence.
+
+Native opening type consumers use the schema-8 host model API:
+
+```rust,ignore
+// Persisted instance intent; all fields are public.
+OpeningParams { name: String, host: Id, offset: f64, definition: OpeningDefinition }
+OpeningDefinition::Legacy { kind: OpeningKind, width: f64, height: f64, sill: f64 }
+OpeningDefinition::Typed { type_id: Id }
+// Project-owned Entity<OpeningTypeParams>, with header type core.opening_type.
+OpeningTypeParams { name: String, kind: OpeningKind, width: f64, height: f64, sill: f64 }
+
+Model::resolve_opening(&self, opening: &OpeningParams) -> Result<ResolvedOpening>
+ResolvedOpening {
+    name: String, host: Id, offset: f64,
+    kind: OpeningKind, width: f64, height: f64, sill: f64,
+    type_id: Option<Id>, type_name: Option<String>,
+}
+```
+
+`ResolvedOpening` is an owned transient value without serialization traits.
+`name` is the instance name; `type_name` is the current type name, present only
+for typed instances. Resolution validates dimensions and type existence but
+does not require a placed host. `ResolvedOpening::validate_host(&WallParams)`
+checks its offset and effective dimensions against a wall;
+`OpeningParams::validate(&Model)` also checks the instance name and host reference.
+Whole-model validation additionally checks separation between neighboring
+openings. `OpeningParams::type_id()` returns the optional type reference.
+Geometry consumers must resolve from the current model before generating host
+apertures or opening symbols; they must not cache dimensions on a typed instance.
+The new core commands do not add a plugin wire operation or change extension
+payload schemas. Native migration preserves all plugin payloads verbatim.

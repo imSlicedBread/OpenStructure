@@ -46,15 +46,7 @@ impl Editor {
         let document = Document::from_model(report.value)?;
         let mut scene = Scene::new();
         for id in document.model().walls.keys() {
-            let Response::Solid(solid) = self.host.request(
-                os_walls::PLUGIN_ID,
-                document.model(),
-                Request::GenerateWall { id: *id },
-            )?
-            else {
-                return Err(Error::Invalid("expected wall solid".into()));
-            };
-            scene.insert(*id, PrismKernel.tessellate(&solid)?);
+            scene.insert(*id, opening_tools::host_mesh(document.model(), *id)?);
         }
         Ok(PreparedImport {
             document,

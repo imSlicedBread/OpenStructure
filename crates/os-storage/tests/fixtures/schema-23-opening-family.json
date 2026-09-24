@@ -1,0 +1,180 @@
+{
+  "schema_version": 23,
+  "project": {
+    "header": {
+      "id": "00000000-0000-4000-8000-000000000001",
+      "type_id": "core.project",
+      "schema_version": 23,
+      "properties": {
+        "fixture": "frozen schema 22"
+      },
+      "relationships": {}
+    },
+    "parameters": {
+      "name": "Window pane position migration"
+    }
+  },
+  "sites": {
+    "00000000-0000-4000-8000-000000000002": {
+      "header": {
+        "id": "00000000-0000-4000-8000-000000000002",
+        "type_id": "core.site",
+        "schema_version": 23,
+        "properties": {},
+        "relationships": {}
+      },
+      "parameters": {
+        "name": "Site",
+        "project": "00000000-0000-4000-8000-000000000001"
+      }
+    }
+  },
+  "buildings": {
+    "00000000-0000-4000-8000-000000000003": {
+      "header": {
+        "id": "00000000-0000-4000-8000-000000000003",
+        "type_id": "core.building",
+        "schema_version": 23,
+        "properties": {},
+        "relationships": {}
+      },
+      "parameters": {
+        "name": "Building",
+        "site": "00000000-0000-4000-8000-000000000002"
+      }
+    }
+  },
+  "levels": {
+    "00000000-0000-4000-8000-000000000004": {
+      "header": {
+        "id": "00000000-0000-4000-8000-000000000004",
+        "type_id": "core.level",
+        "schema_version": 23,
+        "properties": {},
+        "relationships": {}
+      },
+      "parameters": {
+        "name": "Ground",
+        "elevation": 2.5,
+        "building": "00000000-0000-4000-8000-000000000003"
+      }
+    }
+  },
+  "walls": {
+    "00000000-0000-4000-8000-000000000006": {
+      "header": {
+        "id": "00000000-0000-4000-8000-000000000006",
+        "type_id": "org.openstructure.walls.wall",
+        "schema_version": 23,
+        "properties": {
+          "retained": 123
+        },
+        "relationships": {}
+      },
+      "parameters": {
+        "name": "Wall",
+        "start": {
+          "x": 0,
+          "y": 0
+        },
+        "end": {
+          "x": 4,
+          "y": 0
+        },
+        "thickness": 0.2,
+        "height": 3,
+        "level": "00000000-0000-4000-8000-000000000004",
+        "material": null
+      }
+    }
+  },
+  "wall_types": {},
+  "wall_type_assignments": {},
+  "wall_joins": {},
+  "openings": {
+    "00000000-0000-4000-8000-000000000008": {
+      "header": {
+        "id": "00000000-0000-4000-8000-000000000008",
+        "type_id": "core.opening",
+        "schema_version": 23,
+        "properties": {},
+        "relationships": {}
+      },
+      "parameters": {
+        "name": "Legacy window",
+        "host": "00000000-0000-4000-8000-000000000006",
+        "offset": 1,
+        "definition": {
+          "Typed": {
+            "type_id": "00000000-0000-4000-8000-000000000011"
+          }
+        },
+        "hinge": "Start",
+        "swing": "Left"
+      }
+    }
+  },
+  "opening_types": {
+    "00000000-0000-4000-8000-000000000011": {
+      "header": {
+        "id": "00000000-0000-4000-8000-000000000011",
+        "type_id": "core.opening_type",
+        "schema_version": 23,
+        "properties": {
+          "retained": "opening type metadata"
+        },
+        "relationships": {}
+      },
+      "parameters": {
+        "name": "Shared window",
+        "kind": "Window",
+        "width": 1,
+        "height": 1.2,
+        "sill": 0.8,
+        "pane_position": "RightFace"
+      }
+    }
+  },
+  "materials": {},
+  "floors": {},
+  "rooms": {},
+  "room_tags": {},
+  "room_separation_lines": {},
+  "detail_lines": {},
+  "dimensions": {},
+  "grids": {},
+  "views": {},
+  "sheets": {},
+  "schedules": {},
+  "extensions": {
+    "10000000-0000-0000-0000-000000000003": {
+      "envelope_version": 1,
+      "id": "10000000-0000-0000-0000-000000000003",
+      "owner": "org.example.fixture",
+      "type_id": "org.example.fixture.item",
+      "name": "Opaque",
+      "payload_schema_version": 42,
+      "relationships": {
+        "wall": [
+          "00000000-0000-4000-8000-000000000006"
+        ]
+      },
+      "depends_on": [
+        "00000000-0000-4000-8000-000000000006"
+      ],
+      "payload": {
+        "schema_version": 23,
+        "custom": [
+          1,
+          "preserve",
+          true
+        ]
+      }
+    }
+  },
+  "plugin_requirements": {
+    "org.example.fixture": {
+      "version": "1.0.0"
+    }
+  }
+}

@@ -219,14 +219,16 @@ impl WallGesture {
         mode: WallEdit,
         installed: bool,
     ) -> Result<Self> {
-        let original = editor
-            .document
-            .model()
-            .walls
-            .get(&id)
-            .ok_or_else(|| os_core::Error::Invalid("Select a native wall".into()))?
-            .parameters
-            .clone();
+        let original = editor.document.model().resolve_wall(id)?.parameters;
+        ensure(
+            !installed
+                || !editor
+                    .document
+                    .model()
+                    .wall_type_assignments
+                    .contains_key(&id),
+            "Generic API 2 cannot edit or copy typed walls; use native wall tools",
+        )?;
         let mut gesture = Self::begin_with_provider(editor, view, original.clone(), installed)?;
         if installed {
             ensure(
@@ -447,7 +449,40 @@ impl WallGesture {
             self.current(editor, active),
             "Wall gesture is stale; start again",
         )?;
-        let parameters = self.parameters(point)?;
+        let mut parameters = self.parameters(point)?;
+        if let Some((source, _)) = self.edit
+            && editor
+                .document
+                .model()
+                .wall_type_assignments
+                .contains_key(&source)
+        {
+            let independent = &editor.document.model().walls[&source].parameters;
+            parameters.thickness = independent.thickness;
+            parameters.material = independent.material;
+        }
+        if let Some((source, WallEdit::OffsetCopy)) = self.edit
+            && let Some(assignment) = editor
+                .document
+                .model()
+                .wall_type_assignments
+                .get(&source)
+                .copied()
+        {
+            let wall = os_model::Wall::new(os_walls::WALL_TYPE, parameters);
+            let id = wall.id();
+            editor.document.execute(
+                "Offset typed wall in plan",
+                vec![
+                    os_document::Command::AddWall(wall),
+                    os_document::Command::AssignWallType {
+                        wall: id,
+                        assignment: Some(assignment),
+                    },
+                ],
+            )?;
+            return editor.regenerate();
+        }
         let elevation = editor.document.model().levels[&parameters.level]
             .parameters
             .elevation;

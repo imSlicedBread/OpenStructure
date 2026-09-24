@@ -20,6 +20,22 @@ fn frozen_three_migration_and_grid_save_reopen_preserve_original() {
     let mut expected = original.clone();
     expected["schema_version"] = json!(SCHEMA_VERSION);
     expected["grids"] = json!({});
+    expected["openings"] = json!({});
+    expected["opening_types"] = json!({});
+    expected["room_tags"] = json!({});
+    expected["sheets"] = json!({});
+    expected["schedules"] = json!({});
+    expected["rooms"] = json!({});
+    expected["dimensions"] = json!({});
+    expected["floors"] = json!({});
+    expected["detail_lines"] = json!({});
+    expected["room_separation_lines"] = json!({});
+    expected["wall_joins"] = json!({});
+    expected["wall_types"] = json!({});
+    expected["wall_type_assignments"] = json!({});
+    expected["columns"] = json!({});
+    expected["plan_graphics_templates"] = json!({});
+    expected["plan_graphics"] = json!({});
     expected["project"]["header"]["schema_version"] = json!(SCHEMA_VERSION);
     for collection in [
         "sites",

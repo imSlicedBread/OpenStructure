@@ -12,6 +12,16 @@ pub struct PlanLine {
 }
 
 impl PlanDrawing {
+    /// Host symbols use the same checked clipping and line geometry as providers,
+    /// but draw/pick above projected host sills.
+    pub fn with_native_lines(mut self, lines: BTreeMap<Id, Vec<PlanLine>>) -> Result<Self> {
+        self.native_line_ids.extend(lines.keys().copied());
+        self.with_provider_lines(lines)
+    }
+
+    pub fn is_native_line(&self, entity: Id) -> bool {
+        self.native_line_ids.contains(&entity)
+    }
     /// Resolve unavailable entities only after provider results have passed the
     /// host's document/view/activation checks. Empty output is a valid invisible
     /// representation. Native polygon/grid identities cannot be overwritten.
@@ -29,6 +39,8 @@ impl PlanDrawing {
             count
                 .saturating_add(self.provider_segment_count)
                 .saturating_add(self.grid_segment_count)
+                .saturating_add(self.detail_segment_count)
+                .saturating_add(self.separator_segment_count)
                 <= MAX_PLAN_ELEMENTS,
             "plan provider lines exceed 10000 segments",
         )?;
@@ -89,8 +101,12 @@ impl PlanDrawing {
         viewport: [f64; 2],
         pointer: Point2,
         radius: f64,
+        native_only: bool,
     ) -> Result<Option<Id>> {
         for line in self.provider_lines(current)?.iter().rev() {
+            if native_only && !self.native_line_ids.contains(&line.entity) {
+                continue;
+            }
             let a = camera.project(line.start, viewport)?;
             let b = camera.project(line.end, viewport)?;
             let length = a.distance(b);

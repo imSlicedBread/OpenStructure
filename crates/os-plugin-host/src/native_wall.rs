@@ -4,6 +4,14 @@ use os_document::{Command, Document};
 use os_model::{ExtensionEntity, Wall, WallParams};
 use os_plugin_api::{generic as wire, wall};
 
+pub(super) fn project_checked(model: &os_model::Model, w: &Wall) -> Result<wire::Element> {
+    ensure(
+        !model.wall_type_assignments.contains_key(&w.id()),
+        "generic API 2 wall projection cannot represent compound wall types/layers",
+    )?;
+    project(w)
+}
+
 pub(super) fn project(w: &Wall) -> Result<wire::Element> {
     ensure(
         w.header.type_id == wall::TYPE,
@@ -32,6 +40,10 @@ pub(super) fn project(w: &Wall) -> Result<wire::Element> {
 }
 
 pub(super) fn command(doc: &Document, entity: ExtensionEntity, replace: bool) -> Result<Command> {
+    ensure(
+        !doc.model().wall_type_assignments.contains_key(&entity.id),
+        "generic API 2 cannot edit typed walls; use native wall type commands",
+    )?;
     ensure(
         entity.owner == wall::OWNER
             && entity.type_id == wall::TYPE

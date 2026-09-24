@@ -13,7 +13,10 @@ use os_model::{Model, WallParams};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
-pub const API_VERSION: u32 = 1;
+/// Full native Model transport, schema 28. Older native guests require rebuilding.
+/// Generic API 2 uses independent DTOs and remains compatible.
+pub const API_VERSION: u32 = 9;
+pub const REQUIRED_MODEL_SCHEMA_VERSION: u32 = 28;
 pub mod generic;
 pub mod geometry;
 pub mod plan;
@@ -119,7 +122,7 @@ impl Manifest {
     pub fn validate(&self) -> ProtocolResult<()> {
         ensure(
             matches!(self.api_version, API_VERSION | generic::VERSION),
-            "plugin API version mismatch",
+            "plugin API version mismatch: native Model guests require API 9/schema 28; rebuild and reinstall API 1/API 3/API 4/API 5/API 6/API 7/API 8 guests",
         )?;
         ensure(
             self.id.len() <= 128 && valid_id(&self.id),
@@ -262,6 +265,20 @@ mod tests {
             Manifest::from_toml(include_str!("../../../plugins/walls/plugin.toml")).unwrap();
         m.api_version = 999;
         assert!(m.validate().is_err());
+        for version in [1, 3, 4, 5, 6, 7, 8] {
+            m.api_version = version;
+            let error = m.validate().unwrap_err().to_string();
+            assert!(
+                error.contains("API 9/schema 28")
+                    && error.contains("rebuild")
+                    && error.contains(&format!("API {version}"))
+            );
+        }
+        m.api_version = generic::VERSION;
+        m.validate().unwrap();
+        assert_eq!(generic::VERSION, 2);
+        #[cfg(feature = "legacy-v1")]
+        assert_eq!(REQUIRED_MODEL_SCHEMA_VERSION, os_model::SCHEMA_VERSION);
         m.api_version = API_VERSION;
         m.permissions.clear();
         assert!(m.validate().is_err());

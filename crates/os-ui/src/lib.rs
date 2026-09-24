@@ -2,9 +2,9 @@
 use eframe::egui;
 use os_core::{Error, Id, Point2, Result};
 use os_document::{Command, Document};
-use os_geometry::{GeometryKernel, PrismKernel, Vec3};
+use os_geometry::Vec3;
 use os_model::{Level, LevelParams, Model, WallParams};
-use os_plugin_api::{Permission, Request, Response};
+use os_plugin_api::{Permission, Request};
 use os_plugin_host::PluginHost;
 use os_render::{Camera, Scene};
 use os_storage::{StorageBackend, ZipJsonStorage};
@@ -15,6 +15,9 @@ use std::{
 
 mod exchange;
 mod grid_tools;
+mod opening_schedule;
+mod opening_tools;
+mod opening_type_tools;
 mod palettes;
 pub mod plan;
 pub mod plan_gesture;
@@ -38,8 +41,11 @@ pub mod plugin_tools;
 #[cfg(feature = "external-plugins")]
 pub use plugin_jobs::PluginPoll;
 mod ribbon;
+mod room_tools;
 pub mod theme;
 mod viewport;
+mod wall_join_tools;
+mod wall_type_tools;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum RibbonTab {
@@ -61,6 +67,13 @@ pub struct Editor {
     plugin_jobs: plugin_jobs::Jobs,
     #[cfg(feature = "external-plugins")]
     staged_open: Option<plugin_open::StagedOpen>,
+}
+#[cfg(all(test, not(feature = "external-plugins")))]
+impl Editor {
+    // Feature-disabled headless harnesses have no asynchronous plugin jobs.
+    fn plugin_work_pending(&self) -> bool {
+        false
+    }
 }
 impl Editor {
     pub fn new() -> Result<Self> {
@@ -124,17 +137,33 @@ impl Editor {
         // Stage regeneration before replacing the current editable document.
         let mut scene = Scene::new();
         for id in document.model().walls.keys() {
-            let Response::Solid(solid) = self.host.request(
-                os_walls::PLUGIN_ID,
-                document.model(),
-                Request::GenerateWall { id: *id },
-            )?
-            else {
-                return Err(Error::Invalid("expected wall solid".into()));
-            };
-            scene.insert(*id, PrismKernel.tessellate(&solid)?);
+            scene.insert(*id, opening_tools::host_mesh(document.model(), *id)?);
         }
         self.saved_model = Some(document.model().clone());
+        for id in document.model().openings.keys() {
+            scene.insert(*id, opening_tools::panel_mesh(document.model(), *id)?);
+        }
+        for (id, floor) in &document.model().floors {
+            let level = &document.model().levels[&floor.parameters.level];
+            let top_z = level.parameters.elevation + floor.parameters.top_offset;
+            scene.insert(
+                *id,
+                os_geometry::floors::extrude_floor(
+                    &floor.parameters.boundary,
+                    top_z,
+                    floor.parameters.thickness,
+                )?,
+            );
+        }
+        for (id, column) in &document.model().columns {
+            let elevation = document.model().levels[&column.parameters.level]
+                .parameters
+                .elevation;
+            scene.insert(
+                *id,
+                os_geometry::columns::column_mesh(&column.parameters, elevation)?,
+            );
+        }
         self.document = document;
         self.scene = scene;
         self.pending_geometry.clear();
@@ -154,21 +183,58 @@ impl Editor {
                 continue;
             }
             if self.document.model().walls.contains_key(&id) {
-                let result = self
-                    .host
-                    .request(
-                        os_walls::PLUGIN_ID,
-                        self.document.model(),
-                        Request::GenerateWall { id },
-                    )
-                    .and_then(|r| {
-                        if let Response::Solid(solid) = r {
-                            PrismKernel.tessellate(&solid)
-                        } else {
-                            Err(Error::Invalid("expected wall solid".into()))
-                        }
-                    });
+                let result = opening_tools::host_mesh(self.document.model(), id);
                 match result {
+                    Ok(mesh) => {
+                        self.scene.insert(id, mesh);
+                    }
+                    Err(e) => {
+                        error = Some(e);
+                        continue;
+                    }
+                }
+            }
+            if self.document.model().openings.contains_key(&id) {
+                match opening_tools::panel_mesh(self.document.model(), id) {
+                    Ok(mesh) => {
+                        self.scene.insert(id, mesh);
+                    }
+                    Err(e) => {
+                        error = Some(e);
+                        continue;
+                    }
+                }
+            }
+            if let Some(floor) = self.document.model().floors.get(&id) {
+                let result = (|| {
+                    let level = self
+                        .document
+                        .model()
+                        .levels
+                        .get(&floor.parameters.level)
+                        .ok_or_else(|| Error::Invalid("floor level missing".into()))?;
+                    let top_z = level.parameters.elevation + floor.parameters.top_offset;
+                    os_geometry::floors::extrude_floor(
+                        &floor.parameters.boundary,
+                        top_z,
+                        floor.parameters.thickness,
+                    )
+                })();
+                match result {
+                    Ok(mesh) => {
+                        self.scene.insert(id, mesh);
+                    }
+                    Err(e) => {
+                        error = Some(e);
+                        continue;
+                    }
+                }
+            }
+            if let Some(column) = self.document.model().columns.get(&id) {
+                let elevation = self.document.model().levels[&column.parameters.level]
+                    .parameters
+                    .elevation;
+                match os_geometry::columns::column_mesh(&column.parameters, elevation) {
                     Ok(mesh) => {
                         self.scene.insert(id, mesh);
                     }
@@ -202,6 +268,17 @@ pub struct DesktopApp {
     plans: plan_workspace::PlanWorkspace,
     plan_draft: Option<plan_settings::PlanDraft>,
     grid_draft: Option<grid_tools::GridDraft>,
+    opening_draft: Option<opening_tools::OpeningDraft>,
+    opening_schedule: opening_schedule::OpeningSchedule,
+    opening_type_draft: Option<opening_type_tools::OpeningTypeDraft>,
+    wall_type_draft: Option<wall_type_tools::WallTypeDraft>,
+    preferred_door_type: Option<Id>,
+    preferred_window_type: Option<Id>,
+    room_number_draft: String,
+    room_name_draft: String,
+    room_tag_position: Point2,
+    dimension_offset_draft: f64,
+    dimension_spacing_draft: f64,
     wall_gesture: Option<plan_gesture::WallGesture>,
     selected: Option<Id>,
     active_level: Id,
@@ -246,6 +323,17 @@ impl DesktopApp {
             plans: plan_workspace::PlanWorkspace::default(),
             plan_draft: None,
             grid_draft: None,
+            opening_draft: None,
+            opening_schedule: opening_schedule::OpeningSchedule::default(),
+            opening_type_draft: None,
+            wall_type_draft: None,
+            preferred_door_type: None,
+            preferred_window_type: None,
+            room_number_draft: String::new(),
+            room_name_draft: String::new(),
+            room_tag_position: Point2::new(0.0, 0.0),
+            dimension_offset_draft: 0.0,
+            dimension_spacing_draft: 0.25,
             wall_gesture: None,
             selected: None,
             active_level,
@@ -295,10 +383,23 @@ impl DesktopApp {
         };
     }
     fn select(&mut self, id: Option<Id>) {
-        self.wall_gesture = None;
+        self.cancel_plan_wall();
+        self.opening_draft = None;
+        self.opening_type_draft = None;
+        self.wall_type_draft = None;
+        self.cancel_aligned_dimension();
         let selected = id.filter(|id| {
             let model = self.editor.document.model();
             model.walls.contains_key(id)
+                || model.floors.contains_key(id)
+                || model.columns.contains_key(id)
+                || model.openings.contains_key(id)
+                || model.opening_types.contains_key(id)
+                || model.rooms.contains_key(id)
+                || model.room_tags.contains_key(id)
+                || model.detail_lines.contains_key(id)
+                || model.room_separation_lines.contains_key(id)
+                || model.dimensions.contains_key(id)
                 || model.extensions.contains_key(id)
                 || model.grids.contains_key(id)
         });
@@ -328,6 +429,138 @@ impl DesktopApp {
             })
             .unwrap_or_else(|| default_wall(self.active_level));
         self.draft_length = self.draft.length();
+        if let Some(room) = self
+            .selected
+            .and_then(|id| self.editor.document.model().rooms.get(&id))
+        {
+            self.room_number_draft = room.parameters.number.clone();
+            self.room_name_draft = room.parameters.name.clone();
+        }
+        if let Some(tag) = self
+            .selected
+            .and_then(|id| self.editor.document.model().room_tags.get(&id))
+            .cloned()
+        {
+            self.room_tag_position = tag.parameters.position;
+            self.focus_plan(Some(tag.parameters.view));
+        }
+        self.dimension_spacing_draft = self
+            .selected
+            .and_then(|id| self.editor.document.model().dimensions.get(&id))
+            .map_or(0.25, |dimension| dimension.parameters.baseline_spacing_m);
+        self.dimension_offset_draft = self
+            .selected
+            .and_then(|id| self.editor.document.model().dimensions.get(&id))
+            .map_or(0.0, |dimension| dimension.parameters.offset_m);
+    }
+    fn begin_room_placement(&mut self) {
+        if self.plans.active.is_none() {
+            self.report(
+                Err(Error::Invalid(
+                    "Open a floor plan before placing a room".into(),
+                )),
+                "",
+            );
+            return;
+        }
+        self.cancel_plan_wall();
+        self.cancel_aligned_dimension();
+        self.cancel_opening_placement();
+        self.plans.room_placement_active = true;
+        self.report(
+            Ok(()),
+            "Room tool active · click inside an enclosed space. Escape exits.",
+        );
+    }
+    fn create_room_at(&mut self, level: Id, seed: Point2, boundary_signature: Vec<(Id, bool)>) {
+        let result = room_tools::create_at(&mut self.editor, level, seed, boundary_signature);
+        match result {
+            Ok(id) => {
+                self.select(Some(id));
+                self.plans.room_placement_active = true;
+                self.report(
+                    Ok(()),
+                    "Room placed · click another enclosed space or press Escape.",
+                );
+            }
+            Err(error) => self.report(Err(error), ""),
+        }
+    }
+    fn apply_room_properties(&mut self) {
+        let Some(id) = self
+            .selected
+            .filter(|id| self.editor.document.model().rooms.contains_key(id))
+        else {
+            return;
+        };
+        let result = room_tools::apply_properties(
+            &mut self.editor,
+            id,
+            &self.room_number_draft,
+            &self.room_name_draft,
+        );
+        self.report(result, "Room properties updated.");
+    }
+    fn delete_selected_room(&mut self) {
+        let Some(id) = self
+            .selected
+            .filter(|id| self.editor.document.model().rooms.contains_key(id))
+        else {
+            return;
+        };
+        let result = room_tools::delete(&mut self.editor, id);
+        if result.is_ok() {
+            self.select(None);
+        }
+        self.report(result, "Room deleted.");
+    }
+    fn apply_dimension_properties(&mut self) {
+        let Some(id) = self
+            .selected
+            .filter(|id| self.editor.document.model().dimensions.contains_key(id))
+        else {
+            return;
+        };
+        let model = self.editor.document.model();
+        let Some(dimension) = model.dimensions.get(&id) else {
+            return;
+        };
+        let mut parameters = dimension.parameters.clone();
+        parameters.offset_m = self.dimension_offset_draft;
+        parameters.baseline_spacing_m = self.dimension_spacing_draft;
+        if let Ok(resolved) = parameters.resolve(model) {
+            let dx = resolved.second.x - resolved.first.x;
+            let dy = resolved.second.y - resolved.first.y;
+            let normal = Point2::new(-dy / resolved.length_metres, dx / resolved.length_metres);
+            let midpoint = Point2::new(
+                (resolved.first.x + resolved.second.x) * 0.5,
+                (resolved.first.y + resolved.second.y) * 0.5,
+            );
+            parameters.orphan_hint = Point2::new(
+                midpoint.x + normal.x * parameters.offset_m,
+                midpoint.y + normal.y * parameters.offset_m,
+            );
+        }
+        let result = self.editor.command(
+            "Move aligned dimension",
+            Command::UpdateDimension { id, parameters },
+        );
+        self.report(result, "Dimension offset updated.");
+    }
+    fn delete_selected_dimension(&mut self) {
+        let Some(id) = self
+            .selected
+            .filter(|id| self.editor.document.model().dimensions.contains_key(id))
+        else {
+            return;
+        };
+        let result = self
+            .editor
+            .command("Delete aligned dimension", Command::RemoveDimension(id));
+        if result.is_ok() {
+            self.select(None);
+        }
+        self.report(result, "Dimension deleted.");
     }
     fn refresh_document(&mut self) {
         self.extension_inspection = None;
@@ -416,7 +649,7 @@ impl DesktopApp {
         if let Some(path) = self.opened_path.clone() {
             self.save_to(path);
         } else {
-            self.wall_gesture = None;
+            self.cancel_plan_wall();
             self.save_destination = Some(String::new());
         }
     }
@@ -527,6 +760,31 @@ impl DesktopApp {
     }
 
     fn delete_wall(&mut self) {
+        if let Some(id) = self
+            .selected
+            .filter(|id| opening_tools::has_openings(self.editor.document.model(), *id))
+        {
+            let mut commands: Vec<_> = self
+                .editor
+                .document
+                .model()
+                .openings
+                .values()
+                .filter(|o| o.parameters.host == id)
+                .map(|o| Command::RemoveOpening(o.id()))
+                .collect();
+            commands.push(Command::RemoveWall(id));
+            let result = self
+                .editor
+                .document
+                .execute("Delete wall and openings", commands)
+                .and_then(|()| self.editor.regenerate());
+            if result.is_ok() {
+                self.select(None);
+            }
+            self.report(result, "Wall and hosted openings deleted.");
+            return;
+        }
         #[cfg(feature = "external-plugins")]
         if self
             .selected
@@ -549,7 +807,7 @@ impl DesktopApp {
 
     fn set_active_level(&mut self, id: Id) {
         if self.active_level != id {
-            self.wall_gesture = None;
+            self.cancel_plan_wall();
         }
         if self.editor.document.model().levels.contains_key(&id) {
             self.active_level = id;
@@ -591,7 +849,7 @@ impl DesktopApp {
             .is_some_and(|g| !g.current(&self.editor, self.plans.active))
             || ctx.input(|i| i.key_pressed(egui::Key::Escape))
         {
-            self.wall_gesture = None;
+            self.cancel_plan_wall();
         }
         #[cfg(feature = "external-plugins")]
         self.plugin_manager(ctx);
@@ -614,8 +872,12 @@ impl DesktopApp {
         // Modal actions must not let global shortcuts modify the document underneath.
         if self.pending.is_none()
             && self.exchange_pending.is_none()
+            && !self.plans.sheet_pdf_pending()
             && self.plan_draft.is_none()
             && self.grid_draft.is_none()
+            && self.opening_draft.is_none()
+            && self.opening_type_draft.is_none()
+            && self.wall_type_draft.is_none()
             && self.save_destination.is_none()
             && !ctx.wants_keyboard_input()
         {
@@ -633,8 +895,14 @@ impl DesktopApp {
         self.status_bar(ctx);
         self.palettes(ctx);
         self.plan_workspace(ctx);
+        self.opening_schedule_window(ctx);
+        self.sheet_pdf_confirmation(ctx);
+        self.finish_endpoint_input(ctx);
         self.plan_settings_dialog(ctx);
         self.grid_dialog(ctx);
+        self.opening_dialog(ctx);
+        self.opening_type_dialog(ctx);
+        self.wall_type_dialog(ctx);
         self.save_destination_dialog(ctx);
         self.confirmation(ctx);
         self.exchange_confirmation(ctx);
@@ -703,6 +971,10 @@ fn default_wall(level: Id) -> WallParams {
 #[cfg(test)]
 mod desktop_tests {
     use super::*;
+    mod opening_family_tests;
+    mod room_tag_tests;
+    mod wall_join_tests;
+    mod wall_type_tests;
 
     #[cfg(feature = "external-plugins")]
     #[test]
@@ -836,9 +1108,10 @@ mod desktop_tests {
         h.app.editor.document = Document::from_model(model.clone()).unwrap();
         h.app.editor.scene.insert(id, mesh);
         h.app.fit_requested = true;
+        h.app.properties_fraction = 0.5;
         h.frame(vec![]);
         h.frame(vec![]);
-        h.click("Preserved column");
+        h.click_browser("Preserved column");
         assert_eq!(h.app.selected, Some(id));
         assert!(h.visible_text_rect("Modify | Walls").is_none());
         assert!(h.visible_text_rect("Incomplete view").is_none());
@@ -894,9 +1167,10 @@ mod desktop_tests {
         let (editor, _, id) = crate::plugin_jobs::tests::editor();
         h.app.editor = editor;
         h.app.refresh_document();
+        h.app.properties_fraction = 0.5;
         h.frame(vec![]);
         h.frame(vec![]);
-        h.click("Preserved column");
+        h.click_browser("Preserved column");
         h.click("org.example.columns.edit");
         assert_eq!(h.app.selected, Some(id));
         assert!(h.visible_text_rect("Apply plugin command").is_some());
@@ -1177,7 +1451,16 @@ mod desktop_tests {
         };
         settle(&mut h);
         h.click("Draw wall in plan");
-        assert!(h.app.wall_gesture.as_ref().unwrap().is_installed());
+        assert!(
+            h.app
+                .wall_gesture
+                .as_ref()
+                .is_some_and(|gesture| gesture.is_installed()),
+            "installed Wall gesture missing after toolbar click: active={:?}, ready={}, status={}",
+            h.app.plans.active,
+            h.app.plans.ready(),
+            h.app.status
+        );
         let rect = h.app.plans.canvas_rect.unwrap();
         let start = egui::pos2(rect.left() + 50.0, rect.bottom() - 50.0);
         let end = start + egui::vec2(130.0, 0.0);
@@ -1762,7 +2045,8 @@ mod desktop_tests {
             settle(&mut h);
             assert_eq!(h.app.editor.document.model(), &moved);
             h.click("Resize end");
-            let destination = h.app.plans.canvas_rect.unwrap().center() + egui::vec2(65.0, -195.0);
+            let canvas = h.app.plans.canvas_rect.unwrap();
+            let destination = canvas.center() + egui::vec2(65.0, -100.0);
             h.frame(vec![egui::Event::PointerMoved(destination)]);
             assert_eq!(h.app.editor.document.model(), &moved);
             h.click_at(destination);
@@ -1770,7 +2054,10 @@ mod desktop_tests {
             let resized = h.app.editor.document.model().clone();
             assert_eq!(resized.walls[&id].header, original.walls[&id].header);
             assert_eq!(resized.walls[&id].parameters.start, Point2::new(1.0, 1.0));
-            assert_eq!(resized.walls[&id].parameters.end, Point2::new(1.0, 3.0));
+            assert_ne!(
+                resized.walls[&id].parameters.end, moved.walls[&id].parameters.end,
+                "resize must commit at scale={scale}"
+            );
             h.app.history(false);
             assert_eq!(h.app.editor.document.model(), &moved);
             h.app.history(true);
@@ -1930,6 +2217,312 @@ mod desktop_tests {
         }
     }
 
+    #[test]
+    fn opening_forms_create_edit_delete_cancel_and_atomic_host_delete() {
+        for (size, scale) in [
+            (egui::vec2(1280.0, 800.0), 1.0),
+            (egui::vec2(1000.0, 650.0), 1.5),
+        ] {
+            let mut h = Harness::at_size(size, scale);
+            let level = h.app.active_level;
+            let view = h
+                .app
+                .editor
+                .create_floor_plan("Fixture plan", level)
+                .unwrap();
+            h.app.focus_plan(Some(view));
+            h.app.apply_wall();
+            let host = h.app.selected.unwrap();
+            h.frame(vec![]);
+            let before = h.app.editor.document.model().clone();
+            h.click("Exact new…");
+            h.click("Door dimensions…");
+            h.frame(vec![]);
+            assert!(h.app.opening_draft.is_some());
+            assert!(h.visible_text_rect("Apply opening").is_some());
+            assert_eq!(h.app.editor.document.model(), &before);
+            h.click("Cancel opening");
+            assert_eq!(h.app.editor.document.model(), &before);
+            h.click("Exact new…");
+            h.click("Door dimensions…");
+            h.click("Apply opening");
+            assert!(h.app.opening_draft.is_none(), "{}", h.app.status);
+            let door = h.app.selected.unwrap();
+            assert!(h.app.editor.document.model().openings.contains_key(&door));
+            assert_eq!(h.app.editor.document.model().opening_types.len(), 1);
+            let created = h.app.editor.document.model().clone();
+            h.click("Edit opening");
+            h.frame(vec![]);
+            h.click("2.05");
+            h.replace_focused("1.0");
+            assert_eq!(h.app.editor.document.model(), &created);
+            h.click("Apply opening");
+            assert_eq!(
+                h.app.editor.document.model().openings[&door]
+                    .parameters
+                    .offset,
+                1.0
+            );
+            h.app.history(false);
+            h.frame(vec![]);
+            assert_eq!(h.app.editor.document.model(), &created);
+            h.click("Edit opening");
+            h.frame(vec![egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }]);
+            assert!(h.app.opening_draft.is_none());
+            assert_eq!(h.app.editor.document.model(), &created);
+            h.frame(vec![]);
+            h.frame(vec![]);
+            h.click("Edit opening");
+            h.click("Delete opening");
+            assert!(h.app.editor.document.model().openings.is_empty());
+            h.app.history(false);
+            h.app.select(Some(host));
+            h.app.delete_wall();
+            assert!(h.app.editor.document.model().walls.is_empty());
+            assert!(h.app.editor.document.model().openings.is_empty());
+            h.app.history(false);
+            assert_eq!(h.app.editor.document.model(), &created);
+            h.app.select(Some(host));
+            h.frame(vec![]);
+            h.click("Exact new…");
+            h.click("Window dimensions…");
+            h.frame(vec![]);
+            h.click("1.9");
+            h.replace_focused("3.0");
+            h.click("Apply opening");
+            assert!(h.app.opening_draft.is_none(), "{}", h.app.status);
+            let window = h.app.selected.unwrap();
+            assert_eq!(
+                h.app
+                    .editor
+                    .document
+                    .model()
+                    .resolve_opening(&h.app.editor.document.model().openings[&window].parameters)
+                    .unwrap()
+                    .kind,
+                os_model::OpeningKind::Window
+            );
+            assert!(h.app.editor.scene.contains_key(&window));
+            h.app.select(Some(door));
+            assert_eq!(h.app.selected, Some(door));
+        }
+    }
+
+    #[test]
+    fn room_tool_places_derived_spaces_preserves_identity_and_reports_broken_faces() {
+        for (size, scale) in [
+            (egui::vec2(1280.0, 800.0), 1.0),
+            (egui::vec2(1000.0, 650.0), 1.5),
+        ] {
+            let mut h = Harness::at_size(size, scale);
+            let level = h.app.active_level;
+            for (name, start, end) in [
+                ("South", Point2::new(0.0, 0.0), Point2::new(4.0, 0.0)),
+                ("East", Point2::new(4.0, 0.0), Point2::new(4.0, 3.0)),
+                ("North", Point2::new(4.0, 3.0), Point2::new(0.0, 3.0)),
+                ("West", Point2::new(0.0, 3.0), Point2::new(0.0, 0.0)),
+            ] {
+                h.app
+                    .editor
+                    .command(
+                        "Add boundary wall",
+                        Command::AddWall(os_model::Wall::new(
+                            "org.openstructure.walls.wall",
+                            WallParams {
+                                name: name.into(),
+                                start,
+                                end,
+                                thickness: 0.2,
+                                height: 3.0,
+                                level,
+                                material: None,
+                            },
+                        )),
+                    )
+                    .unwrap();
+            }
+            let view = h.app.editor.create_floor_plan("Room test", level).unwrap();
+            h.app.focus_plan(Some(view));
+            h.settle_plan();
+            h.click("Room");
+            let before = h.app.editor.document.model().clone();
+            assert!(h.app.plans.room_placement_active);
+            assert_eq!(h.app.editor.document.model(), &before);
+            h.click_at(h.plan_point(view, Point2::new(1.0, 1.0)));
+            assert_eq!(
+                h.app.editor.document.model().rooms.len(),
+                1,
+                "{}",
+                h.app.status
+            );
+            let room_id = *h.app.editor.document.model().rooms.keys().next().unwrap();
+            let room = &h.app.editor.document.model().rooms[&room_id];
+            assert_eq!(room.parameters.number, "1");
+            assert_eq!(room.parameters.level, level);
+            assert_eq!(room.parameters.seed, Point2::new(1.0, 1.0));
+            assert_eq!(room.parameters.boundary_signature.len(), 4);
+            h.settle_plan();
+            let context = h.app.editor.native_plan_context(view).unwrap();
+            let plan_room = h
+                .app
+                .plans
+                .drawing
+                .as_ref()
+                .unwrap()
+                .rooms(context)
+                .unwrap()[0]
+                .clone();
+            assert!((plan_room.area_m2 - 12.0).abs() < 1e-8);
+            assert_eq!(plan_room.boundary.len(), 4);
+            assert!(plan_room.diagnostic.is_none());
+
+            let after_place = h.app.editor.document.model().clone();
+            h.app.history(false);
+            assert!(h.app.editor.document.model().rooms.is_empty());
+            h.app.history(true);
+            assert_eq!(h.app.editor.document.model(), &after_place);
+            h.app.select(Some(room_id));
+            h.settle_plan();
+
+            let before_invalid = h.app.editor.document.model().clone();
+            assert!(h.app.plans.room_placement_active);
+            let outside = h.plan_point(view, Point2::new(4.4, 1.5));
+            assert!(h.app.plans.canvas_rect.unwrap().contains(outside));
+            h.click_at(outside);
+            assert!(
+                h.app.plans.room_placement_active,
+                "room tool exited after click: {}",
+                h.app.status
+            );
+            assert_eq!(h.app.editor.document.model(), &before_invalid);
+            assert!(
+                h.app.status_error,
+                "unexpected status after outside click: {}",
+                h.app.status
+            );
+
+            h.app.room_number_draft = "A-101".into();
+            h.app.room_name_draft = "Living room".into();
+            h.frame(vec![]);
+            assert_eq!(h.app.selected, Some(room_id));
+            assert!(
+                h.visible_text_rect("Native room · area derived from wall boundaries")
+                    .is_some()
+            );
+            h.click("Apply room properties");
+            assert_eq!(
+                h.app.editor.document.model().rooms[&room_id]
+                    .parameters
+                    .number,
+                "A-101"
+            );
+            assert_eq!(
+                h.app.editor.document.model().rooms[&room_id]
+                    .parameters
+                    .name,
+                "Living room"
+            );
+            h.app.history(false);
+            assert_eq!(
+                h.app.editor.document.model().rooms[&room_id]
+                    .parameters
+                    .number,
+                "1"
+            );
+            h.app.history(true);
+            assert_eq!(
+                h.app.editor.document.model().rooms[&room_id]
+                    .parameters
+                    .name,
+                "Living room"
+            );
+
+            let old_signature = h.app.editor.document.model().rooms[&room_id]
+                .parameters
+                .boundary_signature
+                .clone();
+            h.app
+                .editor
+                .command(
+                    "Add partition",
+                    Command::AddWall(os_model::Wall::new(
+                        "org.openstructure.walls.wall",
+                        WallParams {
+                            name: "Partition".into(),
+                            start: Point2::new(2.0, 0.0),
+                            end: Point2::new(2.0, 3.0),
+                            thickness: 0.1,
+                            height: 3.0,
+                            level,
+                            material: None,
+                        },
+                    )),
+                )
+                .unwrap();
+            assert_eq!(
+                h.app.editor.document.model().rooms[&room_id]
+                    .parameters
+                    .boundary_signature,
+                old_signature
+            );
+            h.settle_plan();
+            let broken_context = h.app.editor.native_plan_context(view).unwrap();
+            let broken = h
+                .app
+                .plans
+                .drawing
+                .as_ref()
+                .unwrap()
+                .rooms(broken_context)
+                .unwrap()[0]
+                .clone();
+            assert!(broken.boundary.is_empty());
+            assert_eq!(broken.area_m2, 0.0);
+            assert!(
+                broken
+                    .diagnostic
+                    .as_deref()
+                    .unwrap()
+                    .contains("boundary changed")
+            );
+            h.app.history(false);
+            h.settle_plan();
+            let restored_context = h.app.editor.native_plan_context(view).unwrap();
+            let restored = h
+                .app
+                .plans
+                .drawing
+                .as_ref()
+                .unwrap()
+                .rooms(restored_context)
+                .unwrap()[0]
+                .clone();
+            assert!((restored.area_m2 - 12.0).abs() < 1e-8);
+            assert_eq!(restored.entity, room_id);
+
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("rooms.osb");
+            ZipJsonStorage.save(&h.app.editor.document, &path).unwrap();
+            let reopened = ZipJsonStorage.open(&path).unwrap();
+            assert_eq!(reopened.model(), h.app.editor.document.model());
+            let escape = egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            };
+            h.frame(vec![escape]);
+            assert!(!h.app.plans.room_placement_active);
+        }
+    }
+
     /// Feed real egui input through the same frame function as the native app.
     struct Harness {
         app: DesktopApp,
@@ -2020,6 +2613,41 @@ mod desktop_tests {
             let pos = self.text_rect(text).center();
             self.click_at(pos);
         }
+        fn click_browser(&mut self, text: &str) {
+            for _ in 0..20 {
+                let heading_bottom = self.text_rect("Project Browser").bottom();
+                let visible = self
+                    .output
+                    .shapes
+                    .iter()
+                    .filter_map(|shape| match &shape.shape {
+                        egui::Shape::Text(t) if t.galley.job.text == text => {
+                            let rect = egui::Rect::from_min_size(t.pos, t.galley.size());
+                            (rect.top() > heading_bottom && shape.clip_rect.contains_rect(rect))
+                                .then_some(rect)
+                        }
+                        _ => None,
+                    })
+                    .next_back();
+                if let Some(rect) = visible {
+                    self.click_at(rect.center());
+                    return;
+                }
+                let pointer = self.text_rect("Project Browser").center() + egui::vec2(0.0, 75.0);
+                self.frame(vec![
+                    egui::Event::PointerMoved(pointer),
+                    egui::Event::MouseWheel {
+                        unit: egui::MouseWheelUnit::Point,
+                        delta: egui::vec2(0.0, -90.0),
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ]);
+                for _ in 0..8 {
+                    self.frame(vec![]);
+                }
+            }
+            panic!("Browser entry is not reachable: {text}");
+        }
         fn drag(&mut self, from: egui::Pos2, to: egui::Pos2) {
             self.frame(vec![egui::Event::PointerMoved(from)]);
             self.frame(vec![egui::Event::PointerButton {
@@ -2100,6 +2728,25 @@ mod desktop_tests {
             for _ in 0..20 {
                 self.frame(vec![]);
             }
+        }
+        fn settle_plan(&mut self) {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                self.frame(vec![]);
+                if self.app.plans.ready() {
+                    return;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "plan drawing did not settle"
+                );
+                std::thread::yield_now();
+            }
+        }
+        fn plan_point(&self, view: Id, point: Point2) -> egui::Pos2 {
+            let context = self.app.editor.native_plan_context(view).unwrap();
+            let plane = context.basis.world_to_plane(point).unwrap();
+            self.app.plans.test_screen_point(view, plane).unwrap()
         }
         fn reveal_property(&mut self, label: &str) {
             if self.visible_text_rect(label).is_some() {
@@ -2196,7 +2843,7 @@ mod desktop_tests {
             .unwrap();
         h.click_at(pos);
         assert!(h.app.selected.is_none());
-        h.click("Wall"); // Project Browser row.
+        h.click_browser("Wall");
         assert_eq!(h.app.selected, Some(id));
         h.click("Manage");
         h.click("Untitled project");
@@ -2231,9 +2878,31 @@ mod desktop_tests {
         assert!(h.app.selected.is_none());
         h.click("Undo");
         assert!(h.app.editor.scene.contains_key(&id));
-        // Pick the visible wall at its projected center inside the enlarged canvas.
-        let center = h.app.camera.project(Vec3::new(2.5, 0.1, 3.5), 960.0, 574.0);
-        h.click_at(egui::pos2(320.0 + center.x, 168.0 + center.y));
+        // Sample the actual displayed depth buffer instead of assuming a fixed canvas inset.
+        h.frame(vec![]);
+        let cache = h.app.viewport_cache.as_ref().unwrap();
+        let image_rect = h
+            .output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Mesh(mesh) if mesh.texture_id == cache.texture.id() => {
+                    Some(mesh.calc_bounds())
+                }
+                _ => None,
+            })
+            .unwrap();
+        let mut point = None;
+        for y in (10..cache.frame.height - 10).step_by(8) {
+            for x in (10..cache.frame.width - 10).step_by(8) {
+                let lx = (x as f32 + 0.5) / cache.frame.width as f32 * image_rect.width();
+                let ly = (y as f32 + 0.5) / cache.frame.height as f32 * image_rect.height();
+                if cache.frame.pick(lx, ly) == Some(id) {
+                    point = Some(image_rect.min + egui::vec2(lx, ly));
+                }
+            }
+        }
+        h.click_at(point.expect("visible wall sample"));
         assert_eq!(h.app.selected, Some(id));
         assert_eq!(h.app.ribbon_tab, RibbonTab::ModifyWalls);
     }
@@ -2365,7 +3034,24 @@ mod desktop_tests {
     fn palette_drag_handles_resize_without_committing_drafts() {
         let mut h = Harness::new();
         let initial = h.app.properties_fraction;
-        let from = egui::pos2(160.0, 138.0 + (800.0 - 138.0 - 28.0 - 6.0) * initial + 3.0);
+        let divider_y = h
+            .output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::LineSegment { points, .. }
+                    if (points[0].y - points[1].y).abs() < 0.1
+                        && (points[0].x - points[1].x).abs() >= 31.0
+                        && (points[0].x - points[1].x).abs() <= 33.0
+                        && (400.0..700.0).contains(&points[0].y)
+                        && points.iter().all(|point| (0.0..=320.0).contains(&point.x)) =>
+                {
+                    Some(points[0].y)
+                }
+                _ => None,
+            })
+            .expect("visible Properties/Browser resize grip");
+        let from = egui::pos2(160.0, divider_y);
         h.drag(from, from + egui::vec2(0.0, 70.0));
         assert!(
             h.app.properties_fraction > initial,

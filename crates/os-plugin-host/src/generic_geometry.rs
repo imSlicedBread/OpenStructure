@@ -110,7 +110,7 @@ impl PluginHost {
         )?;
         let native = doc.model().walls.get(&element);
         let entity = if let Some(wall) = native {
-            crate::native_wall::project(wall)?
+            crate::native_wall::project_checked(doc.model(), wall)?
         } else {
             entity_to_wire(doc.model().extensions.get(&element).ok_or_else(|| {
                 crate::invalid("geometry target is not an extension or native wall")
@@ -141,7 +141,9 @@ impl PluginHost {
             if let Some(e) = doc.model().extensions.get(&id) {
                 snapshot.elements.push(entity_to_wire(e));
             } else if let Some(wall) = doc.model().walls.get(&id) {
-                snapshot.elements.push(crate::native_wall::project(wall)?);
+                snapshot
+                    .elements
+                    .push(crate::native_wall::project_checked(doc.model(), wall)?);
             } else if let Some(level) = doc.model().levels.get(&id) {
                 snapshot.levels.push(wire::Level {
                     id: id.to_string(),

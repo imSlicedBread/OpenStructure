@@ -1,0 +1,166 @@
+{
+  "schema_version": 19,
+  "project": {
+    "header": {
+      "id": "00000000-0000-4000-8000-000000000001",
+      "type_id": "core.project",
+      "schema_version": 19,
+      "properties": {
+        "fixture": "preserve"
+      },
+      "relationships": {}
+    },
+    "parameters": {
+      "name": "Frozen schema 19 touching walls"
+    }
+  },
+  "sites": {
+    "00000000-0000-4000-8000-000000000002": {
+      "header": {
+        "id": "00000000-0000-4000-8000-000000000002",
+        "type_id": "core.site",
+        "schema_version": 19,
+        "properties": {},
+        "relationships": {}
+      },
+      "parameters": {
+        "name": "Site",
+        "project": "00000000-0000-4000-8000-000000000001"
+      }
+    }
+  },
+  "buildings": {
+    "00000000-0000-4000-8000-000000000003": {
+      "header": {
+        "id": "00000000-0000-4000-8000-000000000003",
+        "type_id": "core.building",
+        "schema_version": 19,
+        "properties": {},
+        "relationships": {}
+      },
+      "parameters": {
+        "name": "Building",
+        "site": "00000000-0000-4000-8000-000000000002"
+      }
+    }
+  },
+  "levels": {
+    "00000000-0000-4000-8000-000000000004": {
+      "header": {
+        "id": "00000000-0000-4000-8000-000000000004",
+        "type_id": "core.level",
+        "schema_version": 19,
+        "properties": {},
+        "relationships": {}
+      },
+      "parameters": {
+        "name": "Ground",
+        "elevation": 0,
+        "building": "00000000-0000-4000-8000-000000000003"
+      }
+    }
+  },
+  "walls": {
+    "00000000-0000-4000-8000-000000000006": {
+      "header": {
+        "id": "00000000-0000-4000-8000-000000000006",
+        "type_id": "org.openstructure.walls.wall",
+        "schema_version": 19,
+        "properties": {},
+        "relationships": {}
+      },
+      "parameters": {
+        "name": "Wall 6",
+        "start": {
+          "x": 0,
+          "y": 0
+        },
+        "end": {
+          "x": 3,
+          "y": 0
+        },
+        "thickness": 0.2,
+        "height": 3,
+        "level": "00000000-0000-4000-8000-000000000004",
+        "material": null
+      }
+    },
+    "00000000-0000-4000-8000-000000000007": {
+      "header": {
+        "id": "00000000-0000-4000-8000-000000000007",
+        "type_id": "org.openstructure.walls.wall",
+        "schema_version": 19,
+        "properties": {},
+        "relationships": {}
+      },
+      "parameters": {
+        "name": "Wall 7",
+        "start": {
+          "x": 3,
+          "y": 0
+        },
+        "end": {
+          "x": 7,
+          "y": 0
+        },
+        "thickness": 0.2,
+        "height": 3,
+        "level": "00000000-0000-4000-8000-000000000004",
+        "material": null
+      }
+    }
+  },
+  "floors": {},
+  "openings": {},
+  "opening_types": {},
+  "rooms": {},
+  "room_tags": {},
+  "dimensions": {},
+  "grids": {},
+  "materials": {},
+  "views": {
+    "00000000-0000-4000-8000-000000000005": {
+      "header": {
+        "id": "00000000-0000-4000-8000-000000000005",
+        "type_id": "core.view",
+        "schema_version": 19,
+        "properties": {},
+        "relationships": {}
+      },
+      "parameters": {
+        "name": "Plan",
+        "kind": "Plan",
+        "level": "00000000-0000-4000-8000-000000000004",
+        "settings_revision": 0,
+        "plan": {
+          "schema_version": 1,
+          "range": {
+            "top": 2.5,
+            "cut": 1.2,
+            "bottom": 0,
+            "depth": -1
+          },
+          "basis": {
+            "origin": {
+              "x": 0,
+              "y": 0
+            },
+            "rotation": 0
+          },
+          "crop": null,
+          "scale_denominator": 100,
+          "visibility": {
+            "walls": true,
+            "extensions": true
+          }
+        }
+      }
+    }
+  },
+  "sheets": {},
+  "schedules": {},
+  "extensions": {},
+  "plugin_requirements": {},
+  "detail_lines": {},
+  "room_separation_lines": {}
+}

@@ -175,9 +175,19 @@ impl PluginHost {
         Self::validate_output(p, model, geometry, &output)
     }
     fn prepare_input(p: &Loaded, model: &Model, request: Request) -> Result<String> {
+        if let Request::GenerateWall { id } = &request {
+            ensure(
+                !model.wall_type_assignments.contains_key(id),
+                "single-Solid provider cannot preserve typed wall layers; use native layer geometry",
+            )?;
+        }
         ensure(
             p.manifest.api_version == API_VERSION,
-            "legacy request requires API 1",
+            "native Model request requires API 9/schema 28; rebuild and reinstall older guests",
+        )?;
+        ensure(
+            model.schema_version == REQUIRED_MODEL_SCHEMA_VERSION,
+            "native Model request requires schema 28",
         )?;
         require(p, Permission::ModelRead)?;
         let geometry = matches!(request, Request::GenerateWall { .. });
@@ -547,7 +557,7 @@ mod tests {
     fn denies_cross_type_commands_and_future_protocol() {
         for response in [
             ResponseEnvelope {
-                api_version: 1,
+                api_version: API_VERSION,
                 response: Response::Commands(vec![Command::RenameProject("Hacked".into())]),
             },
             ResponseEnvelope {
@@ -619,7 +629,7 @@ mod tests {
             host.load(
                 Box::new(Rogue {
                     response: serde_json::to_string(&ResponseEnvelope {
-                        api_version: 1,
+                        api_version: API_VERSION,
                         response: Response::Commands(vec![command]),
                     })
                     .unwrap(),

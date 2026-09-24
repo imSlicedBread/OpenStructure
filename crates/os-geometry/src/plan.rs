@@ -125,6 +125,51 @@ pub struct PlanFootprint {
     vertices: Vec<Point2>,
 }
 impl PlanFootprint {
+    /// Checked convex CCW footprint in view coordinates, with the same crop
+    /// and precision policy as rectangular_plan. Native elevation cuts use it
+    /// without pretending their solids are vertical rectangular prisms.
+    pub fn from_convex(
+        role: PlanRole,
+        mut vertices: Vec<Point2>,
+        crop: Option<PlanCrop>,
+    ) -> Result<Option<Self>> {
+        ensure(
+            (3..=4).contains(&vertices.len()) && vertices.iter().all(|p| p.is_finite()),
+            "invalid plan footprint vertices",
+        )?;
+        for i in 0..vertices.len() {
+            let (a, b, c) = (
+                vertices[i],
+                vertices[(i + 1) % vertices.len()],
+                vertices[(i + 2) % vertices.len()],
+            );
+            ensure(
+                (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x) > 0.,
+                "plan footprint must be convex and CCW",
+            )?;
+        }
+        ensure(
+            signed_area(&vertices).is_finite(),
+            "plan footprint area overflow",
+        )?;
+        if let Some(crop) = crop {
+            crop.validate()?;
+            for (axis, boundary, greater) in [
+                (0, crop.min.x, true),
+                (0, crop.max.x, false),
+                (1, crop.min.y, true),
+                (1, crop.max.y, false),
+            ] {
+                vertices = clip(&vertices, axis, boundary, greater)?;
+            }
+        }
+        deduplicate(&mut vertices);
+        if vertices.len() < 3 || signed_area(&vertices) <= PLAN_TOLERANCE * PLAN_TOLERANCE {
+            return Ok(None);
+        }
+        ensure(vertices.len() <= 8, "plan footprint exceeds vertex bound")?;
+        Ok(Some(Self { role, vertices }))
+    }
     pub fn vertices(&self) -> &[Point2] {
         &self.vertices
     }
