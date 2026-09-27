@@ -6,7 +6,7 @@ members = ["crates/*", "plugins/walls"]
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
-license-file = "LICENSE.pending"
+license-file = "LICENSE"
 publish = false
 
 [workspace.dependencies]

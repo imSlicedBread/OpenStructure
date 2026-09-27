@@ -1,0 +1,28 @@
+OpenStructure Proprietary Source License
+
+Copyright (c) 2026 the respective copyright holders. All rights reserved.
+
+OpenStructure is proprietary software. Public access to this repository does not
+grant an open-source license. Except for the limited permissions below, no right
+to copy, modify, distribute, sublicense, or create derivative works from the
+repository's code or assets is granted.
+
+You may view, fork, clone, build, run, and modify a copy of this repository for
+evaluation, development of compatible plugins, and preparation of proposed
+contributions to OpenStructure. You may submit those proposed changes through
+GitHub pull requests to this repository. This permission does not authorize
+distribution of the OpenStructure application, host code, or modified versions
+outside those purposes.
+
+You may use, copy, modify, and redistribute the code in crates/os-plugin-api/,
+examples/contract-consumer/, examples/rust-wall/, and examples/rust-column/, in
+source or binary form, solely to develop, test, and distribute independently
+authored plugins compatible with OpenStructure. Include this notice with any
+redistribution of that code. This permission does not cover any other part of
+the repository. Independently authored plugins remain subject to their authors'
+own terms; compatibility alone does not transfer their ownership.
+
+No trademark rights are granted. Third-party components retain their own
+licenses. This software and the permitted plugin-development code are provided
+"as is", without warranties of any kind. All other uses require separate written
+permission from the relevant rights holders.

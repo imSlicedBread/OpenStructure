@@ -19,3 +19,10 @@
 ## Notes
 
 <!-- Limitations, follow-up work, screenshots, or migration notes. -->
+
+## Contribution rights
+
+- [ ] I have read `CONTRIBUTING.md` and can authorize the material I submitted.
+
+Before merge, maintainers and the contributor must agree in writing on rights
+to use the contribution in OpenStructure.

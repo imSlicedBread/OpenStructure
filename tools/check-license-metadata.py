@@ -8,4 +8,4 @@ publishable = [p["name"] for p in metadata["packages"] if p["id"] in metadata["w
 if missing or publishable:
     sys.exit(f"Missing license metadata: {missing}; workspace packages must remain non-publishable: {publishable}")
 print(f"PASS: {len(metadata['packages'])} packages have license metadata; workspace publishing disabled.")
-print("Project license selection and dependency legal review remain pending.")
+print("Project packages use proprietary license metadata; dependency redistribution review remains open.")

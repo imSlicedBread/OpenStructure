@@ -3,7 +3,7 @@ name = "openstructure-contract-consumer"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
-license-file = "../../LICENSE.pending"
+license-file = "../../LICENSE"
 publish = false
 
 # Intentionally separate resolution: workspace-wide feature unification must not

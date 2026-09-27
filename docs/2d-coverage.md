@@ -641,7 +641,7 @@ Each row inherits its dependency from the milestone column: D requires B/C, E1 r
 | G3 | partial | Atomic save/corruption tests exist; checkpoint/restore UI, crash/disk/network/sync/publish failure matrix and clean-machine archive tests missing |
 | G4 | not started | Approved hardware/project budgets, p95 measurements, memory bounds, five eight-hour scripted sessions per profile |
 | G5 | not started | Agreed topology/concurrency, conflict/restore and declared CAD/PDF/plot/second-workstation checks |
-| G6 | partial | Unsafe lint, bounded Wasm spike, dependency audit; expanded fuzzing, license decision, installer integrity, SDK/support/maintenance owner and full documentation remain |
+| G6 | partial | Unsafe lint, bounded Wasm spike, dependency audit; expanded fuzzing, dependency redistribution review, installer integrity, SDK/support/maintenance owner and full documentation remain |
 
 ## Work sequence and next evidence
 

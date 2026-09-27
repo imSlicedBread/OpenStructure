@@ -1,5 +1,10 @@
 # OpenStructure implementation prompt
 
+> Historical implementation prompt: its open-source and `LICENSE.pending`
+> instructions have been superseded by [LICENSE](LICENSE) and
+> [CONTRIBUTING.md](CONTRIBUTING.md). The host is now proprietary while the
+> repository remains public and compatible plugin development is permitted.
+
 Use this prompt to continue building the existing OpenStructure repository.
 It replaces the original bootstrap prompt. Editing or reviewing this document
 does not itself authorize executing the implementation or publishing to GitHub.

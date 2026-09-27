@@ -1,6 +1,9 @@
 # Contributing to OpenStructure
 
-OpenStructure welcomes contributions to an independent, open-source BIM platform.
+OpenStructure welcomes proposed contributions and independently authored plugins.
+The public host repository is proprietary; read [LICENSE](LICENSE) before using
+its code. The plugin API and independent examples have a limited permission for
+compatible plugin development.
 
 ## Before contributing
 
@@ -36,4 +39,14 @@ storage: add project schema version
 
 ## Contributor agreement
 
-The project will adopt a documented contributor policy before accepting substantial external contributions. Until then, contributors should retain the right to license their submitted work under the project’s selected license.
+Open issues and pull requests are welcome for review. Contributors keep ownership
+of their original work. Before merging a code or documentation contribution,
+the contributor and maintainers must agree in writing on permission to use,
+modify, distribute, and sublicense that contribution as part of OpenStructure.
+Opening a pull request alone does not grant those rights or guarantee acceptance.
+Do not submit material that you cannot authorize for this use.
+
+An independently authored plugin is not a contribution to the host merely
+because it uses the published plugin interface. Plugin authors choose their own
+terms for their original plugin code, subject to the limited SDK permission in
+[LICENSE](LICENSE) if they use the provided API or examples.

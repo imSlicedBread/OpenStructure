@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
 publish = false
-license-file = "../../LICENSE.pending"
+license-file = "../../LICENSE"
 [workspace]
 [lib]
 crate-type = ["cdylib", "rlib"]

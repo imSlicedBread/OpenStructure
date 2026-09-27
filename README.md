@@ -1,6 +1,8 @@
 # OpenStructure
 
-OpenStructure is an independent, open-source, plugin-friendly BIM authoring platform built with Rust.
+OpenStructure is an independent, proprietary BIM authoring platform built with
+Rust. Its public source supports inspection, proposed contributions, and
+compatible third-party plugins.
 
 The project aims to provide a practical alternative for parametric building design, documentation, and openBIM interoperability. It is not affiliated with Autodesk or Revit and does not use proprietary Autodesk code, assets, formats, or branding.
 
@@ -129,8 +131,16 @@ independent plugin pointer authoring, architectural modeling and
 the E1–E4 production drawing/team workflows remain unfinished. The
 [coverage ledger](docs/2d-coverage.md) tracks them; this is not a production BIM
 system or a general architecture-firm release. Production deployment targets,
-license and publication decisions remain open. Historical slice reports retain
+dependency review and publication plans remain open. Historical slice reports retain
 their original evidence; use the B/C audit and coverage ledger for current status.
+
+## License and contributions
+
+The host code is proprietary. [LICENSE](LICENSE) permits local development and
+grants limited use of the plugin API and independent examples for compatible
+plugins; it does not permit redistribution of the host. Plugin authors retain
+ownership of their original code. Issues and pull requests are welcome under
+the review and rights process in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Build and run
 
@@ -216,8 +226,9 @@ replacement. A failed open preserves the current document.
   and custom opening families or arbitrary third-party models remain unsupported.
   Native views/materials/extension data are not preserved; desktop exchange uses
   explicit loss and replacement confirmations. See [the IFC guide](docs/ifc-roadmap.md).
-- Licensing and dependency legal review remain pending. Packages cannot be
-  published; `LICENSE.pending` makes no open-source license grant.
+- The host is proprietary, with limited permission for plugin development and
+  proposed contributions under [LICENSE](LICENSE). Cargo packages remain
+  non-publishable; dependency redistribution review remains open.
 
 ## Foundation goals
 

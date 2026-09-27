@@ -1,5 +1,9 @@
 # Plugin protocols: native Model API 26 and generic API 2
 
+The host remains proprietary. [LICENSE](../LICENSE) permits use of the plugin
+API and independent examples to develop and distribute compatible plugins.
+Plugin authors retain ownership of their independently authored code.
+
 Current compatibility boundary: native Wall guests that receive the full model
 must use API 26 with model schema 45. API-25 and older native guests are rejected and must be
 rebuilt/reinstalled; API 2 remains the independent generic DTO protocol. The
