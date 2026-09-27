@@ -3,12 +3,49 @@ use os_document::Command;
 use os_model::{OpeningDefinition, OpeningKind, OpeningType, OpeningTypeParams};
 use serde_json::{Value, json};
 
+fn reverse_schema_29_to_32_opening_changes(value: &mut Value) {
+    if let Some(types) = value
+        .get_mut("opening_types")
+        .and_then(Value::as_object_mut)
+    {
+        for ty in types.values_mut() {
+            if let Some(family) = ty["parameters"]
+                .get_mut("family")
+                .and_then(Value::as_object_mut)
+            {
+                family.remove("panel_material");
+                family.remove("frame_material");
+                if family.get("version").and_then(Value::as_u64) == Some(4) {
+                    family.insert("version".into(), json!(3));
+                }
+            }
+        }
+    }
+    value.as_object_mut().unwrap().remove("opening_tags");
+    for opening in value["openings"].as_object_mut().unwrap().values_mut() {
+        for field in ["width_override", "height_override"] {
+            assert_eq!(
+                opening["parameters"].as_object_mut().unwrap().remove(field),
+                Some(Value::Null)
+            );
+        }
+        assert_eq!(
+            opening["parameters"]
+                .as_object_mut()
+                .unwrap()
+                .remove("sill_override"),
+            Some(Value::Null)
+        );
+    }
+}
+
 fn schema_24_opening_family() -> Value {
     let mut value: Value = serde_json::from_str(include_str!(
         "../../tests/fixtures/schema-23-opening-family.json"
     ))
     .unwrap();
     migrate(&mut value, 23).unwrap();
+    remove_phase_fields_from_legacy_fixture(&mut value);
     value["schema_version"] = json!(24);
     value.as_object_mut().unwrap().remove("columns");
     value
@@ -16,6 +53,9 @@ fn schema_24_opening_family() -> Value {
         .unwrap()
         .remove("plan_graphics_templates");
     value.as_object_mut().unwrap().remove("plan_graphics");
+    value.as_object_mut().unwrap().remove("stairs");
+    value.as_object_mut().unwrap().remove("roofs");
+    reverse_schema_29_to_32_opening_changes(&mut value);
     for collection in [
         "project",
         "sites",
@@ -120,6 +160,7 @@ fn frozen_schema_23_opening_family_migration_is_lossless_atomic_and_persistent()
     );
     assert_eq!(migrated["extensions"], original["extensions"]);
     let mut reversed = migrated.clone();
+    remove_phase_fields_from_legacy_fixture(&mut reversed);
     reversed["schema_version"] = json!(23);
     for (key, data) in reversed.as_object_mut().unwrap() {
         if key == "project" {
@@ -146,6 +187,11 @@ fn frozen_schema_23_opening_family_migration_is_lossless_atomic_and_persistent()
         .unwrap()
         .remove("plan_graphics_templates");
     reversed.as_object_mut().unwrap().remove("plan_graphics");
+    reversed.as_object_mut().unwrap().remove("stairs");
+    reversed.as_object_mut().unwrap().remove("roofs");
+    reversed.as_object_mut().unwrap().remove("ceilings");
+    reverse_schema_38_plan_settings(&mut reversed);
+    reverse_schema_29_to_32_opening_changes(&mut reversed);
     assert_eq!(
         reversed, original,
         "all IDs, parameters, metadata and opaque fields preserved"
@@ -186,12 +232,13 @@ fn schema_24_frame_family_migration_is_lossless_atomic_and_persistent() {
     model.validate().unwrap();
     assert_eq!(model.schema_version, SCHEMA_VERSION);
     let ty = model.opening_types.values().next().unwrap();
-    assert_eq!(ty.parameters.family.version, 3);
+    assert_eq!(ty.parameters.family.version, 4);
     assert_eq!(ty.parameters.family.frame_width, 0.0);
     assert_eq!(ty.parameters.family.frame_depth, 0.05);
     assert_eq!(migrated["extensions"], original["extensions"]);
 
     let mut reversed = migrated.clone();
+    remove_phase_fields_from_legacy_fixture(&mut reversed);
     reversed["schema_version"] = json!(24);
     for collection in [
         "project",
@@ -238,6 +285,9 @@ fn schema_24_frame_family_migration_is_lossless_atomic_and_persistent() {
         .unwrap()
         .remove("plan_graphics_templates");
     reversed.as_object_mut().unwrap().remove("plan_graphics");
+    reversed.as_object_mut().unwrap().remove("stairs");
+    reversed.as_object_mut().unwrap().remove("roofs");
+    reverse_schema_29_to_32_opening_changes(&mut reversed);
     assert_eq!(
         reversed, original,
         "all old fields and identities are retained"
@@ -278,7 +328,7 @@ fn schema_25_host_cut_profile_migration_is_lossless_atomic_and_persistent() {
     model.validate().unwrap();
     assert_eq!(model.schema_version, SCHEMA_VERSION);
     let ty = model.opening_types.values().next().unwrap();
-    assert_eq!(ty.parameters.family.version, 3);
+    assert_eq!(ty.parameters.family.version, 4);
     assert_eq!(
         ty.parameters.family.host_cut,
         os_model::OpeningHostCut::Rectangular
@@ -291,6 +341,7 @@ fn schema_25_host_cut_profile_migration_is_lossless_atomic_and_persistent() {
     assert_eq!(migrated["extensions"], original["extensions"]);
 
     let mut reversed = migrated.clone();
+    remove_phase_fields_from_legacy_fixture(&mut reversed);
     reversed["schema_version"] = json!(25);
     for collection in [
         "project",
@@ -335,6 +386,9 @@ fn schema_25_host_cut_profile_migration_is_lossless_atomic_and_persistent() {
         .unwrap()
         .remove("plan_graphics_templates");
     reversed.as_object_mut().unwrap().remove("plan_graphics");
+    reversed.as_object_mut().unwrap().remove("stairs");
+    reversed.as_object_mut().unwrap().remove("roofs");
+    reverse_schema_29_to_32_opening_changes(&mut reversed);
     assert_eq!(
         reversed, original,
         "only the documented migration is reversed"
@@ -480,6 +534,7 @@ fn schema_nine_openings_migrate_only_orientation_and_native_headers_and_roundtri
             assert_eq!(opening.parameters.swing, os_model::DoorSwing::Left);
         }
         let mut reversed = migrated.clone();
+        remove_phase_fields_from_legacy_fixture(&mut reversed);
         for ty in reversed["opening_types"]
             .as_object_mut()
             .unwrap()
@@ -538,6 +593,11 @@ fn schema_nine_openings_migrate_only_orientation_and_native_headers_and_roundtri
             .unwrap()
             .remove("plan_graphics_templates");
         reversed.as_object_mut().unwrap().remove("plan_graphics");
+        reversed.as_object_mut().unwrap().remove("stairs");
+        reversed.as_object_mut().unwrap().remove("roofs");
+        reversed.as_object_mut().unwrap().remove("ceilings");
+        reverse_schema_38_plan_settings(&mut reversed);
+        reverse_schema_29_to_32_opening_changes(&mut reversed);
         assert_eq!(reversed, original);
 
         let directory = tempfile::tempdir().unwrap();
@@ -636,6 +696,7 @@ fn frozen_schema_22_adds_center_pane_position_without_losing_identity() {
     );
 
     let mut restored = migrated.clone();
+    remove_phase_fields_from_legacy_fixture(&mut restored);
     restored["opening_types"][type_id.to_string()]["parameters"]
         .as_object_mut()
         .unwrap()
@@ -681,6 +742,11 @@ fn frozen_schema_22_adds_center_pane_position_without_losing_identity() {
         .unwrap()
         .remove("plan_graphics_templates");
     restored.as_object_mut().unwrap().remove("plan_graphics");
+    restored.as_object_mut().unwrap().remove("stairs");
+    restored.as_object_mut().unwrap().remove("roofs");
+    restored.as_object_mut().unwrap().remove("ceilings");
+    reverse_schema_38_plan_settings(&mut restored);
+    reverse_schema_29_to_32_opening_changes(&mut restored);
     restored["schema_version"] = json!(22);
     assert_eq!(restored, old);
 
@@ -764,6 +830,7 @@ fn frozen_seven_to_ten_preserves_geometry_identity_metadata_and_plugin_payload()
         p.extend(legacy);
     }
     // Full equality after reversing only the documented schema transformation.
+    remove_phase_fields_from_legacy_fixture(&mut value);
     value.as_object_mut().unwrap().remove("opening_types");
     value.as_object_mut().unwrap().remove("floors");
     value.as_object_mut().unwrap().remove("room_tags");
@@ -786,6 +853,11 @@ fn frozen_seven_to_ten_preserves_geometry_identity_metadata_and_plugin_payload()
         .unwrap()
         .remove("plan_graphics_templates");
     value.as_object_mut().unwrap().remove("plan_graphics");
+    value.as_object_mut().unwrap().remove("stairs");
+    value.as_object_mut().unwrap().remove("roofs");
+    value.as_object_mut().unwrap().remove("ceilings");
+    reverse_schema_38_plan_settings(&mut value);
+    reverse_schema_29_to_32_opening_changes(&mut value);
     value["schema_version"] = json!(7);
     assert_eq!(value["project"]["header"]["schema_version"], SCHEMA_VERSION);
     value["project"]["header"]["schema_version"] = json!(7);

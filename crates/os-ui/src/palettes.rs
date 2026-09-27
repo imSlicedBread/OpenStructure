@@ -1,5 +1,15 @@
 use super::*;
 
+fn opening_tag_preset_name(preset: os_model::OpeningTagLabelPreset) -> &'static str {
+    use os_model::OpeningTagLabelPreset::*;
+    match preset {
+        Full => "Full",
+        InstanceName => "Instance name",
+        TypeAndDimensions => "Type and dimensions",
+        DimensionsOnly => "Dimensions only",
+    }
+}
+
 impl DesktopApp {
     pub(super) fn palettes(&mut self, ctx: &egui::Context) {
         egui::SidePanel::left("workspace_palettes")
@@ -74,7 +84,29 @@ impl DesktopApp {
     }
 
     fn properties_contents(&mut self, ui: &mut egui::Ui) {
+        if self
+            .selected
+            .is_some_and(|id| self.editor.document.model().rooms.contains_key(&id))
+            && self.room_draft_context
+                != Some((
+                    self.editor.document.session_id(),
+                    self.editor.document.revision(),
+                ))
+        {
+            self.select(self.selected);
+            self.status = "Room edit cancelled: document changed.".into();
+        }
         ui.heading("Properties");
+        self.lifecycle_properties(ui);
+        if self.ceiling_properties(ui) {
+            return;
+        }
+        if self.roof_properties(ui) {
+            return;
+        }
+        if self.stair_properties(ui) {
+            return;
+        }
         if self.column_properties(ui) {
             return;
         }
@@ -101,6 +133,9 @@ impl DesktopApp {
             if ui.button("Manage opening type…").clicked() {
                 self.begin_edit_opening_type(id);
             }
+            if ui.button("Export type package…").clicked() {
+                self.begin_export_opening_type_package(id);
+            }
             return;
         }
         if let Some(floor) = self
@@ -121,6 +156,18 @@ impl DesktopApp {
                 "Thickness: {:.3} m · top offset: {:+.3} m",
                 floor.parameters.thickness, floor.parameters.top_offset
             ));
+            ui.label(format!("Slab openings: {}", floor.parameters.holes.len()));
+            if let Some(view) = self.plans.active
+                && ui.button("Add slab opening…").clicked()
+            {
+                self.begin_floor_hole_sketch(view, id);
+            }
+            for index in 0..floor.parameters.holes.len() {
+                if ui.button(format!("Remove opening {}", index + 1)).clicked() {
+                    self.remove_floor_hole(id, index);
+                    break;
+                }
+            }
             if ui.button("Delete floor").clicked() {
                 let result = self
                     .editor
@@ -164,7 +211,9 @@ impl DesktopApp {
                 resolved.height,
                 resolved.sill
             ));
-            if ui.button("Edit opening properties").clicked() {
+            if ui.button("Copy opening").clicked() {
+                self.begin_opening_copy(opening.id());
+            } else if ui.button("Edit opening properties").clicked() {
                 self.begin_opening(None);
             }
             if let Some(type_id) = resolved.type_id {
@@ -184,21 +233,30 @@ impl DesktopApp {
             let parameters = &dimension.parameters;
             ui.add(
                 egui::Label::new(format!(
-                    "{:?} dimension · live wall references",
+                    "{:?} dimension · live references",
                     parameters.layout
                 ))
                 .wrap(),
             );
             for (index, reference) in parameters.references().enumerate() {
-                ui.add(
-                    egui::Label::new(format!(
-                        "{}: {} {:?}",
-                        index + 1,
-                        reference.wall,
-                        reference.endpoint
-                    ))
-                    .wrap(),
-                );
+                let target = match reference {
+                    os_model::DimensionReference::WallEndpoint { endpoint, .. } => {
+                        format!("Wall endpoint {endpoint:?}")
+                    }
+                    os_model::DimensionReference::OpeningJamb { jamb, .. } => {
+                        format!("Opening {jamb:?} jamb")
+                    }
+                };
+                ui.add(egui::Label::new(format!("{}: {target}", index + 1)).wrap());
+                if ui
+                    .add_enabled(
+                        self.plans.active == Some(parameters.view),
+                        egui::Button::new(format!("Replace anchor {}", index + 1)),
+                    )
+                    .clicked()
+                {
+                    self.begin_dimension_repair(index);
+                }
             }
             if parameters.layout == os_model::DimensionLayout::Angular {
                 match parameters.resolve_angular(self.editor.document.model()) {
@@ -324,6 +382,80 @@ impl DesktopApp {
         }
         if let Some(tag) = self
             .selected
+            .and_then(|id| self.editor.document.model().opening_tags.get(&id))
+            .cloned()
+        {
+            egui::ScrollArea::vertical()
+                .id_salt("opening_tag_properties")
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.label("Opening tag · live instance, type and dimensions");
+                    ui.label(format!("Opening: {}", tag.parameters.opening));
+                    use os_model::OpeningTagLabelPreset;
+                    egui::ComboBox::from_id_salt("opening_tag_label_preset")
+                        .selected_text(opening_tag_preset_name(self.opening_tag_label_preset))
+                        .show_ui(ui, |ui| {
+                            for preset in [
+                                OpeningTagLabelPreset::Full,
+                                OpeningTagLabelPreset::InstanceName,
+                                OpeningTagLabelPreset::TypeAndDimensions,
+                                OpeningTagLabelPreset::DimensionsOnly,
+                            ] {
+                                ui.selectable_value(
+                                    &mut self.opening_tag_label_preset,
+                                    preset,
+                                    opening_tag_preset_name(preset),
+                                );
+                            }
+                        });
+                    let mut preview = tag.parameters.clone();
+                    preview.label_preset = self.opening_tag_label_preset;
+                    let (label, diagnostic) = preview.label(self.editor.document.model());
+                    ui.label("Label preview");
+                    ui.label(label);
+                    if ui
+                        .add_enabled(
+                            preview.label_preset != tag.parameters.label_preset,
+                            egui::Button::new("Apply tag label"),
+                        )
+                        .clicked()
+                    {
+                        let result = self.editor.command(
+                            "Change opening tag label",
+                            Command::UpdateOpeningTag {
+                                id: tag.id(),
+                                parameters: preview,
+                            },
+                        );
+                        self.report(result, "Opening tag label updated.");
+                    }
+                    if let Some(reason) = diagnostic {
+                        ui.colored_label(theme::ERROR, reason);
+                    }
+                    ui.horizontal(|ui| {
+                        ui.label("X (m)");
+                        ui.add(egui::DragValue::new(&mut self.opening_tag_position.x).speed(0.05));
+                        ui.label("Y (m)");
+                        ui.add(egui::DragValue::new(&mut self.opening_tag_position.y).speed(0.05));
+                    });
+                    if ui.button("Apply tag position").clicked() {
+                        self.apply_opening_tag_properties();
+                    }
+                    if ui.button("Delete opening tag").clicked() {
+                        let result = self
+                            .editor
+                            .command("Delete opening tag", Command::RemoveOpeningTag(tag.id()));
+                        if result.is_ok() {
+                            self.select(None);
+                        }
+                        self.report(result, "Opening tag deleted.");
+                    }
+                    ui.label(format!("ID: {}", tag.id()));
+                });
+            return;
+        }
+        if let Some(tag) = self
+            .selected
             .and_then(|id| self.editor.document.model().room_tags.get(&id))
             .cloned()
         {
@@ -367,59 +499,97 @@ impl DesktopApp {
         {
             let room_id = room.id();
             let level = room.parameters.level;
-            ui.label("Native room · area derived from wall boundaries");
-            if let Some(view) = self.plans.active.filter(|view| {
-                self.editor
-                    .document
-                    .model()
-                    .views
-                    .get(view)
-                    .is_some_and(|view| view.parameters.level == Some(level))
-            }) {
-                let derived = self
-                    .editor
-                    .native_plan_context(view)
-                    .ok()
-                    .and_then(|context| {
-                        self.plans
-                            .drawing
-                            .as_ref()?
-                            .rooms(context)
-                            .ok()?
-                            .iter()
-                            .find(|item| item.entity == room_id)
-                            .cloned()
-                    });
-                match derived {
-                    Some(item) if item.diagnostic.is_none() => {
-                        ui.label(format!("Area: {:.2} m²", item.area_m2));
+            egui::ScrollArea::vertical()
+                .id_salt("room_properties")
+                .show(ui, |ui| {
+                    ui.label("Native room · area derived from wall boundaries");
+                    if let Some(view) = self.plans.active.filter(|view| {
+                        self.editor
+                            .document
+                            .model()
+                            .views
+                            .get(view)
+                            .is_some_and(|view| view.parameters.level == Some(level))
+                    }) {
+                        let derived =
+                            self.editor
+                                .native_plan_context(view)
+                                .ok()
+                                .and_then(|context| {
+                                    self.plans
+                                        .drawing
+                                        .as_ref()?
+                                        .rooms(context)
+                                        .ok()?
+                                        .iter()
+                                        .find(|item| item.entity == room_id)
+                                        .cloned()
+                                });
+                        match derived {
+                            Some(item) if item.diagnostic.is_none() => {
+                                ui.label(format!("Area: {:.2} m²", item.area_m2));
+                            }
+                            Some(item) => {
+                                ui.colored_label(
+                                    theme::ERROR,
+                                    item.diagnostic
+                                        .as_deref()
+                                        .unwrap_or("Room boundary unavailable"),
+                                );
+                            }
+                            None => {
+                                ui.label("Room area is updating in the floor plan…");
+                            }
+                        }
+                    } else {
+                        ui.label("Open a floor plan on this room’s level to inspect its area.");
                     }
-                    Some(item) => {
-                        ui.colored_label(
-                            theme::ERROR,
-                            item.diagnostic
-                                .as_deref()
-                                .unwrap_or("Room boundary unavailable"),
-                        );
+                    ui.separator();
+                    ui.label("Number");
+                    ui.text_edit_singleline(&mut self.room_number_draft);
+                    ui.label("Name");
+                    ui.text_edit_singleline(&mut self.room_name_draft);
+                    if ui.button("Apply room properties").clicked() {
+                        self.apply_room_properties();
                     }
-                    None => {
-                        ui.label("Room area is updating in the floor plan…");
+                    if ui.button("Delete room").clicked() {
+                        self.delete_selected_room();
                     }
-                }
-            } else {
-                ui.label("Open a floor plan on this room’s level to inspect its area.");
-            }
-            ui.separator();
-            ui.label("Number");
-            ui.text_edit_singleline(&mut self.room_number_draft);
-            ui.label("Name");
-            ui.text_edit_singleline(&mut self.room_name_draft);
-            if ui.button("Apply room properties").clicked() {
-                self.apply_room_properties();
-            }
-            if ui.button("Delete room").clicked() {
-                self.delete_selected_room();
-            }
+                    ui.label("Finish codes and materials (optional)");
+                    for (index, label) in ["Floor Finish", "Wall Finish", "Ceiling Finish"]
+                        .into_iter()
+                        .enumerate()
+                    {
+                        ui.label(label);
+                        ui.text_edit_singleline(&mut self.room_finish_draft[index]);
+                        let materials = &self.editor.document.model().materials;
+                        egui::ComboBox::from_id_salt(("room_material", index))
+                            .selected_text(
+                                self.room_material_draft[index]
+                                    .and_then(|id| materials.get(&id))
+                                    .map_or("Unassigned", |material| {
+                                        material.parameters.name.as_str()
+                                    }),
+                            )
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(
+                                    &mut self.room_material_draft[index],
+                                    None,
+                                    "Unassigned",
+                                );
+                                for material in materials.values() {
+                                    ui.selectable_value(
+                                        &mut self.room_material_draft[index],
+                                        Some(material.id()),
+                                        &material.parameters.name,
+                                    );
+                                }
+                            });
+                    }
+                    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                        self.select(Some(room_id));
+                    }
+                });
             return;
         }
         if let Some(grid) = self
@@ -722,6 +892,15 @@ impl DesktopApp {
                         });
                     }
                 });
+                if !model.stairs.is_empty() {
+                    egui::CollapsingHeader::new(format!("Stairs ({})", model.stairs.len())).id_salt("native_stairs").default_open(true).show(ui, |ui| {
+                        for (id, stair) in &model.stairs {
+                            ui.push_id(id, |ui| {
+                                if ui.selectable_label(self.selected == Some(*id), &stair.parameters.name).clicked() { self.select(Some(*id)); }
+                            });
+                        }
+                    });
+                }
                 if !model.columns.is_empty() {
                     egui::CollapsingHeader::new(format!("Columns ({})", model.columns.len())).id_salt("native_columns").default_open(true).show(ui, |ui| {
                         for (id, column) in &model.columns {
@@ -738,6 +917,45 @@ impl DesktopApp {
                                 ui.push_id(id, |ui| {
                                     if ui
                                         .selectable_label(self.selected == Some(*id), &floor.parameters.name)
+                                        .clicked()
+                                    {
+                                        self.select(Some(*id));
+                                    }
+                                });
+                            }
+                        });
+                }
+                if !model.ceilings.is_empty() {
+                    let mut ceiling_resolver =
+                        os_geometry::ceilings::CeilingResolver::default();
+                    egui::CollapsingHeader::new(format!("Ceilings ({})", model.ceilings.len()))
+                        .id_salt("ceilings")
+                        .default_open(true)
+                        .show(ui, |ui| {
+                            for (id, ceiling) in &model.ceilings {
+                                ui.push_id(id, |ui| {
+                                    let label = if let Some(room_id) =
+                                        ceiling.parameters.boundary_room
+                                    {
+                                        let room = model.rooms.get(&room_id);
+                                        let resolved = ceiling_resolver
+                                            .effective_parameters(&model, &ceiling.parameters)
+                                            .ok()
+                                            .flatten()
+                                            .is_some();
+                                        format!(
+                                            "{} · {}{}",
+                                            ceiling.parameters.name,
+                                            room.map_or("missing room", |room| {
+                                                room.parameters.name.as_str()
+                                            }),
+                                            if resolved { "" } else { " · unresolved" }
+                                        )
+                                    } else {
+                                        ceiling.parameters.name.clone()
+                                    };
+                                    if ui
+                                        .selectable_label(self.selected == Some(*id), label)
                                         .clicked()
                                     {
                                         self.select(Some(*id));
@@ -793,6 +1011,20 @@ impl DesktopApp {
                             }
                         });
                 }
+                if !model.opening_tags.is_empty() {
+                    egui::CollapsingHeader::new("Opening Tags").id_salt("opening_tags").default_open(true).show(ui,|ui| {
+                        for view in model.views.values().filter(|view|model.opening_tags.values().any(|tag|tag.parameters.view == view.id())) {
+                            egui::CollapsingHeader::new(&view.parameters.name).id_salt(("opening_tag_view",view.id())).default_open(true).show(ui,|ui| {
+                                for tag in model.opening_tags.values().filter(|tag|tag.parameters.view == view.id()) {
+                                    let label = tag.parameters.label(&model).0;
+                                    ui.push_id(tag.id(),|ui| {
+                                        if ui.selectable_label(self.selected == Some(tag.id()),label).clicked() { self.select(Some(tag.id())); }
+                                    });
+                                }
+                            });
+                        }
+                    });
+                }
                 if !model.room_tags.is_empty() {
                     egui::CollapsingHeader::new("Room Tags").id_salt("room_tags").default_open(true).show(ui,|ui| {
                         for view in model.views.values().filter(|view|model.room_tags.values().any(|tag|tag.parameters.view == view.id())) {
@@ -817,15 +1049,12 @@ impl DesktopApp {
                     .show(ui, |ui| {
                         for (id, dimension) in &model.dimensions {
                             let anchor_label = |reference: os_model::DimensionReference| {
-                                model.walls.get(&reference.wall).map_or_else(
-                                    || "Missing wall".to_owned(),
-                                    |wall| {
-                                        format!(
-                                            "{} {:?}",
-                                            wall.parameters.name, reference.endpoint
-                                        )
-                                    },
-                                )
+                                match reference {
+                                    os_model::DimensionReference::WallEndpoint { wall, endpoint } =>
+                                        format!("{} {endpoint:?}", model.walls.get(&wall).map_or("Missing wall", |w| w.parameters.name.as_str())),
+                                    os_model::DimensionReference::OpeningJamb { opening, jamb } =>
+                                        format!("{} {jamb:?} jamb", model.openings.get(&opening).map_or("Missing opening", |o| o.parameters.name.as_str())),
+                                }
                             };
                             let label = format!(
                                 "{:?}: {}",

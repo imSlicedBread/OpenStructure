@@ -25,11 +25,11 @@ fn setup() -> (Document, Dimension, Wall) {
             additional: Vec::new(),
             baseline_spacing_m: 0.25,
             view: view.id(),
-            first: DimensionReference {
+            first: DimensionReference::WallEndpoint {
                 wall: wall.id(),
                 endpoint: DimensionEndpoint::Start,
             },
-            second: DimensionReference {
+            second: DimensionReference::WallEndpoint {
                 wall: wall.id(),
                 endpoint: DimensionEndpoint::End,
             },
@@ -130,12 +130,17 @@ fn creation_requires_resolved_noncoincident_same_level_native_anchors() {
     for case in 0..5 {
         let (mut doc, mut dimension, wall) = setup();
         match case {
-            0 => dimension.parameters.first.wall = Id::new(),
+            0 => {
+                dimension.parameters.first = DimensionReference::WallEndpoint {
+                    wall: Id::new(),
+                    endpoint: dimension.parameters.first.wall_endpoint().unwrap().1,
+                }
+            }
             1 => dimension.parameters.second = dimension.parameters.first,
             2 => {
                 let mut other = wall.clone();
                 other.header.id = Id::new();
-                dimension.parameters.second = DimensionReference {
+                dimension.parameters.second = DimensionReference::WallEndpoint {
                     wall: other.id(),
                     endpoint: DimensionEndpoint::Start,
                 };
@@ -188,7 +193,7 @@ fn live_measurements_and_orphans_follow_edits_and_undo_without_blocking_walls() 
     second_wall.header.id = Id::new();
     second_wall.parameters.start = Point2::new(4., 0.);
     second_wall.parameters.end = Point2::new(8., 0.);
-    dimension.parameters.second = DimensionReference {
+    dimension.parameters.second = DimensionReference::WallEndpoint {
         wall: second_wall.id(),
         endpoint: DimensionEndpoint::Start,
     };

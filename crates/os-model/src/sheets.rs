@@ -478,6 +478,66 @@ mod tests {
     }
 
     #[test]
+    fn one_sheet_can_link_independently_scaled_plan_and_section_views() {
+        let (mut model, sheet_id) = fixture();
+        let level = *model.levels.keys().next().unwrap();
+        let section = View::new(
+            "core.view",
+            ViewParams {
+                name: "Building section".into(),
+                kind: ViewKind::Section,
+                level: Some(level),
+                settings_revision: 0,
+                plan: None,
+                section: Some(crate::SectionViewSettings::new(
+                    Point2::new(0.0, 0.0),
+                    Point2::new(8.0, 0.0),
+                    -0.5,
+                    4.0,
+                )),
+            },
+        );
+        let section_id = section.id();
+        model.views.insert(section_id, section);
+
+        let parameters = &mut model.sheets.get_mut(&sheet_id).unwrap().parameters;
+        let plan = &mut parameters.viewports[0];
+        plan.model_center_m = Point2::new(12.0, 7.0);
+        plan.paper_center_mm = Point2::new(100.0, 80.0);
+        plan.width_mm = 180.0;
+        plan.height_mm = 124.0;
+        plan.scale_denominator = 100.0;
+        parameters.viewports.push(SheetViewport {
+            id: Id::new(),
+            view: section_id,
+            model_center_m: Point2::new(4.0, 1.75),
+            paper_center_mm: Point2::new(310.0, 80.0),
+            width_mm: 180.0,
+            height_mm: 124.0,
+            scale_denominator: 50.0,
+            title_override: None,
+        });
+
+        model.validate().unwrap();
+        let reopened: Model =
+            serde_json::from_value(serde_json::to_value(&model).unwrap()).unwrap();
+        assert_eq!(reopened, model);
+        let viewports = &reopened.sheets[&sheet_id].parameters.viewports;
+        assert_ne!(viewports[0].id, viewports[1].id);
+        assert_ne!(viewports[0].view, viewports[1].view);
+        assert_eq!(viewports[0].scale_denominator, 100.0);
+        assert_eq!(viewports[1].scale_denominator, 50.0);
+        assert_eq!(
+            reopened.views[&viewports[0].view].parameters.kind,
+            ViewKind::Plan
+        );
+        assert_eq!(
+            reopened.views[&viewports[1].view].parameters.kind,
+            ViewKind::Section
+        );
+    }
+
+    #[test]
     fn sheets_enforce_global_ids_numbers_and_collection_bounds() {
         let (model, id) = fixture();
         for collision in [

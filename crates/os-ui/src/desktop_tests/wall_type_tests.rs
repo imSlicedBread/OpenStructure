@@ -1,6 +1,64 @@
 use super::*;
 
 #[test]
+fn material_color_only_edit_refreshes_native_texture_and_history_at_both_dpis() {
+    for (size, scale) in [
+        (egui::vec2(1280., 800.), 1.),
+        (egui::vec2(1000., 650.), 1.5),
+    ] {
+        let mut h = Harness::at_size(size, scale);
+        let material = os_model::Material::new(
+            "core.material",
+            os_model::MaterialParams {
+                name: "Paint".into(),
+                density_kg_m3: 1000.,
+                color: [220, 20, 30],
+            },
+        );
+        let mid = material.id();
+        h.app
+            .editor
+            .command("Material", Command::AddMaterial(material))
+            .unwrap();
+        h.app.draft.material = Some(mid);
+        h.app.apply_wall();
+        h.app.select(None);
+        h.frame(vec![]);
+        h.frame(vec![]);
+        let original = h.app.viewport_cache.as_ref().unwrap().frame.rgba.clone();
+        let texture = h.app.viewport_cache.as_ref().unwrap().texture.id();
+        assert!(original.iter().any(|p| p[3] == 255));
+        let scene = h.app.editor.scene.clone();
+        let mut p = h.app.editor.document.model().materials[&mid]
+            .parameters
+            .clone();
+        p.color = [20, 30, 220];
+        h.app
+            .editor
+            .command(
+                "Color",
+                Command::UpdateMaterial {
+                    id: mid,
+                    parameters: p,
+                },
+            )
+            .unwrap();
+        h.frame(vec![]);
+        assert_eq!(h.app.editor.scene, scene);
+        let changed = h.app.viewport_cache.as_ref().unwrap().frame.rgba.clone();
+        assert_ne!(changed, original);
+        assert_eq!(h.app.viewport_cache.as_ref().unwrap().texture.id(), texture);
+        h.app.editor.undo().unwrap();
+        h.frame(vec![]);
+        assert_eq!(h.app.viewport_cache.as_ref().unwrap().frame.rgba, original);
+        h.app.editor.redo().unwrap();
+        h.frame(vec![]);
+        assert_eq!(h.app.viewport_cache.as_ref().unwrap().frame.rgba, changed);
+        assert_eq!(h.ctx.pixels_per_point(), scale);
+    }
+}
+
+#[test]
 fn wall_type_dialog_cancel_save_and_history_at_supported_dpi_profiles() {
     for (size, scale) in [
         (egui::vec2(1280.0, 800.0), 1.0),

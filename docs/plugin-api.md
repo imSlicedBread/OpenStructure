@@ -1,7 +1,7 @@
-# Plugin protocols: native Model API 9 and generic API 2
+# Plugin protocols: native Model API 26 and generic API 2
 
 Current compatibility boundary: native Wall guests that receive the full model
-must use API 9 with model schema 28. API-8 and older native guests are rejected and must be
+must use API 26 with model schema 45. API-25 and older native guests are rejected and must be
 rebuilt/reinstalled; API 2 remains the independent generic DTO protocol. The
 [B/C baseline audit](bc-baseline-audit.md) verifies independently
 installed Wall/column commands, descriptor forms, checked geometry, workers,
@@ -16,7 +16,7 @@ independent plan services acceptance remain required implementation work in D.
 
 Contract metadata can now be consumed with `default-features = false`, without
 host/model/document/kernel dependencies. The Cargo feature named `legacy-v1` is
-historical: it enables the native message structs now transported as API 9. See the separately resolved
+historical: it enables the native message structs now transported as API 26. See the separately resolved
 [contract consumer and compatibility notes](independent-contract.md).
 The independent [API-2 command service](generic-plugin-commands.md) now supports
 registered extension create/edit/delete with descriptors and scoped transactions.
@@ -32,7 +32,7 @@ private model pointers, document mutation handles or database connections cross
 the boundary. `plugins/walls` is the working reference plugin.
 
 A manifest declares its ID, display name, numeric major.minor.patch version,
-numeric `api_version = 9` for native Model guests or `api_version = 2` for
+numeric `api_version = 26` for native Model guests or `api_version = 2` for
 generic DTO guests, dependencies with exact versions, entrypoint,
 capabilities, requested permissions and registrations. The prototype master
 prompt used a string API version; the implemented TOML protocol uses an integer
@@ -98,8 +98,23 @@ even for a registered owner. Those commands are core transaction APIs, not a v1
 SDK expansion. Native headers in the retired API-1 wall replies used model schema 8;
 old guests that construct schema-1 or schema-2 headers failed validation without mutation and
 had to be rebuilt for the then-current development model. The API-1 full-model
-wire is now retired; API 9 formerly required schema 27 and currently requires
-schema 28. There is no stable independent model
+wire is now retired; API 9 used schemas 27 and 28. API 10 used schema 29
+with required serialized `OpeningParams.sill_override`. API 11 used schema 30,
+adding required `width_override` and `height_override` fields. Each optional
+number preserves inherit versus pin intent; geometry consumers resolve effective
+values through `Model::resolve_opening`. API 12 required schema 31 and its
+view-owned `opening_tags` collection. API 14 required schema 33,
+including room finish codes and RoomFinish schedule definitions alongside
+version-4 opening-family material assignments. API 18 required schema 37 with
+the shared material RGB field and nullable room material references. API 21
+required schema 40, including live room-bound ceiling sources. API 22 required
+schema 41 for persisted opening-tag label presets. API 23 required schema 42
+with typed `ScheduleParams.filters`. API 24 required schema 43 with tagged
+wall-endpoint and opening-jamb dimension references; API 25 required schema 44
+with project phases and element lifecycles. Current API 26 requires schema 45
+with version-3 plan phase settings. Native API 25 and
+older guests must rebuild and reinstall. Generic API 2, native container 2 and the Wasm
+buffer ABI are unchanged. There is no stable independent model
 DTO compatibility promise in this wall-specific v1 protocol. The Wasm buffer ABI
 and geometry-only probe remain unchanged. Do not advertise arbitrary third-party
 element authoring yet; the generic negotiated SDK must resolve model DTO independence.
@@ -108,7 +123,7 @@ Native opening type consumers use the schema-8 host model API:
 
 ```rust,ignore
 // Persisted instance intent; all fields are public.
-OpeningParams { name: String, host: Id, offset: f64, definition: OpeningDefinition }
+OpeningParams { name: String, host: Id, offset: f64, definition: OpeningDefinition, width_override: Option<f64>, height_override: Option<f64>, sill_override: Option<f64>, hinge: DoorHinge, swing: DoorSwing }
 OpeningDefinition::Legacy { kind: OpeningKind, width: f64, height: f64, sill: f64 }
 OpeningDefinition::Typed { type_id: Id }
 // Project-owned Entity<OpeningTypeParams>, with header type core.opening_type.

@@ -1,4 +1,6 @@
 use os_model::{Model, SCHEMA_VERSION};
+mod common;
+
 use os_storage::migrate;
 use serde_json::{Value, json};
 
@@ -56,11 +58,15 @@ fn four_to_current_preserves_all_existing_fields_and_rejects_ambiguous_input_ato
         .unwrap()
         .remove("wall_type_assignments");
     value.as_object_mut().unwrap().remove("columns");
+    value.as_object_mut().unwrap().remove("opening_tags");
     value
         .as_object_mut()
         .unwrap()
         .remove("plan_graphics_templates");
     value.as_object_mut().unwrap().remove("plan_graphics");
+    value.as_object_mut().unwrap().remove("stairs");
+    value.as_object_mut().unwrap().remove("roofs");
+    common::reverse_schema_38_migration(&mut value, &original);
     value["schema_version"] = json!(4);
     value["project"]["header"]["schema_version"] = json!(4);
     for key in [

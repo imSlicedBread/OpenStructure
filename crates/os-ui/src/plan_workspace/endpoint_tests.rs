@@ -2,11 +2,608 @@
 use super::*;
 #[path = "crop_tests.rs"]
 mod crop_tests;
+#[path = "junction_tests.rs"]
+mod junction_tests;
+#[path = "split_tests.rs"]
+mod split_tests;
 
 const PROFILES: [(egui::Vec2, f32); 2] = [
     (egui::vec2(1280.0, 800.0), 1.0),
     (egui::vec2(1000.0, 650.0), 1.5),
 ];
+
+fn dimension_repair_fixture(
+    h: &mut Harness,
+    layout: os_model::DimensionLayout,
+) -> (Id, usize, DimensionReference, Point2) {
+    use os_model::DimensionLayout::*;
+    let mut model = h.app.editor.document.model().clone();
+    let mut wall = model.walls[&h.wall].parameters.clone();
+    wall.start = if layout == Angular {
+        Point2::new(0.0, -1.0)
+    } else {
+        Point2::new(2.0, 0.0)
+    };
+    wall.end = if layout == Angular {
+        Point2::new(0.0, 1.0)
+    } else {
+        Point2::new(3.0, 0.0)
+    };
+    let wall = os_model::Wall::new(os_walls::WALL_TYPE, wall);
+    let other = wall.id();
+    model.walls.insert(other, wall);
+    let reference = DimensionReference::WallEndpoint {
+        wall: h.wall,
+        endpoint: DimensionEndpoint::Start,
+    };
+    let mut parameters = DimensionParams {
+        layout,
+        view: h.view,
+        first: reference,
+        second: DimensionReference::WallEndpoint {
+            endpoint: DimensionEndpoint::End,
+            wall: reference.entity(),
+        },
+        additional: Vec::new(),
+        baseline_spacing_m: if layout == Angular { 0.25 } else { 0.37 },
+        offset_m: if layout == Angular { 0.4 } else { -0.4 },
+        orphan_hint: Point2::new(0.0, 0.6),
+    };
+    let (anchor, target, point) = match layout {
+        Aligned => (1, parameters.second, Point2::new(1.0, 0.0)),
+        Chain | Baseline => {
+            let target = DimensionReference::WallEndpoint {
+                wall: other,
+                endpoint: DimensionEndpoint::Start,
+            };
+            parameters.additional.push(target);
+            (2, target, Point2::new(2.0, 0.0))
+        }
+        Angular => {
+            parameters.second = DimensionReference::WallEndpoint {
+                wall: other,
+                endpoint: DimensionEndpoint::Start,
+            };
+            (1, parameters.second, Point2::new(0.0, 0.7))
+        }
+    };
+    parameters.validate_creation(&model).unwrap();
+    match anchor {
+        1 => {
+            parameters.second = DimensionReference::WallEndpoint {
+                wall: Id::new(),
+                endpoint: parameters.second.wall_endpoint().unwrap().1,
+            }
+        }
+        2 => {
+            parameters.additional[0] = DimensionReference::WallEndpoint {
+                wall: Id::new(),
+                endpoint: parameters.additional[0].wall_endpoint().unwrap().1,
+            }
+        }
+        _ => unreachable!(),
+    }
+    let dimension = os_model::Dimension::new("core.dimension", parameters);
+    let id = dimension.id();
+    model.dimensions.insert(id, dimension);
+    h.app.editor.document = Document::from_model(model).unwrap();
+    h.app.editor.regenerate().unwrap();
+    h.app.plans.poll(&h.app.editor);
+    h.app.focus_plan(Some(h.view));
+    h.app.select(Some(id));
+    h.settle();
+    (id, anchor, target, point)
+}
+
+#[test]
+fn dimension_repair_properties_preview_commit_and_history_at_both_dpis() {
+    use os_model::DimensionLayout::*;
+    for (size, scale) in PROFILES {
+        for layout in [Aligned, Chain, Baseline, Angular] {
+            let mut h = Harness::new(size, scale);
+            let (id, anchor, target, point) = dimension_repair_fixture(&mut h, layout);
+            let before = h.app.editor.document.model().clone();
+            let scene = h.app.editor.scene.clone();
+            let revision = h.app.editor.document.revision();
+            let drawing = h.app.plans.drawing.as_ref().unwrap().identity();
+            h.click_text_in_band(&format!("Replace anchor {}", anchor + 1), 0.0, h.size.y);
+            h.frame(vec![]);
+            assert!(
+                h.app
+                    .plans
+                    .dimension_draft
+                    .as_ref()
+                    .unwrap()
+                    .repair
+                    .is_some()
+            );
+            let pointer = h.point(point);
+            h.frame(vec![egui::Event::PointerMoved(pointer)]);
+            assert_eq!(h.app.editor.document.model(), &before);
+            assert_eq!(h.app.editor.document.revision(), revision);
+            assert!(!h.app.editor.document.can_undo());
+            assert_eq!(h.app.editor.scene, scene);
+            assert_eq!(h.app.plans.drawing.as_ref().unwrap().identity(), drawing);
+            assert_eq!(h.app.selected, Some(id));
+            assert!(h.output.shapes.iter().any(|s| matches!(&s.shape,
+                egui::Shape::LineSegment { stroke, .. } if stroke.width == 1.8 && stroke.color == theme::ACCENT)), "{layout:?}");
+            assert!(h.output.shapes.iter().any(|s| matches!(&s.shape,
+                egui::Shape::Text(t) if t.galley.job.text.contains(if layout == Angular { "90.00" } else { "m" }) && t.galley.job.sections.iter().any(|s| s.format.color == theme::ACCENT))));
+            let mut expected = before.clone();
+            let params = &mut expected.dimensions.get_mut(&id).unwrap().parameters;
+            if anchor == 1 {
+                params.second = target;
+            } else {
+                params.additional[anchor - 2] = target;
+            }
+            params.validate_creation(&before).unwrap();
+            h.click(pointer);
+            h.settle();
+            assert!(!h.app.status_error, "{}", h.app.status);
+            h.clean();
+            assert_eq!(h.app.editor.document.model(), &expected);
+            assert_eq!(h.app.editor.document.revision(), revision + 1);
+            assert_eq!(h.app.selected, Some(id));
+            h.app.history(false);
+            assert_eq!(h.app.editor.document.model(), &before);
+            assert!(!h.app.editor.document.can_undo());
+            h.settle();
+            h.app.begin_dimension_repair(anchor);
+            h.frame(vec![]);
+            h.frame(vec![egui::Event::PointerMoved(h.point(point))]);
+            assert!(h.app.editor.document.can_redo());
+            assert_eq!(h.app.editor.document.model(), &before);
+            h.frame(vec![escape()]);
+            h.app.history(true);
+            assert_eq!(h.app.editor.document.model(), &expected);
+        }
+    }
+}
+
+#[test]
+fn dimension_repair_cancel_and_stale_context_at_both_dpis() {
+    for (size, scale) in PROFILES {
+        for cause in [
+            "escape",
+            "session",
+            "revision",
+            "selection",
+            "selection set",
+            "view",
+            "provider",
+            "drawing",
+            "missing drawing",
+            "pointer gone",
+        ] {
+            let mut h = Harness::new(size, scale);
+            let (_, anchor, _, point) =
+                dimension_repair_fixture(&mut h, os_model::DimensionLayout::Aligned);
+            let before = h.app.editor.document.model().clone();
+            h.app.begin_dimension_repair(anchor);
+            h.frame(vec![]);
+            let pointer = h.point(point);
+            h.press(pointer);
+            match cause {
+                "escape" => h.frame(vec![escape()]),
+                "pointer gone" => h.frame(vec![egui::Event::PointerGone]),
+                "session" => h.app.editor.document = Document::from_model(before.clone()).unwrap(),
+                "revision" => {
+                    h.app
+                        .editor
+                        .command("Concurrent edit", Command::RenameProject("Changed".into()))
+                        .unwrap();
+                }
+                "selection" => h.app.select(None),
+                "selection set" => {
+                    h.app.selected_ids.insert(h.wall);
+                }
+                "view" => h.app.focus_plan(None),
+                "provider" => {
+                    h.app.editor.host.unload(os_walls::PLUGIN_ID).unwrap();
+                }
+                "drawing" => {
+                    h.app.plans.drawing = Some(h.app.editor.native_wall_plan(h.view).unwrap())
+                }
+                "missing drawing" => h.app.plans.drawing = None,
+                _ => unreachable!(),
+            }
+            h.frame(vec![]);
+            assert!(h.app.plans.dimension_draft.is_none(), "{cause}");
+            h.release(pointer);
+            h.frame(vec![]);
+            assert!(!h.app.plans.dimension_repair_claimed, "{cause}");
+            if cause == "revision" {
+                h.app.history(false);
+            }
+            assert_eq!(h.app.editor.document.model(), &before, "{cause}");
+            assert!(!h.app.editor.document.can_undo(), "{cause}");
+        }
+    }
+}
+
+#[test]
+fn dimension_repair_first_anchor_rotated_plan_and_repeated_replacement() {
+    use os_model::{DimensionLayout::*, PlanViewBasis};
+    for (size, scale) in PROFILES {
+        for layout in [Aligned, Chain, Baseline, Angular] {
+            let mut h = Harness::new(size, scale);
+            let (id, broken, target, _) = dimension_repair_fixture(&mut h, layout);
+            let mut model = h.app.editor.document.model().clone();
+            let p = &mut model.dimensions.get_mut(&id).unwrap().parameters;
+            if broken == 1 {
+                p.second = target;
+            } else {
+                p.additional[broken - 2] = target;
+            }
+            let first = p.first;
+            p.first = DimensionReference::WallEndpoint {
+                wall: Id::new(),
+                endpoint: p.first.wall_endpoint().unwrap().1,
+            };
+            model
+                .views
+                .get_mut(&h.view)
+                .unwrap()
+                .parameters
+                .plan
+                .as_mut()
+                .unwrap()
+                .basis = PlanViewBasis {
+                origin: Point2::new(0.2, 0.3),
+                rotation: 0.63,
+            };
+            h.app.editor.document = Document::from_model(model).unwrap();
+            h.app.editor.regenerate().unwrap();
+            h.app.plans.poll(&h.app.editor);
+            h.app.focus_plan(Some(h.view));
+            h.app.select(Some(id));
+            h.settle();
+            let before = h.app.editor.document.model().clone();
+            h.app.begin_dimension_repair(0);
+            h.frame(vec![]);
+            h.click(h.point(Point2::new(
+                if layout == Angular { -0.7 } else { -1.0 },
+                0.0,
+            )));
+            h.settle();
+            assert!(!h.app.status_error, "{}", h.app.status);
+            let mut expected = before.clone();
+            expected.dimensions.get_mut(&id).unwrap().parameters.first = first;
+            assert_eq!(h.app.editor.document.model(), &expected);
+            assert_eq!(h.app.editor.document.revision(), 1);
+            if layout == Angular {
+                continue;
+            }
+            // Replacing an already resolved reference is deliberate too. Reuse a
+            // geometrically equivalent wall, keeping every other parameter.
+            let copy = os_model::Wall::new(
+                os_walls::WALL_TYPE,
+                expected.walls[&h.wall].parameters.clone(),
+            );
+            let copy_id = copy.id();
+            h.app
+                .editor
+                .command("Fixture duplicate wall", Command::AddWall(copy))
+                .unwrap();
+            h.settle();
+            // Identical visible endpoints have a stable UUID tie-break. Replace
+            // whichever wall is not currently preferred by that picker.
+            let preferred = h.wall.min(copy_id);
+            let other = h.wall.max(copy_id);
+            let mut p = h.app.editor.document.model().dimensions[&id]
+                .parameters
+                .clone();
+            p.first = DimensionReference::WallEndpoint {
+                wall: other,
+                endpoint: p.first.wall_endpoint().unwrap().1,
+            };
+            h.app
+                .editor
+                .command(
+                    "Fixture alternate reference",
+                    Command::UpdateDimension { id, parameters: p },
+                )
+                .unwrap();
+            h.settle();
+            let before_second = h.app.editor.document.model().clone();
+            let revision = h.app.editor.document.revision();
+            h.app.begin_dimension_repair(0);
+            h.frame(vec![]);
+            h.click(h.point(Point2::new(-1.0, 0.0)));
+            h.settle();
+            assert!(!h.app.status_error, "{}", h.app.status);
+            let mut expected_second = before_second.clone();
+            expected_second
+                .dimensions
+                .get_mut(&id)
+                .unwrap()
+                .parameters
+                .first = DimensionReference::WallEndpoint {
+                wall: preferred,
+                endpoint: DimensionEndpoint::Start,
+            };
+            assert_eq!(h.app.editor.document.model(), &expected_second);
+            assert_eq!(h.app.editor.document.revision(), revision + 1);
+            h.app.history(false);
+            assert_eq!(h.app.editor.document.model(), &before_second);
+            h.app.history(true);
+            assert_eq!(h.app.editor.document.model(), &expected_second);
+        }
+    }
+}
+
+#[test]
+fn dimension_repair_invalid_targets_leave_model_and_history_unchanged() {
+    use os_model::DimensionLayout::*;
+    for (size, scale) in PROFILES {
+        for (layout, case) in [
+            (Aligned, "duplicate"),
+            (Aligned, "empty"),
+            (Aligned, "level"),
+            (Aligned, "hidden"),
+            (Aligned, "crop"),
+            (Chain, "duplicate while missing"),
+            (Chain, "order"),
+            (Baseline, "off axis"),
+            (Angular, "parallel"),
+            (Angular, "duplicate"),
+        ] {
+            let mut h = Harness::new(size, scale);
+            let (id, anchor, target, mut point) = dimension_repair_fixture(&mut h, layout);
+            let mut model = h.app.editor.document.model().clone();
+            match case {
+                "duplicate" => point = Point2::new(-1.0, 0.0),
+                "empty" => point = Point2::new(0.5, -0.7),
+                "duplicate while missing" => {
+                    model.dimensions.get_mut(&id).unwrap().parameters.first =
+                        DimensionReference::WallEndpoint {
+                            wall: Id::new(),
+                            endpoint: model
+                                .dimensions
+                                .get_mut(&id)
+                                .unwrap()
+                                .parameters
+                                .first
+                                .wall_endpoint()
+                                .unwrap()
+                                .1,
+                        };
+                    point = Point2::new(1.0, 0.0);
+                }
+                "order" => {
+                    model
+                        .walls
+                        .get_mut(&target.entity())
+                        .unwrap()
+                        .parameters
+                        .start
+                        .x = 0.0;
+                    point.x = 0.0;
+                }
+                "off axis" => {
+                    model
+                        .walls
+                        .get_mut(&target.entity())
+                        .unwrap()
+                        .parameters
+                        .start
+                        .y = 0.5;
+                    point.y = 0.5;
+                }
+                "parallel" => {
+                    let wall = &mut model.walls.get_mut(&target.entity()).unwrap().parameters;
+                    wall.start = Point2::new(-1.0, 0.7);
+                    wall.end = Point2::new(1.0, 0.7);
+                    point = Point2::new(0.0, 0.7);
+                }
+                "hidden" => {
+                    model
+                        .views
+                        .get_mut(&h.view)
+                        .unwrap()
+                        .parameters
+                        .plan
+                        .as_mut()
+                        .unwrap()
+                        .visibility
+                        .walls = false
+                }
+                "crop" => {
+                    model
+                        .views
+                        .get_mut(&h.view)
+                        .unwrap()
+                        .parameters
+                        .plan
+                        .as_mut()
+                        .unwrap()
+                        .crop = Some(os_model::PlanViewCrop {
+                        min: Point2::new(-2.0, -1.0),
+                        max: Point2::new(0.5, 1.0),
+                    })
+                }
+                "level" => {
+                    let mut params = model.levels[&model.walls[&target.entity()].parameters.level]
+                        .parameters
+                        .clone();
+                    params.name = "Other".into();
+                    let level = os_model::Level::new("core.level", params);
+                    model
+                        .walls
+                        .get_mut(&target.entity())
+                        .unwrap()
+                        .parameters
+                        .level = level.id();
+                    model.levels.insert(level.id(), level);
+                }
+                _ => unreachable!(),
+            }
+            h.app.editor.document = Document::from_model(model).unwrap();
+            h.app.editor.regenerate().unwrap();
+            h.app.plans.poll(&h.app.editor);
+            h.app.focus_plan(Some(h.view));
+            h.app.select(Some(id));
+            h.settle();
+            let before = h.app.editor.document.model().clone();
+            h.app.begin_dimension_repair(anchor);
+            h.frame(vec![]);
+            let pointer = h.point(point);
+            let context = h.app.editor.native_plan_context(h.view).unwrap();
+            assert!(
+                h.app
+                    .dimension_repair_candidate(
+                        h.app.plans.drawing.as_ref().unwrap(),
+                        context,
+                        h.app.plans.cameras[&h.view],
+                        h.app.plans.canvas_rect.unwrap(),
+                        pointer
+                    )
+                    .is_err(),
+                "{layout:?}: {case}"
+            );
+            h.click(pointer);
+            assert_eq!(h.app.editor.document.model(), &before, "{case}");
+            assert!(!h.app.editor.document.can_undo(), "{case}");
+            assert!(h.app.plans.dimension_draft.is_some(), "{case}");
+        }
+    }
+}
+
+#[test]
+fn dimension_repair_two_unavailable_anchors_commit_separately_at_both_dpis() {
+    use os_model::DimensionLayout::*;
+    for (size, scale) in PROFILES {
+        for layout in [Aligned, Chain, Baseline, Angular] {
+            for wrong_level in [false, true] {
+                let mut h = Harness::new(size, scale);
+                let (id, anchor, target, point) = dimension_repair_fixture(&mut h, layout);
+                let mut model = h.app.editor.document.model().clone();
+                let first = model.dimensions[&id].parameters.first;
+                let unavailable_wall = if wrong_level {
+                    let mut level = model.levels[&model.walls[&h.wall].parameters.level]
+                        .parameters
+                        .clone();
+                    level.name = "Other repair level".into();
+                    let level = os_model::Level::new("core.level", level);
+                    let mut wall = model.walls[&h.wall].parameters.clone();
+                    wall.level = level.id();
+                    model.levels.insert(level.id(), level);
+                    let wall = os_model::Wall::new(os_walls::WALL_TYPE, wall);
+                    let id = wall.id();
+                    model.walls.insert(id, wall);
+                    id
+                } else {
+                    Id::new()
+                };
+                model.dimensions.get_mut(&id).unwrap().parameters.first =
+                    DimensionReference::WallEndpoint {
+                        wall: unavailable_wall,
+                        endpoint: model
+                            .dimensions
+                            .get_mut(&id)
+                            .unwrap()
+                            .parameters
+                            .first
+                            .wall_endpoint()
+                            .unwrap()
+                            .1,
+                    };
+                h.app.editor.document = Document::from_model(model).unwrap();
+                h.app.editor.regenerate().unwrap();
+                h.app.plans.poll(&h.app.editor);
+                h.app.focus_plan(Some(h.view));
+                h.app.select(Some(id));
+                h.settle();
+                let before = h.app.editor.document.model().clone();
+                let scene = h.app.editor.scene.clone();
+                let revision = h.app.editor.document.revision();
+                let mut intermediate = before.clone();
+                let params = &mut intermediate.dimensions.get_mut(&id).unwrap().parameters;
+                if anchor == 1 {
+                    params.second = target;
+                } else {
+                    params.additional[anchor - 2] = target;
+                }
+                assert!(params.validate_creation(&before).is_err());
+
+                h.click_text_in_band(&format!("Replace anchor {}", anchor + 1), 0.0, h.size.y);
+                h.frame(vec![]);
+                h.frame(vec![egui::Event::PointerMoved(h.point(point))]);
+                assert_eq!(h.app.editor.document.model(), &before);
+                assert_eq!(h.app.editor.document.revision(), revision);
+                assert_eq!(h.app.editor.scene, scene);
+                assert!(!h.app.editor.document.can_undo());
+                assert!(h.output.shapes.iter().any(|s| matches!(&s.shape,
+                    egui::Shape::Text(t) if t.galley.job.text.contains("still unresolved: 1"))));
+                assert!(h.output.shapes.iter().any(|s| matches!(&s.shape,
+                    egui::Shape::Circle(c) if c.radius == 7.0 && c.stroke.color == theme::ACCENT)));
+                assert!(!h.output.shapes.iter().any(|s| matches!(&s.shape,
+                    egui::Shape::LineSegment { stroke, .. } if stroke.width == 1.8 && stroke.color == theme::ACCENT)), "no measured ghost before all anchors resolve");
+                assert!(!h.output.shapes.iter().any(|s| matches!(&s.shape,
+                    egui::Shape::Text(t) if (t.galley.job.text.ends_with(" m") || t.galley.job.text.ends_with('°'))
+                        && t.galley.job.sections.iter().any(|s| s.format.color == theme::ACCENT))));
+                h.click(h.point(point));
+                h.settle();
+                assert!(!h.app.status_error, "{}", h.app.status);
+                h.clean();
+                assert_eq!(h.app.editor.document.model(), &intermediate);
+                assert_eq!(h.app.editor.document.revision(), revision + 1);
+                let params = &intermediate.dimensions[&id].parameters;
+                assert_eq!(
+                    dimension_unavailable_anchors(params, &intermediate),
+                    vec![1]
+                );
+                let reason = if layout == Angular {
+                    params.resolve_angular(&intermediate).unwrap_err()
+                } else {
+                    params.resolve_points(&intermediate).unwrap_err()
+                };
+                assert!(matches!(
+                    reason,
+                    os_model::DimensionDiagnostic::MissingWall
+                        | os_model::DimensionDiagnostic::MissingWallAt(1)
+                        | os_model::DimensionDiagnostic::WrongLevel
+                        | os_model::DimensionDiagnostic::WrongLevelAt(1)
+                ));
+                assert!(h.output.shapes.iter().any(|s| matches!(&s.shape,
+                    egui::Shape::Text(t) if t.galley.job.text.contains("Broken reference:"))));
+
+                // A fresh explicit action repairs the remaining original anchor.
+                h.click_text_in_band("Replace anchor 1", 0.0, h.size.y);
+                h.frame(vec![]);
+                let first_point = Point2::new(if layout == Angular { -0.7 } else { -1.0 }, 0.0);
+                h.frame(vec![egui::Event::PointerMoved(h.point(first_point))]);
+                assert_eq!(h.app.editor.document.model(), &intermediate);
+                assert_eq!(h.app.editor.document.revision(), revision + 1);
+                assert!(h.output.shapes.iter().any(|s| matches!(&s.shape,
+                    egui::Shape::LineSegment { stroke, .. } if stroke.width == 1.8 && stroke.color == theme::ACCENT)));
+                h.click(h.point(first_point));
+                h.settle();
+                assert!(!h.app.status_error, "{}", h.app.status);
+                let mut resolved = intermediate.clone();
+                resolved.dimensions.get_mut(&id).unwrap().parameters.first = first;
+                resolved.dimensions[&id]
+                    .parameters
+                    .validate_creation(&resolved)
+                    .unwrap();
+                assert_eq!(h.app.editor.document.model(), &resolved);
+                assert_eq!(h.app.editor.document.revision(), revision + 2);
+                assert_eq!(h.app.selected, Some(id));
+                h.clean();
+                h.app.history(false);
+                assert_eq!(h.app.editor.document.model(), &intermediate);
+                h.app.history(false);
+                assert_eq!(h.app.editor.document.model(), &before);
+                assert!(!h.app.editor.document.can_undo());
+                h.app.history(true);
+                assert_eq!(h.app.editor.document.model(), &intermediate);
+                h.app.history(true);
+                assert_eq!(h.app.editor.document.model(), &resolved);
+                assert!(!h.app.editor.document.can_redo());
+            }
+        }
+    }
+}
 
 #[test]
 fn angular_authoring_preview_cancel_and_single_transaction_at_both_dpis() {
@@ -74,8 +671,8 @@ fn angular_authoring_preview_cancel_and_single_transaction_at_both_dpis() {
         let committed = h.app.editor.document.model().clone();
         let d = &committed.dimensions[&id];
         assert_eq!(d.parameters.layout, os_model::DimensionLayout::Angular);
-        assert_eq!(d.parameters.first.wall, h.wall);
-        assert_eq!(d.parameters.second.wall, second);
+        assert_eq!(d.parameters.first.entity(), h.wall);
+        assert_eq!(d.parameters.second.entity(), second);
         assert!((d.parameters.resolve_angular(&committed).unwrap().degrees() - 90.0).abs() < 1e-8);
         assert_eq!(committed.dimensions.len(), before.dimensions.len() + 1);
         assert_eq!(h.app.editor.document.revision(), revision + 1);
@@ -107,6 +704,7 @@ impl Harness {
             os_model::MaterialParams {
                 name: "Fixture concrete".into(),
                 density_kg_m3: 2400.0,
+                color: [180, 180, 180],
             },
         );
         app.draft.material = Some(material.id());
@@ -207,7 +805,18 @@ impl Harness {
                 }
                 _ => None,
             })
-            .unwrap_or_else(|| panic!("text not rendered in band: {text}"));
+            .unwrap_or_else(|| {
+                let visible: Vec<_> = self
+                    .output
+                    .shapes
+                    .iter()
+                    .filter_map(|shape| match &shape.shape {
+                        egui::Shape::Text(text) => Some(text.galley.job.text.clone()),
+                        _ => None,
+                    })
+                    .collect();
+                panic!("text not rendered in band: {text}; visible text: {visible:?}")
+            });
         self.click(position);
     }
     fn circles(&self) -> Vec<egui::Pos2> {
@@ -370,8 +979,24 @@ fn endpoint_drag_preview_commit_identity_properties_and_history() {
             }
             let a = h.point(expected.start);
             let b = h.point(expected.end);
-            assert!(h.output.shapes.iter().any(|s| matches!(&s.shape,
-                egui::Shape::LineSegment { points, stroke } if *points == [a,b] && stroke.width == 2.0 && stroke.color == theme::ACCENT)));
+            let preview_lines: Vec<_> = h
+                .output
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::Shape::LineSegment { points, stroke }
+                        if stroke.width == 2.0 && stroke.color == theme::ACCENT =>
+                    {
+                        Some(*points)
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert!(
+                preview_lines.contains(&[a, b]),
+                "scale={scale} mode={mode:?} expected={:?} got={preview_lines:?}",
+                [a, b]
+            );
             h.release(p);
             h.clean();
             assert!(!h.app.status_error, "{}", h.app.status);
@@ -653,13 +1278,16 @@ fn aligned_dimensions_author_live_endpoint_references_with_one_history_step() {
         assert_eq!(committed.dimensions.len(), 1);
         let dimension = committed.dimensions[&id].clone();
         assert_eq!(dimension.parameters.view, view);
-        assert_eq!(dimension.parameters.first.wall, h.wall);
+        assert_eq!(dimension.parameters.first.entity(), h.wall);
         assert_eq!(
-            dimension.parameters.first.endpoint,
+            dimension.parameters.first.wall_endpoint().unwrap().1,
             DimensionEndpoint::Start
         );
-        assert_eq!(dimension.parameters.second.wall, h.wall);
-        assert_eq!(dimension.parameters.second.endpoint, DimensionEndpoint::End);
+        assert_eq!(dimension.parameters.second.entity(), h.wall);
+        assert_eq!(
+            dimension.parameters.second.wall_endpoint().unwrap().1,
+            DimensionEndpoint::End
+        );
         assert!((dimension.parameters.offset_m - 0.5).abs() < 1e-9);
         assert_eq!(committed.walls, before.walls);
         assert_eq!(h.app.editor.document.revision(), before_revision + 1);
@@ -758,8 +1386,14 @@ fn aligned_dimension_offset_is_editable_and_measurement_follows_wall_edits() {
         .unwrap();
     h.settle();
     let current = &h.app.editor.document.model().dimensions[&id];
-    assert_eq!(current.parameters.first.endpoint, DimensionEndpoint::Start);
-    assert_eq!(current.parameters.second.endpoint, DimensionEndpoint::End);
+    assert_eq!(
+        current.parameters.first.wall_endpoint().unwrap().1,
+        DimensionEndpoint::Start
+    );
+    assert_eq!(
+        current.parameters.second.wall_endpoint().unwrap().1,
+        DimensionEndpoint::End
+    );
     assert_eq!(
         current
             .parameters
@@ -783,6 +1417,339 @@ fn aligned_dimension_offset_is_editable_and_measurement_follows_wall_edits() {
             .length_metres,
         2.0
     );
+}
+
+fn add_dimension_test_opening(h: &mut Harness, kind: os_model::OpeningKind) -> (Id, Id) {
+    use os_model::{
+        Opening, OpeningDefinition, OpeningParams, OpeningType, OpeningTypeParams,
+        WindowPanePosition,
+    };
+    let mut model = h.app.editor.document.model().clone();
+    let opening_type = OpeningType::new(
+        "core.opening_type",
+        OpeningTypeParams {
+            family: Default::default(),
+            name: format!("Dimension {kind:?}"),
+            kind,
+            width: 0.6,
+            height: 2.0,
+            sill: if kind == os_model::OpeningKind::Window {
+                0.8
+            } else {
+                0.0
+            },
+            pane_position: WindowPanePosition::Center,
+        },
+    );
+    let type_id = opening_type.id();
+    model.opening_types.insert(type_id, opening_type);
+    let opening = Opening::new(
+        "core.opening",
+        OpeningParams {
+            name: format!("Dimension {kind:?}"),
+            host: h.wall,
+            offset: 0.3,
+            definition: OpeningDefinition::Typed { type_id },
+            width_override: None,
+            height_override: None,
+            sill_override: None,
+            hinge: Default::default(),
+            swing: Default::default(),
+        },
+    );
+    let opening_id = opening.id();
+    model.openings.insert(opening_id, opening);
+    h.app.editor.document = Document::from_model(model).unwrap();
+    h.app.editor.pending_geometry.insert(opening_id);
+    h.app.editor.regenerate().unwrap();
+    h.app.plans.poll(&h.app.editor);
+    h.app.focus_plan(Some(h.view));
+    h.settle();
+    (opening_id, type_id)
+}
+
+#[test]
+fn opening_jamb_dimensions_create_follow_live_width_and_history_at_both_dpis() {
+    use os_model::{DimensionJamb, DimensionLayout, DimensionReference, OpeningKind};
+
+    for (size, scale) in PROFILES {
+        for kind in [OpeningKind::Door, OpeningKind::Window] {
+            let mut h = Harness::new(size, scale);
+            let (opening_id, type_id) = add_dimension_test_opening(&mut h, kind);
+
+            let start = Point2::new(-0.7, 0.0);
+            let end = Point2::new(-0.1, 0.0);
+            let before = h.app.editor.document.model().clone();
+            let revision = h.app.editor.document.revision();
+            h.app.begin_dimension(h.view, DimensionLayout::Aligned);
+            h.frame(vec![]);
+            h.click(h.point(start));
+            h.frame(vec![]);
+            h.click(h.point(end));
+            let draft = h.app.plans.dimension_draft.as_ref().unwrap();
+            assert_eq!(
+                draft.first.as_ref().unwrap().reference,
+                DimensionReference::OpeningJamb {
+                    opening: opening_id,
+                    jamb: DimensionJamb::Start,
+                }
+            );
+            assert_eq!(
+                draft.second.as_ref().unwrap().reference,
+                DimensionReference::OpeningJamb {
+                    opening: opening_id,
+                    jamb: DimensionJamb::End,
+                }
+            );
+            let placement = h.point(Point2::new(-0.4, 0.5));
+            h.frame(vec![egui::Event::PointerMoved(placement)]);
+            assert_eq!(
+                h.app.editor.document.model(),
+                &before,
+                "preview is immutable"
+            );
+            assert_eq!(h.app.editor.document.revision(), revision);
+            assert!(
+                h.output.shapes.iter().any(|shape| matches!(
+                    &shape.shape,
+                    egui::Shape::Text(text) if text.galley.job.text == "0.600 m"
+                )),
+                "preview labels: {:?}",
+                h.output
+                    .shapes
+                    .iter()
+                    .filter_map(|shape| match &shape.shape {
+                        egui::Shape::Text(text) => Some(text.galley.job.text.clone()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+            );
+            h.click(placement);
+            h.settle();
+            h.clean();
+
+            let id = h.app.selected.expect("created dimension selected");
+            let committed = h.app.editor.document.model().clone();
+            let dimension = &committed.dimensions[&id].parameters;
+            assert_eq!(
+                dimension.first,
+                DimensionReference::OpeningJamb {
+                    opening: opening_id,
+                    jamb: DimensionJamb::Start,
+                }
+            );
+            assert_eq!(
+                dimension.second,
+                DimensionReference::OpeningJamb {
+                    opening: opening_id,
+                    jamb: DimensionJamb::End,
+                }
+            );
+            assert!((dimension.resolve(&committed).unwrap().length_metres - 0.6).abs() < 1e-9);
+            assert_eq!(h.app.editor.document.revision(), revision + 1);
+
+            let mut edited_type = committed.opening_types[&type_id].parameters.clone();
+            edited_type.width = 1.0;
+            h.app
+                .editor
+                .command(
+                    "Resize dimensioned opening",
+                    Command::UpdateOpeningType {
+                        id: type_id,
+                        parameters: edited_type,
+                    },
+                )
+                .unwrap();
+            h.settle();
+            let live = &h.app.editor.document.model().dimensions[&id].parameters;
+            assert!(
+                (live
+                    .resolve(h.app.editor.document.model())
+                    .unwrap()
+                    .length_metres
+                    - 1.0)
+                    .abs()
+                    < 1e-9
+            );
+            assert!(h.output.shapes.iter().any(|shape| matches!(
+                &shape.shape,
+                egui::Shape::Text(text) if text.galley.job.text == "1.000 m"
+            )));
+            h.app.history(false);
+            h.settle();
+            assert!(
+                (h.app.editor.document.model().dimensions[&id]
+                    .parameters
+                    .resolve(h.app.editor.document.model())
+                    .unwrap()
+                    .length_metres
+                    - 0.6)
+                    .abs()
+                    < 1e-9
+            );
+            h.app.history(false);
+            assert_eq!(h.app.editor.document.model(), &before);
+            h.app.history(true);
+            h.app.history(true);
+            h.settle();
+            assert!(
+                (h.app.editor.document.model().dimensions[&id]
+                    .parameters
+                    .resolve(h.app.editor.document.model())
+                    .unwrap()
+                    .length_metres
+                    - 1.0)
+                    .abs()
+                    < 1e-9
+            );
+        }
+    }
+}
+
+#[test]
+fn dimension_repair_can_target_visible_opening_jambs_at_both_dpis() {
+    use os_model::{
+        DimensionJamb, DimensionLayout, DimensionParams, DimensionReference, OpeningKind,
+    };
+
+    for (size, scale) in PROFILES {
+        let mut h = Harness::new(size, scale);
+        let (opening, _) = add_dimension_test_opening(&mut h, OpeningKind::Door);
+        let mut model = h.app.editor.document.model().clone();
+        let missing = Id::new();
+        let dimension = os_model::Dimension::new(
+            "core.dimension",
+            DimensionParams {
+                layout: DimensionLayout::Aligned,
+                view: h.view,
+                first: DimensionReference::OpeningJamb {
+                    opening: missing,
+                    jamb: DimensionJamb::Start,
+                },
+                second: DimensionReference::WallEndpoint {
+                    wall: h.wall,
+                    endpoint: DimensionEndpoint::End,
+                },
+                additional: Vec::new(),
+                baseline_spacing_m: 0.25,
+                offset_m: 0.5,
+                orphan_hint: Point2::new(0.0, 0.5),
+            },
+        );
+        let id = dimension.id();
+        model.dimensions.insert(id, dimension);
+        h.app.editor.document = Document::from_model(model.clone()).unwrap();
+        h.app.editor.regenerate().unwrap();
+        h.app.plans.poll(&h.app.editor);
+        h.app.focus_plan(Some(h.view));
+        h.app.select(Some(id));
+        h.settle();
+        let revision = h.app.editor.document.revision();
+
+        h.click_text_in_band("Replace anchor 1", 0.0, h.size.y);
+        h.frame(vec![]);
+        let pointer = h.point(Point2::new(-0.7, 0.0));
+        h.frame(vec![egui::Event::PointerMoved(pointer)]);
+        assert_eq!(h.app.editor.document.model(), &model);
+        assert_eq!(h.app.editor.document.revision(), revision);
+        assert!(h.output.shapes.iter().any(|shape| matches!(
+            &shape.shape,
+            egui::Shape::Text(text) if text.galley.job.text == "Opening Start jamb"
+        )));
+        h.click(pointer);
+        h.settle();
+        h.clean();
+        let repaired = h.app.editor.document.model().clone();
+        assert_eq!(
+            repaired.dimensions[&id].parameters.first,
+            DimensionReference::OpeningJamb {
+                opening,
+                jamb: DimensionJamb::Start,
+            }
+        );
+        repaired.dimensions[&id]
+            .parameters
+            .validate_creation(&repaired)
+            .unwrap();
+        assert_eq!(h.app.editor.document.revision(), revision + 1);
+
+        h.app.history(false);
+        h.settle();
+        assert_eq!(h.app.editor.document.model(), &model);
+        h.app.history(true);
+        h.settle();
+        assert_eq!(h.app.editor.document.model(), &repaired);
+    }
+}
+
+#[test]
+fn opening_jamb_anchor_hit_radius_and_hidden_crop_precedence_are_logical_pixels() {
+    use os_model::{DimensionJamb, DimensionReference, OpeningKind};
+
+    for (size, scale) in PROFILES {
+        let mut h = Harness::new(size, scale);
+        let (opening, _) = add_dimension_test_opening(&mut h, OpeningKind::Door);
+        let start = h.point(Point2::new(-0.7, 0.0));
+        let context = h.app.editor.native_plan_context(h.view).unwrap();
+        let rect = h.app.plans.canvas_rect.unwrap();
+        let camera = h.app.plans.cameras[&h.view];
+        let drawing = h.app.plans.drawing.as_ref().unwrap();
+        for (delta, expected) in [
+            (egui::vec2(12.0, 0.0), true),
+            (egui::vec2(12.01, 0.0), false),
+        ] {
+            let result = h
+                .app
+                .dimension_anchor_at(drawing, context, camera, rect, start + delta);
+            if expected {
+                assert_eq!(
+                    result.unwrap().reference,
+                    DimensionReference::OpeningJamb {
+                        opening,
+                        jamb: DimensionJamb::Start
+                    },
+                    "radius is in logical points at {scale}"
+                );
+            } else {
+                assert!(result.is_err(), "12.01 pt must miss at {scale}");
+            }
+        }
+
+        for visibility in ["hidden", "cropped"] {
+            let mut model = h.app.editor.document.model().clone();
+            let plan = model
+                .views
+                .get_mut(&h.view)
+                .unwrap()
+                .parameters
+                .plan
+                .as_mut()
+                .unwrap();
+            if visibility == "hidden" {
+                plan.visibility.walls = false;
+            } else {
+                plan.crop = Some(os_model::PlanViewCrop {
+                    min: Point2::new(-1.0, -0.5),
+                    max: Point2::new(-0.8, 0.5),
+                });
+            }
+            h.app.editor.document = Document::from_model(model).unwrap();
+            h.app.editor.regenerate().unwrap();
+            h.app.plans.poll(&h.app.editor);
+            h.app.focus_plan(Some(h.view));
+            h.settle();
+            let context = h.app.editor.native_plan_context(h.view).unwrap();
+            let rect = h.app.plans.canvas_rect.unwrap();
+            let camera = h.app.plans.cameras[&h.view];
+            let drawing = h.app.plans.drawing.as_ref().unwrap();
+            assert!(
+                h.app
+                    .dimension_anchor_at(drawing, context, camera, rect, start)
+                    .is_err(),
+                "opening jamb is not an anchor when {visibility}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -878,17 +1845,23 @@ fn chain_and_baseline_dimensions_collect_ordered_anchors_and_commit_once() {
             assert_eq!(committed.dimensions.len(), 1);
             let dimension = committed.dimensions[&id].clone();
             assert_eq!(dimension.parameters.layout, layout);
-            assert_eq!(dimension.parameters.first.wall, h.wall);
+            assert_eq!(dimension.parameters.first.entity(), h.wall);
             assert_eq!(
-                dimension.parameters.first.endpoint,
+                dimension.parameters.first.wall_endpoint().unwrap().1,
                 DimensionEndpoint::Start
             );
-            assert_eq!(dimension.parameters.second.wall, h.wall);
-            assert_eq!(dimension.parameters.second.endpoint, DimensionEndpoint::End);
-            assert_eq!(dimension.parameters.additional.len(), 1);
-            assert_eq!(dimension.parameters.additional[0].wall, continuation_id);
+            assert_eq!(dimension.parameters.second.entity(), h.wall);
             assert_eq!(
-                dimension.parameters.additional[0].endpoint,
+                dimension.parameters.second.wall_endpoint().unwrap().1,
+                DimensionEndpoint::End
+            );
+            assert_eq!(dimension.parameters.additional.len(), 1);
+            assert_eq!(dimension.parameters.additional[0].entity(), continuation_id);
+            assert_eq!(
+                dimension.parameters.additional[0]
+                    .wall_endpoint()
+                    .unwrap()
+                    .1,
                 DimensionEndpoint::Start
             );
             assert_eq!(dimension.parameters.baseline_spacing_m, 0.25);
@@ -1030,9 +2003,14 @@ fn endpoint_installed_drag_submits_and_worker_owns_completion() {
     let directory =
         std::env::var_os("OPENSTRUCTURE_WALL_TEST_PLUGIN").expect("installed Wall directory");
     for (size, scale) in PROFILES {
-        for mode in [WallEdit::ResizeStart, WallEdit::ResizeEnd] {
+        for mode in [
+            WallEdit::ResizeStart,
+            WallEdit::ResizeEnd,
+            WallEdit::TrimEnd,
+        ] {
             for cancel in [false, true] {
                 let mut h = Harness::new(size, scale);
+                let boundary = (mode == WallEdit::TrimEnd).then(|| add_trim_boundary(&mut h, 1.5));
                 h.app.editor.host.unload(os_walls::PLUGIN_ID).unwrap();
                 h.app
                     .editor
@@ -1066,12 +2044,17 @@ fn endpoint_installed_drag_submits_and_worker_owns_completion() {
                 h.release(to);
                 h.frame(vec![]);
                 let before = h.app.editor.document.model().clone();
-                let moving = if mode == WallEdit::ResizeStart {
-                    before.walls[&h.wall].parameters.start
+                if mode == WallEdit::TrimEnd {
+                    h.app.begin_plan_wall_edit(h.view, h.wall, mode);
+                    h.frame(vec![]);
                 } else {
-                    before.walls[&h.wall].parameters.end
-                };
-                h.press(h.point(moving));
+                    let moving = if mode == WallEdit::ResizeStart {
+                        before.walls[&h.wall].parameters.start
+                    } else {
+                        before.walls[&h.wall].parameters.end
+                    };
+                    h.press(h.point(moving));
+                }
                 assert!(
                     h.app
                         .wall_gesture
@@ -1079,7 +2062,16 @@ fn endpoint_installed_drag_submits_and_worker_owns_completion() {
                         .expect("handle claimed")
                         .is_installed()
                 );
-                let destination = Point2::new(0.0, 1.0);
+                let destination = if mode == WallEdit::TrimEnd {
+                    h.app
+                        .wall_gesture
+                        .as_ref()
+                        .unwrap()
+                        .trim_extend_point(&before.walls[&boundary.unwrap()].parameters)
+                        .unwrap()
+                } else {
+                    Point2::new(0.0, 1.0)
+                };
                 let expected = h
                     .app
                     .wall_gesture
@@ -1087,10 +2079,18 @@ fn endpoint_installed_drag_submits_and_worker_owns_completion() {
                     .unwrap()
                     .parameters(destination)
                     .unwrap();
-                let p = h.point(destination);
+                let p = if mode == WallEdit::TrimEnd {
+                    h.point(Point2::new(1.5, 0.0))
+                } else {
+                    h.point(destination)
+                };
                 h.frame(vec![egui::Event::PointerMoved(p)]);
                 assert_eq!(h.app.editor.document.model(), &before);
-                h.release(p);
+                if mode == WallEdit::TrimEnd {
+                    h.click(p);
+                } else {
+                    h.release(p);
+                }
                 h.clean();
                 assert!(h.app.editor.plugin_work_pending(), "{}", h.app.status);
                 assert_eq!(h.app.editor.document.model(), &before);
@@ -1229,4 +2229,982 @@ fn annotation_label_and_marker_bounds_stay_inside_the_plan_crop() {
         )
         .unwrap()
     );
+}
+
+fn install_transform_openings(
+    h: &mut Harness,
+    pane_position: os_model::WindowPanePosition,
+    typed_wall: bool,
+) -> (Id, Id, Option<Id>) {
+    use os_model::{
+        LayerFunction, Opening, OpeningDefinition, OpeningKind, OpeningParams, OpeningType,
+        OpeningTypeParams, WallLayer, WallType, WallTypeAssignment, WallTypeParams,
+    };
+
+    let mut model = h.app.editor.document.model().clone();
+    let door_type = OpeningType::new(
+        "core.opening_type",
+        OpeningTypeParams {
+            family: Default::default(),
+            name: "Transform door".into(),
+            kind: OpeningKind::Door,
+            width: 0.75,
+            height: 2.1,
+            sill: 0.0,
+            pane_position: Default::default(),
+        },
+    );
+    let door_type_id = door_type.id();
+    model.opening_types.insert(door_type_id, door_type);
+    let window_type = OpeningType::new(
+        "core.opening_type",
+        OpeningTypeParams {
+            family: Default::default(),
+            name: "Transform window".into(),
+            kind: OpeningKind::Window,
+            width: 0.45,
+            height: 1.2,
+            sill: 0.5,
+            pane_position,
+        },
+    );
+    let window_type_id = window_type.id();
+    model.opening_types.insert(window_type_id, window_type);
+    let door = Opening::new(
+        "core.opening",
+        OpeningParams {
+            name: "Preserve door".into(),
+            host: h.wall,
+            offset: 0.2,
+            definition: OpeningDefinition::Typed {
+                type_id: door_type_id,
+            },
+            width_override: None,
+            height_override: None,
+            sill_override: None,
+            hinge: os_model::DoorHinge::End,
+            swing: os_model::DoorSwing::Left,
+        },
+    );
+    let door_id = door.id();
+    model.openings.insert(door_id, door);
+    let window = Opening::new(
+        "core.opening",
+        OpeningParams {
+            name: "Preserve window".into(),
+            host: h.wall,
+            offset: 1.2,
+            definition: OpeningDefinition::Typed {
+                type_id: window_type_id,
+            },
+            width_override: None,
+            height_override: None,
+            sill_override: None,
+            hinge: Default::default(),
+            swing: Default::default(),
+        },
+    );
+    let window_id = window.id();
+    model.openings.insert(window_id, window);
+
+    let wall_type_id = if typed_wall {
+        let thickness = model.walls[&h.wall].parameters.thickness;
+        let wall_type = WallType::new(
+            "core.wall_type",
+            WallTypeParams {
+                name: "Transform compound wall".into(),
+                layers: vec![WallLayer {
+                    id: Id::new(),
+                    name: "Structure".into(),
+                    thickness,
+                    function: LayerFunction::Structure,
+                    material: None,
+                }],
+            },
+        );
+        let id = wall_type.id();
+        model.wall_types.insert(id, wall_type);
+        model.wall_type_assignments.insert(
+            h.wall,
+            WallTypeAssignment {
+                type_id: id,
+                flipped: false,
+            },
+        );
+        Some(id)
+    } else {
+        None
+    };
+
+    h.app.editor.document = Document::from_model(model).unwrap();
+    h.app
+        .editor
+        .pending_geometry
+        .extend([h.wall, door_id, window_id]);
+    h.app.editor.regenerate().unwrap();
+    h.app.plans.poll(&h.app.editor);
+    h.app.focus_plan(Some(h.view));
+    h.app.select(Some(h.wall));
+    h.settle();
+    (door_id, window_id, wall_type_id)
+}
+
+fn add_trim_boundary(h: &mut Harness, x: f64) -> Id {
+    let mut model = h.app.editor.document.model().clone();
+    let mut parameters = model.walls[&h.wall].parameters.clone();
+    parameters.name = "Trim boundary".into();
+    parameters.start = Point2::new(x, -1.0);
+    parameters.end = Point2::new(x, 1.0);
+    let boundary = os_model::Wall::new(os_walls::WALL_TYPE, parameters);
+    let id = boundary.id();
+    model.walls.insert(id, boundary);
+    h.app.editor.document = Document::from_model(model).unwrap();
+    h.app.editor.regenerate().unwrap();
+    h.app.plans.poll(&h.app.editor);
+    h.app.focus_plan(Some(h.view));
+    h.app.select(Some(h.wall));
+    h.settle();
+    id
+}
+
+#[test]
+fn trim_extend_start_and_end_keep_hosted_openings_and_commit_once_at_both_dpis() {
+    use crate::plan_gesture::WallEdit;
+    use os_model::WindowPanePosition;
+
+    for (size, scale) in PROFILES {
+        for (mode, boundary_x, expected_start, expected_end) in [
+            (
+                WallEdit::TrimStart,
+                -1.5,
+                Point2::new(-1.5, 0.0),
+                Point2::new(1.0, 0.0),
+            ),
+            (
+                WallEdit::TrimEnd,
+                1.5,
+                Point2::new(-1.0, 0.0),
+                Point2::new(1.5, 0.0),
+            ),
+        ] {
+            let mut h = Harness::new(size, scale);
+            let (door, window, _) =
+                install_transform_openings(&mut h, WindowPanePosition::Center, true);
+            let boundary = add_trim_boundary(&mut h, boundary_x);
+            h.app.plans.split = true;
+            h.frame(vec![]);
+            let before = h.app.editor.document.model().clone();
+            let scene = h.app.editor.scene.clone();
+            let revision = h.app.editor.document.revision();
+            let wall_before = before.walls[&h.wall].clone();
+            let door_before = before.openings[&door].clone();
+            let window_before = before.openings[&window].clone();
+            let door_world_start = Point2::new(
+                wall_before.parameters.start.x
+                    + (wall_before.parameters.end.x - wall_before.parameters.start.x)
+                        / wall_before.parameters.length()
+                        * door_before.parameters.offset,
+                wall_before.parameters.start.y
+                    + (wall_before.parameters.end.y - wall_before.parameters.start.y)
+                        / wall_before.parameters.length()
+                        * door_before.parameters.offset,
+            );
+            let window_world_start = Point2::new(
+                wall_before.parameters.start.x
+                    + (wall_before.parameters.end.x - wall_before.parameters.start.x)
+                        / wall_before.parameters.length()
+                        * window_before.parameters.offset,
+                wall_before.parameters.start.y
+                    + (wall_before.parameters.end.y - wall_before.parameters.start.y)
+                        / wall_before.parameters.length()
+                        * window_before.parameters.offset,
+            );
+
+            let label = if mode == WallEdit::TrimStart {
+                "Trim/Extend start"
+            } else {
+                "Trim/Extend end"
+            };
+            h.click_text_in_band(label, 0.0, h.size.y);
+            h.frame(vec![]);
+            assert!(h.app.wall_gesture.as_ref().unwrap().is_trim_extend());
+            let boundary_hit = h.point(Point2::new(boundary_x, 0.0));
+            assert!(h.app.plans.canvas_rect.unwrap().contains(boundary_hit));
+            h.frame(vec![egui::Event::PointerMoved(boundary_hit)]);
+            assert_eq!(h.app.editor.document.model(), &before);
+            assert_eq!(h.app.editor.document.revision(), revision);
+            assert_eq!(h.app.editor.scene, scene);
+            assert!(h.output.shapes.iter().any(|shape| matches!(
+                &shape.shape,
+                egui::Shape::LineSegment { stroke, .. }
+                    if stroke.width == 2.0 && stroke.color == theme::ACCENT
+            )));
+
+            h.click(boundary_hit);
+            h.settle();
+            h.clean();
+            assert!(!h.app.status_error, "{}", h.app.status);
+            let edited = h.app.editor.document.model().clone();
+            let wall = &edited.walls[&h.wall];
+            assert_eq!(wall.header, wall_before.header);
+            assert_eq!(wall.parameters.level, wall_before.parameters.level);
+            assert_eq!(wall.parameters.material, wall_before.parameters.material);
+            assert_eq!(wall.parameters.thickness, wall_before.parameters.thickness);
+            assert_eq!(wall.parameters.height, wall_before.parameters.height);
+            assert!(wall.parameters.start.distance(expected_start) < 1e-9);
+            assert!(wall.parameters.end.distance(expected_end) < 1e-9);
+            assert!(edited.walls.contains_key(&boundary));
+            assert_eq!(edited.openings[&door].id(), door);
+            assert_eq!(edited.openings[&window].id(), window);
+            if mode == WallEdit::TrimStart {
+                assert!((edited.openings[&door].parameters.offset - 0.7).abs() < 1e-9);
+                assert!((edited.openings[&window].parameters.offset - 1.7).abs() < 1e-9);
+            } else {
+                assert_eq!(
+                    edited.openings[&door].parameters.offset,
+                    door_before.parameters.offset
+                );
+                assert_eq!(
+                    edited.openings[&window].parameters.offset,
+                    window_before.parameters.offset
+                );
+            }
+            let direction = Point2::new(
+                (wall.parameters.end.x - wall.parameters.start.x) / wall.parameters.length(),
+                (wall.parameters.end.y - wall.parameters.start.y) / wall.parameters.length(),
+            );
+            let door_world_after = Point2::new(
+                wall.parameters.start.x + direction.x * edited.openings[&door].parameters.offset,
+                wall.parameters.start.y + direction.y * edited.openings[&door].parameters.offset,
+            );
+            let window_world_after = Point2::new(
+                wall.parameters.start.x + direction.x * edited.openings[&window].parameters.offset,
+                wall.parameters.start.y + direction.y * edited.openings[&window].parameters.offset,
+            );
+            assert!(door_world_after.distance(door_world_start) < 1e-9);
+            assert!(window_world_after.distance(window_world_start) < 1e-9);
+            assert_eq!(h.app.editor.document.revision(), revision + 1);
+            assert_ne!(h.app.editor.scene, scene);
+
+            h.app.history(false);
+            assert_eq!(h.app.editor.document.model(), &before);
+            h.app.history(true);
+            assert_eq!(h.app.editor.document.model(), &edited);
+        }
+    }
+}
+
+#[test]
+fn trim_extend_rejects_invalid_opening_fit_without_partial_mutation() {
+    use crate::plan_gesture::WallEdit;
+    use os_model::WindowPanePosition;
+
+    let mut h = Harness::new(PROFILES[0].0, PROFILES[0].1);
+    install_transform_openings(&mut h, WindowPanePosition::Center, true);
+    let boundary = add_trim_boundary(&mut h, 0.0);
+    let before = h.app.editor.document.model().clone();
+    let revision = h.app.editor.document.revision();
+    h.app
+        .begin_plan_wall_edit(h.view, h.wall, WallEdit::TrimStart);
+    h.frame(vec![]);
+    let hit = h.point(Point2::new(0.0, 0.0));
+    h.click(hit);
+    assert!(h.app.status_error);
+    assert!(h.app.status.contains("opening"), "{}", h.app.status);
+    assert_eq!(h.app.editor.document.model(), &before);
+    assert_eq!(h.app.editor.document.revision(), revision);
+    assert!(!h.app.editor.document.can_undo());
+    assert!(h.app.editor.document.model().walls.contains_key(&boundary));
+    h.frame(vec![escape()]);
+    h.frame(vec![]);
+    h.clean();
+    assert_eq!(h.app.editor.document.model(), &before);
+}
+
+#[test]
+fn wall_rotate_pointer_preview_commit_preserves_openings_and_history_at_both_dpis() {
+    use crate::plan_workspace::transforms::Mode;
+    use os_model::WindowPanePosition;
+
+    for (size, scale) in PROFILES {
+        let mut h = Harness::new(size, scale);
+        let (door, window, _) =
+            install_transform_openings(&mut h, WindowPanePosition::Center, true);
+        let before = h.app.editor.document.model().clone();
+        let scene = h.app.editor.scene.clone();
+        let revision = h.app.editor.document.revision();
+        let drawing = h.app.plans.drawing.as_ref().unwrap().identity();
+        let original_wall = before.walls[&h.wall].clone();
+        let original_door = before.openings[&door].clone();
+        let original_window = before.openings[&window].clone();
+        h.app.plans.split = true;
+        h.frame(vec![]);
+
+        h.app.begin_wall_transform(Mode::Rotate);
+        h.frame(vec![]);
+        assert!(h.app.plans.transform.is_some());
+        let exact = {
+            let context = h.app.editor.native_plan_context(h.view).unwrap();
+            let draft = h.app.plans.transform.as_mut().unwrap();
+            draft.degrees = "90".into();
+            draft
+                .candidate(context.basis.world_to_plane(Point2::new(0.0, 1.0)).unwrap())
+                .unwrap()
+                .model
+        };
+        assert!((exact.walls[&h.wall].parameters.start.x).abs() < 1e-12);
+        assert!((exact.walls[&h.wall].parameters.start.y + 1.0).abs() < 1e-12);
+        assert!((exact.walls[&h.wall].parameters.end.x).abs() < 1e-12);
+        assert!((exact.walls[&h.wall].parameters.end.y - 1.0).abs() < 1e-12);
+        h.app.plans.transform.as_mut().unwrap().degrees.clear();
+        let origin = h.point(original_wall.parameters.end);
+        let destination = h.point(Point2::new(0.0, 1.0));
+        h.press(origin);
+        h.frame(vec![egui::Event::PointerMoved(destination)]);
+        assert_eq!(h.app.editor.document.model(), &before);
+        assert_eq!(h.app.editor.document.revision(), revision);
+        assert!(!h.app.editor.document.can_undo());
+        assert_eq!(h.app.editor.scene, scene);
+        assert!(h.output.shapes.iter().any(|shape| matches!(
+            &shape.shape,
+            egui::Shape::LineSegment { stroke, .. }
+                if stroke.width == 2.0 && stroke.color == theme::ACCENT
+        )));
+
+        h.release(destination);
+        h.frame(vec![]);
+        h.settle();
+        assert!(!h.app.status_error, "{}", h.app.status);
+        assert!(h.app.plans.transform.is_none());
+        assert_ne!(h.app.plans.drawing.as_ref().unwrap().identity(), drawing);
+        let edited = h.app.editor.document.model().clone();
+        let edited_wall = &edited.walls[&h.wall];
+        assert_eq!(edited_wall.header, original_wall.header);
+        assert_eq!(edited_wall.parameters.name, original_wall.parameters.name);
+        assert_eq!(edited_wall.parameters.level, original_wall.parameters.level);
+        assert_eq!(
+            edited_wall.parameters.height,
+            original_wall.parameters.height
+        );
+        assert_eq!(
+            edited_wall.parameters.thickness,
+            original_wall.parameters.thickness
+        );
+        assert_eq!(
+            edited_wall.parameters.material,
+            original_wall.parameters.material
+        );
+        assert!((edited_wall.parameters.start.x).abs() < 1e-12);
+        assert!((edited_wall.parameters.start.y + 1.0).abs() < 1e-12);
+        assert!((edited_wall.parameters.end.x).abs() < 1e-12);
+        assert!((edited_wall.parameters.end.y - 1.0).abs() < 1e-12);
+        assert_eq!(edited.openings[&door], original_door);
+        assert_eq!(edited.openings[&window], original_window);
+        assert_eq!(edited.wall_type_assignments, before.wall_type_assignments);
+        assert_eq!(h.app.editor.document.revision(), revision + 1);
+        assert_ne!(h.app.editor.scene, scene);
+
+        h.app.history(false);
+        assert_eq!(h.app.editor.document.model(), &before);
+        assert!(!h.app.editor.document.can_undo());
+        h.app.history(true);
+        assert_eq!(h.app.editor.document.model(), &edited);
+    }
+}
+
+#[test]
+fn wall_mirror_preview_commits_door_and_layer_handedness_once() {
+    use crate::plan_workspace::transforms::Mode;
+    use os_model::{DoorHinge, DoorSwing, WindowPanePosition};
+
+    for (size, scale) in PROFILES {
+        let mut h = Harness::new(size, scale);
+        let (door, window, wall_type) =
+            install_transform_openings(&mut h, WindowPanePosition::Center, true);
+        let before = h.app.editor.document.model().clone();
+        let scene = h.app.editor.scene.clone();
+        let revision = h.app.editor.document.revision();
+        let door_before = before.openings[&door].clone();
+        let window_before = before.openings[&window].clone();
+        h.app.plans.split = true;
+        h.frame(vec![]);
+
+        h.app.begin_wall_transform(Mode::Mirror);
+        h.frame(vec![]);
+        let axis_start = h.point(Point2::new(0.0, -0.5));
+        h.click(axis_start);
+        assert_eq!(h.app.editor.document.model(), &before);
+        assert!(h.app.plans.transform.as_ref().unwrap().axis.is_some());
+        let axis_end = h.point(Point2::new(0.0, 0.5));
+        h.frame(vec![egui::Event::PointerMoved(axis_end)]);
+        assert_eq!(h.app.editor.document.model(), &before);
+        assert_eq!(h.app.editor.document.revision(), revision);
+        assert_eq!(h.app.editor.scene, scene);
+        h.click(axis_end);
+        h.frame(vec![]);
+        assert!(!h.app.status_error, "{}", h.app.status);
+        let edited = h.app.editor.document.model().clone();
+        let wall = &edited.walls[&h.wall];
+        assert_eq!(wall.header, before.walls[&h.wall].header);
+        assert!((wall.parameters.start.x - 1.0).abs() < 1e-12);
+        assert!(wall.parameters.start.y.abs() < 1e-12);
+        assert!((wall.parameters.end.x + 1.0).abs() < 1e-12);
+        assert!(wall.parameters.end.y.abs() < 1e-12);
+        assert_eq!(
+            edited.wall_type_assignments[&h.wall].type_id,
+            wall_type.unwrap()
+        );
+        assert!(edited.wall_type_assignments[&h.wall].flipped);
+        assert_eq!(edited.openings[&door].id(), door_before.id());
+        assert_eq!(
+            edited.openings[&door].parameters.host,
+            door_before.parameters.host
+        );
+        assert_eq!(
+            edited.openings[&door].parameters.offset,
+            door_before.parameters.offset
+        );
+        assert_eq!(edited.openings[&door].parameters.hinge, DoorHinge::End);
+        assert_eq!(edited.openings[&door].parameters.swing, DoorSwing::Right);
+        assert_eq!(edited.openings[&window], window_before);
+        assert_eq!(h.app.editor.document.revision(), revision + 1);
+        assert_ne!(h.app.editor.scene, scene);
+
+        h.app.history(false);
+        assert_eq!(h.app.editor.document.model(), &before);
+        h.app.history(true);
+        assert_eq!(h.app.editor.document.model(), &edited);
+    }
+}
+
+#[test]
+fn wall_mirror_reflects_across_horizontal_and_diagonal_axes() {
+    use crate::plan_workspace::transforms::{Draft, Mode};
+
+    let mut h = Harness::new(PROFILES[0].0, PROFILES[0].1);
+    let mut model = h.app.editor.document.model().clone();
+    model.walls.get_mut(&h.wall).unwrap().parameters.start.y = 0.5;
+    model.walls.get_mut(&h.wall).unwrap().parameters.end.y = 0.5;
+    h.app.editor.document = Document::from_model(model).unwrap();
+    h.app.editor.regenerate().unwrap();
+    h.app.plans.poll(&h.app.editor);
+    h.app.focus_plan(Some(h.view));
+    h.app.select(Some(h.wall));
+    h.settle();
+
+    let context = h.app.editor.native_plan_context(h.view).unwrap();
+    for (axis_start, axis_end, expected_start, expected_end) in [
+        (
+            Point2::new(-0.8, 0.0),
+            Point2::new(0.8, 0.0),
+            Point2::new(-1.0, -0.5),
+            Point2::new(1.0, -0.5),
+        ),
+        (
+            Point2::new(-0.8, -0.8),
+            Point2::new(0.8, 0.8),
+            Point2::new(0.5, -1.0),
+            Point2::new(0.5, 1.0),
+        ),
+    ] {
+        let mut draft = Draft::begin(&h.app, Mode::Mirror).unwrap();
+        draft.axis = Some(context.basis.world_to_plane(axis_start).unwrap());
+        let candidate = draft
+            .candidate(context.basis.world_to_plane(axis_end).unwrap())
+            .unwrap();
+        let wall = &candidate.model.walls[&h.wall].parameters;
+        assert!(wall.start.distance(expected_start) < 1e-12);
+        assert!(wall.end.distance(expected_end) < 1e-12);
+        assert_eq!(
+            h.app.editor.document.model().walls[&h.wall]
+                .parameters
+                .start
+                .y,
+            0.5
+        );
+        assert_eq!(
+            h.app.editor.document.model().walls[&h.wall]
+                .parameters
+                .end
+                .y,
+            0.5
+        );
+    }
+}
+
+#[test]
+fn wall_rotation_uses_rotated_plan_basis_at_large_coordinates() {
+    use crate::plan_workspace::transforms::Mode;
+    use os_model::{PlanSettings, PlanViewBasis};
+
+    let mut h = Harness::new(PROFILES[0].0, PROFILES[0].1);
+    let base = 100_000_000.0;
+    let mut model = h.app.editor.document.model().clone();
+    let wall = &mut model.walls.get_mut(&h.wall).unwrap().parameters;
+    wall.start = Point2::new(base - 1.0, base);
+    wall.end = Point2::new(base + 1.0, base);
+    let view = model.views.get_mut(&h.view).unwrap();
+    let mut settings = view.parameters.plan.unwrap();
+    settings.basis = PlanViewBasis {
+        origin: Point2::new(base, base),
+        rotation: 0.63,
+    };
+    view.parameters.plan = Some(PlanSettings { ..settings });
+    h.app.editor.document = Document::from_model(model).unwrap();
+    h.app.editor.regenerate().unwrap();
+    h.app.plans.poll(&h.app.editor);
+    h.app.focus_plan(Some(h.view));
+    h.app.select(Some(h.wall));
+    h.settle();
+
+    let before = h.app.editor.document.model().clone();
+    h.app.begin_wall_transform(Mode::Rotate);
+    h.frame(vec![]);
+    let origin = h.point(before.walls[&h.wall].parameters.end);
+    let destination = h.point(Point2::new(base, base + 1.0));
+    h.press(origin);
+    h.frame(vec![egui::Event::PointerMoved(destination)]);
+    assert_eq!(h.app.editor.document.model(), &before);
+    h.release(destination);
+    h.frame(vec![]);
+    assert!(!h.app.status_error, "{}", h.app.status);
+    let edited = &h.app.editor.document.model().walls[&h.wall].parameters;
+    assert!(edited.start.distance(Point2::new(base, base - 1.0)) < 1e-6);
+    assert!(edited.end.distance(Point2::new(base, base + 1.0)) < 1e-6);
+    assert!((edited.length() - 2.0).abs() < 1e-7);
+}
+
+#[test]
+fn wall_transform_actions_open_from_existing_snaps_menu_without_resizing_canvas() {
+    use crate::plan_workspace::transforms::Mode;
+
+    for (size, scale) in PROFILES {
+        let mut h = Harness::new(size, scale);
+        let canvas = h.app.plans.canvas_rect.unwrap();
+        h.click_text_in_band("Snaps", 0.0, h.size.y);
+        h.frame(vec![]);
+        h.click_text_in_band("Wall transforms", 0.0, h.size.y);
+        h.frame(vec![]);
+        h.click_text_in_band("Rotate wall", 0.0, h.size.y);
+        h.frame(vec![]);
+        assert!(h.app.plans.transform.is_some());
+        assert_eq!(h.app.plans.transform.as_ref().unwrap().mode, Mode::Rotate);
+        assert_eq!(h.app.plans.canvas_rect.unwrap(), canvas);
+        h.frame(vec![escape()]);
+        h.frame(vec![]);
+        assert!(h.app.plans.transform.is_none());
+    }
+}
+
+#[test]
+fn wall_transform_rejects_joined_walls_asymmetric_windows_and_degenerate_axes() {
+    use crate::plan_workspace::transforms::{Draft, Mode};
+    use os_model::{WallAnchor, WallEndpoint, WallJoin, WallJoinParams, WindowPanePosition};
+
+    let mut h = Harness::new(PROFILES[0].0, PROFILES[0].1);
+    let mut model = h.app.editor.document.model().clone();
+    let mut peer = model.walls[&h.wall].parameters.clone();
+    peer.start = Point2::new(1.0, 0.0);
+    peer.end = Point2::new(3.0, 0.0);
+    let peer = os_model::Wall::new(os_walls::WALL_TYPE, peer);
+    let peer_id = peer.id();
+    model.walls.insert(peer_id, peer);
+    let join = WallJoin::new(
+        "core.wall_join",
+        WallJoinParams::Butt {
+            a: WallAnchor {
+                wall: h.wall,
+                endpoint: WallEndpoint::End,
+            },
+            b: WallAnchor {
+                wall: peer_id,
+                endpoint: WallEndpoint::Start,
+            },
+        },
+    );
+    model.wall_joins.insert(join.id(), join);
+    h.app.editor.document = Document::from_model(model).unwrap();
+    h.app.editor.regenerate().unwrap();
+    h.app.plans.poll(&h.app.editor);
+    h.app.focus_plan(Some(h.view));
+    h.app.select(Some(h.wall));
+    h.settle();
+    assert!(Draft::begin(&h.app, Mode::Rotate).is_err());
+    assert!(Draft::begin(&h.app, Mode::Mirror).is_err());
+    assert!(Draft::begin(&h.app, Mode::Align).is_err());
+
+    let mut h = Harness::new(PROFILES[0].0, PROFILES[0].1);
+    install_transform_openings(&mut h, WindowPanePosition::LeftFace, false);
+    assert!(
+        Draft::begin(&h.app, Mode::Mirror)
+            .err()
+            .expect("asymmetric window blocks mirror")
+            .to_string()
+            .contains("centered window panes")
+    );
+
+    let mut h = Harness::new(PROFILES[0].0, PROFILES[0].1);
+    h.app.begin_wall_transform(Mode::Mirror);
+    h.frame(vec![]);
+    let draft = h.app.plans.transform.as_mut().unwrap();
+    draft.axis = Some(Point2::new(0.0, 0.0));
+    assert!(draft.candidate(Point2::new(0.0, 0.0)).is_err());
+    assert_eq!(h.app.editor.document.revision(), 0);
+    assert!(!h.app.editor.document.can_undo());
+
+    for hidden in [true, false] {
+        let mut h = Harness::new(PROFILES[0].0, PROFILES[0].1);
+        let view = h.app.editor.document.model().views[&h.view]
+            .parameters
+            .clone();
+        let mut settings = view.plan.unwrap();
+        if hidden {
+            settings.visibility.walls = false;
+        } else {
+            settings.crop = Some(os_model::PlanViewCrop {
+                min: Point2::new(10.0, 10.0),
+                max: Point2::new(20.0, 20.0),
+            });
+        }
+        h.app
+            .editor
+            .update_floor_plan(h.view, &view.name, view.level.unwrap(), settings)
+            .unwrap();
+        h.settle();
+        assert!(Draft::begin(&h.app, Mode::Rotate).is_err());
+        assert!(Draft::begin(&h.app, Mode::Align).is_err());
+    }
+}
+
+#[test]
+fn wall_transform_escape_and_stale_context_cancel_without_mutation() {
+    use crate::plan_workspace::transforms::Mode;
+
+    for mode in [Mode::Rotate, Mode::Align, Mode::Split] {
+        for cause in [
+            "escape",
+            "revision",
+            "session",
+            "selection",
+            "provider",
+            "view",
+            "drawing",
+            "pointer gone",
+        ] {
+            let mut h = Harness::new(PROFILES[0].0, PROFILES[0].1);
+            let before = h.app.editor.document.model().clone();
+            h.app.begin_wall_transform(mode);
+            h.frame(vec![]);
+            match cause {
+                "escape" => h.frame(vec![escape()]),
+                "revision" => {
+                    h.app
+                        .editor
+                        .command("Concurrent edit", Command::RenameProject("Changed".into()))
+                        .unwrap();
+                    h.frame(vec![]);
+                }
+                "session" => {
+                    h.app.editor.document = Document::from_model(before.clone()).unwrap();
+                    h.frame(vec![]);
+                }
+                "selection" => {
+                    h.app.select(None);
+                    h.frame(vec![]);
+                }
+                "provider" => {
+                    h.app.editor.host.unload(os_walls::PLUGIN_ID).unwrap();
+                    h.frame(vec![]);
+                }
+                "view" => {
+                    h.app.focus_plan(None);
+                    h.frame(vec![]);
+                }
+                "drawing" => {
+                    h.app.plans.drawing = Some(h.app.editor.native_wall_plan(h.view).unwrap());
+                    h.frame(vec![]);
+                }
+                "pointer gone" => h.frame(vec![egui::Event::PointerGone]),
+                _ => unreachable!(),
+            }
+            assert!(h.app.plans.transform.is_none(), "{cause}");
+            assert!(!h.app.plans.transform_claimed, "{cause}");
+            if cause != "revision" {
+                assert_eq!(h.app.editor.document.model(), &before, "{cause}");
+                assert!(!h.app.editor.document.can_undo(), "{cause}");
+            } else {
+                assert!(
+                    h.app.editor.document.can_undo(),
+                    "concurrent edit remains undoable"
+                );
+                h.app.history(false);
+                assert_eq!(h.app.editor.document.model(), &before, "{cause}");
+            }
+        }
+    }
+}
+
+fn add_align_reference(h: &mut Harness) -> Id {
+    let mut model = h.app.editor.document.model().clone();
+    let mut parameters = model.walls[&h.wall].parameters.clone();
+    // Short antiparallel target: its infinite centerline defines the alignment.
+    parameters.start = Point2::new(0.5, 0.8);
+    parameters.end = Point2::new(-0.5, 0.8);
+    let wall = os_model::Wall::new(os_walls::WALL_TYPE, parameters);
+    let id = wall.id();
+    model.walls.insert(id, wall);
+    h.app.editor.document = Document::from_model(model).unwrap();
+    h.app.editor.regenerate().unwrap();
+    h.app.plans.poll(&h.app.editor);
+    h.app.focus_plan(Some(h.view));
+    h.app.select(Some(h.wall));
+    h.settle();
+    id
+}
+
+#[test]
+fn wall_align_menu_preview_commit_openings_and_pan_at_both_dpis() {
+    for (size, scale) in PROFILES {
+        let mut h = Harness::new(size, scale);
+        install_transform_openings(&mut h, os_model::WindowPanePosition::LeftFace, true);
+        add_align_reference(&mut h);
+        h.app.plans.split = true;
+        h.frame(vec![]);
+        let before = h.app.editor.document.model().clone();
+        let scene = h.app.editor.scene.clone();
+        let revision = h.app.editor.document.revision();
+        let drawing = h.app.plans.drawing.as_ref().unwrap().identity();
+        let camera = h.app.plans.cameras[&h.view];
+        let canvas = h.app.plans.canvas_rect;
+        h.click_text_in_band("Snaps", 0.0, h.size.y);
+        h.frame(vec![]);
+        h.click_text_in_band("Wall transforms", 0.0, h.size.y);
+        h.frame(vec![]);
+        h.click_text_in_band("Align wall", 0.0, h.size.y);
+        h.frame(vec![]);
+        assert_eq!(h.app.plans.canvas_rect, canvas);
+        assert!(h.app.plans.transform.is_some());
+        let target = h.point(Point2::new(0.0, 0.8));
+        h.frame(vec![egui::Event::PointerMoved(target)]);
+        // Start on a source endpoint: transform takes precedence over its grip.
+        h.press(h.point(Point2::new(1.0, 0.0)));
+        h.frame(vec![egui::Event::PointerMoved(target)]);
+        assert_eq!(h.app.editor.document.model(), &before);
+        assert_eq!(h.app.editor.document.revision(), revision);
+        assert!(!h.app.editor.document.can_undo());
+        assert_eq!(h.app.editor.scene, scene);
+        assert_eq!(h.app.plans.cameras[&h.view], camera);
+        assert_eq!(h.app.selected, Some(h.wall));
+        assert!(h.app.plans.endpoint_drag.is_none());
+        assert!(h.app.wall_gesture.is_none());
+        assert!(h.output.shapes.iter().any(|s| matches!(
+            &s.shape, egui::Shape::LineSegment { stroke, .. }
+                if stroke.width == 2.0 && stroke.color == theme::ACCENT
+        )));
+        h.release(target);
+        h.settle();
+        assert!(!h.app.status_error, "{}", h.app.status);
+        assert!(h.app.plans.transform.is_none());
+        let mut expected = before.clone();
+        let wall = &mut expected.walls.get_mut(&h.wall).unwrap().parameters;
+        wall.start.y = 0.8;
+        wall.end.y = 0.8;
+        // Entire model equality includes reference wall, all wall properties,
+        // type assignment, and every hosted door/window ID and parameter.
+        assert_eq!(h.app.editor.document.model(), &expected);
+        assert_eq!(h.app.editor.document.revision(), revision + 1);
+        assert_ne!(h.app.editor.scene, scene);
+        assert_ne!(h.app.plans.drawing.as_ref().unwrap().identity(), drawing);
+        h.app.history(false);
+        assert_eq!(h.app.editor.document.model(), &before);
+        assert!(!h.app.editor.document.can_undo());
+        h.app.history(true);
+        assert_eq!(h.app.editor.document.model(), &expected);
+        h.settle();
+        let p = h.point(Point2::new(0.0, -0.7));
+        let camera = h.app.plans.cameras[&h.view];
+        h.press(p);
+        let end = p + egui::vec2(30.0, 20.0);
+        h.frame(vec![egui::Event::PointerMoved(end)]);
+        h.release(end);
+        assert_ne!(h.app.plans.cameras[&h.view], camera);
+        assert_eq!(h.app.editor.document.model(), &expected);
+    }
+}
+
+#[test]
+fn wall_align_rejects_invalid_targets_without_history() {
+    use crate::plan_workspace::transforms::{Draft, Mode};
+    for case in ["self", "empty", "skew", "level", "crop", "zero"] {
+        let mut h = Harness::new(PROFILES[0].0, PROFILES[0].1);
+        let target = add_align_reference(&mut h);
+        let mut model = h.app.editor.document.model().clone();
+        let mut point = Point2::new(0.0, 0.8);
+        match case {
+            "self" => point = Point2::new(0.8, 0.0),
+            "empty" => point = Point2::new(0.0, -0.8),
+            "skew" => {
+                model.walls.get_mut(&target).unwrap().parameters.end.y = 0.5;
+                point = Point2::new(0.0, 0.65);
+            }
+            "level" => {
+                let level = os_model::Level::new(
+                    "core.level",
+                    os_model::LevelParams {
+                        name: "Other level".into(),
+                        elevation: 0.0,
+                        building: model.levels[&model.walls[&h.wall].parameters.level]
+                            .parameters
+                            .building,
+                    },
+                );
+                model.walls.get_mut(&target).unwrap().parameters.level = level.id();
+                model.levels.insert(level.id(), level);
+            }
+            "crop" => {
+                model
+                    .views
+                    .get_mut(&h.view)
+                    .unwrap()
+                    .parameters
+                    .plan
+                    .as_mut()
+                    .unwrap()
+                    .crop = Some(os_model::PlanViewCrop {
+                    min: Point2::new(-2.0, -1.0),
+                    max: Point2::new(2.0, 0.5),
+                });
+            }
+            "zero" => {
+                let wall = &mut model.walls.get_mut(&target).unwrap().parameters;
+                wall.start.y = 0.0;
+                wall.end.y = 0.0;
+                point = Point2::new(0.0, 0.0);
+            }
+            _ => unreachable!(),
+        }
+        h.app.editor.document = Document::from_model(model).unwrap();
+        h.app.editor.regenerate().unwrap();
+        h.app.plans.poll(&h.app.editor);
+        h.app.focus_plan(Some(h.view));
+        h.app.select(Some(h.wall));
+        h.settle();
+        let before = h.app.editor.document.model().clone();
+        let context = h.app.editor.native_plan_context(h.view).unwrap();
+        let draft = Draft::begin(&h.app, Mode::Align).unwrap();
+        assert!(
+            draft
+                .candidate(context.basis.world_to_plane(point).unwrap())
+                .is_err(),
+            "{case}"
+        );
+        h.app.begin_wall_transform(Mode::Align);
+        h.frame(vec![]);
+        h.click(h.point(point));
+        assert_eq!(h.app.editor.document.model(), &before, "{case}");
+        assert!(!h.app.editor.document.can_undo(), "{case}");
+    }
+}
+
+#[test]
+fn wall_align_rotated_basis_at_large_coordinates() {
+    use crate::plan_workspace::transforms::{Draft, Mode};
+    let mut h = Harness::new(PROFILES[0].0, PROFILES[0].1);
+    add_align_reference(&mut h);
+    let base = 100_000_000.0;
+    let mut model = h.app.editor.document.model().clone();
+    for wall in model.walls.values_mut() {
+        wall.parameters.start.x += base;
+        wall.parameters.start.y += base;
+        wall.parameters.end.x += base;
+        wall.parameters.end.y += base;
+    }
+    model
+        .views
+        .get_mut(&h.view)
+        .unwrap()
+        .parameters
+        .plan
+        .as_mut()
+        .unwrap()
+        .basis = os_model::PlanViewBasis {
+        origin: Point2::new(base, base),
+        rotation: 0.63,
+    };
+    h.app.editor.document = Document::from_model(model).unwrap();
+    h.app.editor.regenerate().unwrap();
+    h.app.plans.poll(&h.app.editor);
+    h.app.focus_plan(Some(h.view));
+    h.app.select(Some(h.wall));
+    h.settle();
+    let context = h.app.editor.native_plan_context(h.view).unwrap();
+    let candidate = Draft::begin(&h.app, Mode::Align)
+        .unwrap()
+        .candidate(
+            context
+                .basis
+                .world_to_plane(Point2::new(base, base + 0.8))
+                .unwrap(),
+        )
+        .unwrap();
+    let wall = &candidate.model.walls[&h.wall].parameters;
+    assert!(wall.start.distance(Point2::new(base - 1.0, base + 0.8)) < 1e-6);
+    assert!(wall.end.distance(Point2::new(base + 1.0, base + 0.8)) < 1e-6);
+}
+
+#[cfg(feature = "external-plugins")]
+#[test]
+#[ignore = "requires explicitly installed independent Wall guest via OPENSTRUCTURE_WALL_TEST_PLUGIN"]
+fn wall_align_installed_worker_commits_or_cancels_atomically() {
+    use crate::plan_workspace::transforms::{Draft, Mode};
+    let directory =
+        std::env::var_os("OPENSTRUCTURE_WALL_TEST_PLUGIN").expect("Wall guest directory");
+    for cancel in [false, true] {
+        let mut h = Harness::new(PROFILES[0].0, PROFILES[0].1);
+        install_transform_openings(&mut h, os_model::WindowPanePosition::LeftFace, true);
+        add_align_reference(&mut h);
+        h.app.editor.host.unload(os_walls::PLUGIN_ID).unwrap();
+        h.app
+            .editor
+            .host
+            .load_wasm_directory(
+                Path::new(&directory),
+                [
+                    Permission::ModelRead,
+                    Permission::ModelWrite,
+                    Permission::UiTool,
+                ]
+                .into(),
+            )
+            .unwrap();
+        h.settle();
+        let before = h.app.editor.document.model().clone();
+        let context = h.app.editor.native_plan_context(h.view).unwrap();
+        let point = context.basis.world_to_plane(Point2::new(0.0, 0.8)).unwrap();
+        let draft = Draft::begin(&h.app, Mode::Align).unwrap();
+        let expected = draft.candidate(point).unwrap().model;
+        assert!(!h.app.editor.plugin_work_pending());
+        assert_eq!(h.app.editor.document.model(), &before);
+        draft.commit(&mut h.app, point).unwrap();
+        assert!(h.app.editor.plugin_work_pending());
+        assert!(Draft::begin(&h.app, Mode::Align).is_err());
+        assert_eq!(h.app.editor.document.model(), &before);
+        assert!(!h.app.editor.document.can_undo());
+        if cancel {
+            h.frame(vec![escape()]);
+        }
+        h.settle();
+        if cancel {
+            assert_eq!(h.app.editor.document.model(), &before);
+            assert!(!h.app.editor.document.can_undo());
+        } else {
+            assert!(!h.app.status_error, "{}", h.app.status);
+            assert_eq!(h.app.editor.document.model(), &expected);
+            h.app.history(false);
+            assert_eq!(h.app.editor.document.model(), &before);
+            assert!(!h.app.editor.document.can_undo());
+            h.app.history(true);
+            assert_eq!(h.app.editor.document.model(), &expected);
+        }
+    }
 }

@@ -27,6 +27,9 @@ fn linked_section_draws_native_wall_openings_floor_and_plan_marker() {
     let door = Opening::new(
         "core.opening",
         OpeningParams {
+            width_override: None,
+            height_override: None,
+            sill_override: None,
             name: "Door".into(),
             host: wall_id,
             offset: 1.0,
@@ -43,6 +46,9 @@ fn linked_section_draws_native_wall_openings_floor_and_plan_marker() {
     let window = Opening::new(
         "core.opening",
         OpeningParams {
+            width_override: None,
+            height_override: None,
+            sill_override: None,
             name: "Window".into(),
             host: wall_id,
             offset: 4.0,
@@ -68,6 +74,12 @@ fn linked_section_draws_native_wall_openings_floor_and_plan_marker() {
                 Point2::new(8.0, 2.0),
                 Point2::new(0.0, 2.0),
             ],
+            holes: vec![vec![
+                Point2::new(3.0, -1.0),
+                Point2::new(5.0, -1.0),
+                Point2::new(5.0, 1.0),
+                Point2::new(3.0, 1.0),
+            ]],
             thickness: 0.2,
             top_offset: 0.0,
         },
@@ -127,6 +139,43 @@ fn linked_section_draws_native_wall_openings_floor_and_plan_marker() {
             .iter()
             .any(|line| { (line.start.y - 2.2).abs() < 1e-7 && (line.end.y - 2.2).abs() < 1e-7 })
     );
+    let floor_lines: Vec<_> = cut_lines
+        .iter()
+        .filter(|line| line.entity == floor_id)
+        .collect();
+    let on_elevation = |start: f64, end: f64, elevation: f64| {
+        floor_lines.iter().any(|line| {
+            (line.start.y - elevation).abs() < 1e-7
+                && (line.end.y - elevation).abs() < 1e-7
+                && (line.start.x.min(line.end.x) - start).abs() < 1e-7
+                && (line.start.x.max(line.end.x) - end).abs() < 1e-7
+        })
+    };
+    assert!(
+        on_elevation(0.0, 3.0, 0.0),
+        "slab cut should reach the void"
+    );
+    assert!(
+        on_elevation(5.0, 8.0, 0.0),
+        "slab cut should resume past the void"
+    );
+    assert!(!floor_lines.iter().any(|line| {
+        (line.start.y - 0.0).abs() < 1e-7
+            && (line.end.y - 0.0).abs() < 1e-7
+            && line.start.x.min(line.end.x) < 3.0
+            && line.start.x.max(line.end.x) > 5.0
+    }));
+    for x in [3.0, 5.0] {
+        assert!(
+            floor_lines.iter().any(|line| {
+                (line.start.x - x).abs() < 1e-7
+                    && (line.end.x - x).abs() < 1e-7
+                    && (line.start.y.min(line.end.y) + 0.2).abs() < 1e-7
+                    && line.start.y.max(line.end.y).abs() < 1e-7
+            }),
+            "opening side at station {x} must appear in section"
+        );
+    }
     assert_eq!(editor.document.model(), &model_before);
 
     let plan_context = editor.native_plan_context(plan).unwrap();

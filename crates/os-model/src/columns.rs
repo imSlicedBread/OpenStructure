@@ -156,6 +156,7 @@ mod tests {
             crate::MaterialParams {
                 name: "Steel".into(),
                 density_kg_m3: 7850.0,
+                color: [180, 180, 180],
             },
         );
         let material_id = material.id();

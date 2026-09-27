@@ -55,6 +55,19 @@ fn sheets_schema_thirteen_migration_preserves_native_data_through_schema_ninetee
     migrate_inner(&mut value, 13).unwrap();
     let mut expected = old.clone();
     expected["schema_version"] = json!(SCHEMA_VERSION);
+    for room in expected["rooms"].as_object_mut().unwrap().values_mut() {
+        for field in [
+            "floor_finish",
+            "wall_finish",
+            "ceiling_finish",
+            "floor_material",
+            "wall_material",
+            "ceiling_material",
+        ] {
+            room["parameters"][field] = Value::Null;
+        }
+    }
+    expected["opening_tags"] = json!({});
     expected["schedules"] = json!({});
     expected["sheets"] = json!({});
     expected["detail_lines"] = json!({});
@@ -65,11 +78,26 @@ fn sheets_schema_thirteen_migration_preserves_native_data_through_schema_ninetee
     expected["columns"] = json!({});
     expected["plan_graphics_templates"] = json!({});
     expected["plan_graphics"] = json!({});
+    expected["stairs"] = json!({});
+    expected["roofs"] = json!({});
+    expected["ceilings"] = json!({});
+    expected["phases"] = value["phases"].clone();
+    expected["element_lifecycles"] = value["element_lifecycles"].clone();
+    apply_schema_38_plan_settings(&mut expected);
     expected["project"]["header"]["schema_version"] = json!(SCHEMA_VERSION);
     for map in NATIVE_MAPS {
         for entity in expected[*map].as_object_mut().unwrap().values_mut() {
             assert_eq!(entity["header"]["schema_version"], 13);
             entity["header"]["schema_version"] = json!(SCHEMA_VERSION);
+        }
+    }
+    for dimension in expected["dimensions"].as_object_mut().unwrap().values_mut() {
+        let parameters = &mut dimension["parameters"];
+        for key in ["first", "second"] {
+            parameters[key] = json!({"WallEndpoint": parameters[key].clone()});
+        }
+        for reference in parameters["additional"].as_array_mut().unwrap() {
+            *reference = json!({"WallEndpoint": reference.clone()});
         }
     }
     assert_eq!(

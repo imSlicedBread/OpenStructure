@@ -73,3 +73,53 @@ The all-feature locked offline `os-ui` tests pass using
 the linked slice document. These are automated input/shape/model assertions,
 not native visual inspection. The earlier 2026-09-12 observations do not verify
 the new handles. Native manual endpoint-handle acceptance remains open.
+
+## Rotate/mirror — automated follow-up, 2026-09-27
+
+The [wall transform slice](plan-wall-edit-gestures.md#native-wall-rotatemirror--2026-09-27-automated-evidence)
+adds midpoint rotation and two-click-axis mirroring for one selected, visible
+native straight wall. Headless egui tests exercise preview isolation,
+hosted-door/window preservation, mirrored door/layer handedness, atomic
+history, stale/cancel behavior, and regenerated split 2D/3D at both supported
+DPI profiles. Joined walls, attached dimensions/opening tags, off-center typed
+window panes, and installed-provider mirrors requiring companion edits are
+explicitly rejected. This is not native visual inspection and does not imply
+Revit parity.
+
+## Trim/Extend — automated follow-up, 2026-09-27
+
+The [wall gesture evidence](plan-wall-edit-gestures.md#native-wall-trimextend--2026-09-27-automated-evidence)
+adds start/end trim or extend to a picked same-level wall-axis intersection.
+Hosted doors/windows keep their world position when the start moves, and an
+opening-fit failure rejects the complete edit. Headless UI tests cover both
+desktop DPI profiles, preview isolation, one-step history and split 2D/3D
+regeneration; the installed Wall guest exercises End through its bounded worker.
+Joined walls and installed Start edits with hosted openings are rejected. This
+is partial drafting coverage, not native visual acceptance or Revit parity.
+
+## Align — automated follow-up, 2026-09-27
+
+The [Align evidence](plan-wall-edit-gestures.md#native-wall-align--2026-09-27-automated-evidence)
+covers one-shot parallel wall centerline alignment from the Wall transforms
+menu. The source and hosted doors/windows translate together; identity,
+properties, opening offsets and type assignments remain stable. Headless tests
+at both DPI profiles cover transient preview, one-step history, split 2D/3D
+regeneration and pointer precedence. Geometry and stale-context checks pass.
+The installed-worker test is present but was not executed in this pass.
+Joined/annotated sources are unsupported. Persistent locked alignment and a
+constraint solver are not implemented; this does not establish Revit parity.
+
+## Split — automated follow-up, 2026-09-27
+
+The [Split evidence](plan-wall-edit-gestures.md#native-wall-split--2026-09-27-automated-evidence)
+covers one picked interior station on a selected visible native straight wall.
+The original UUID remains on the start segment; one new wall receives the end
+segment and copied metadata/type assignment. Hosted openings, dimension anchors,
+and room signatures are preserved or remapped in one validated transaction.
+Invalid opening clearances or unresolved dimension/room dependencies reject the
+entire split. Tags keep their opening target and world position.
+
+Six focused tests pass, including both desktop DPI profiles, preview isolation,
+stale/cancel behavior, one-step undo/redo, save/reopen, and split 2D/3D updates.
+Joined walls and installed Wall providers are rejected. E01.19 remains partial:
+multi-wall/general entity splitting and native visual acceptance are open.

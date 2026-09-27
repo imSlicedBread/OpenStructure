@@ -27,6 +27,9 @@ fn setup() -> (Editor, Id, Id, Opening, Opening) {
         Opening::new(
             "core.opening",
             OpeningParams {
+                width_override: None,
+                height_override: None,
+                sill_override: None,
                 hinge: Default::default(),
                 swing: Default::default(),
                 name: format!("{kind:?}"),
@@ -488,6 +491,9 @@ fn typed_window_pane_faces_match_plan_and_3d_for_both_wall_directions() {
             Opening::new(
                 "core.opening",
                 OpeningParams {
+                    width_override: None,
+                    height_override: None,
+                    sill_override: None,
                     name: "Shared window".into(),
                     host,
                     offset,

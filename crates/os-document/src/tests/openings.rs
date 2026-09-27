@@ -1,6 +1,64 @@
 use super::*;
 use os_core::Point2;
 
+#[test]
+fn opening_materials_references_are_validated_atomically_with_history() {
+    let (mut doc, type_id, _, _, _) = fixture();
+    let material = Material::new(
+        "core.material",
+        MaterialParams {
+            name: "Timber".into(),
+            density_kg_m3: 500.,
+            color: [180, 180, 180],
+        },
+    );
+    let id = material.id();
+    doc.execute("Material", vec![Command::AddMaterial(material)])
+        .unwrap();
+    let before = doc.model().clone();
+    let history = doc.history_stats();
+    let mut p = before.opening_types[&type_id].parameters.clone();
+    p.family.panel_material = Some(id);
+    p.family.frame_material = Some(Id::new());
+    assert!(
+        doc.execute(
+            "Invalid",
+            vec![Command::UpdateOpeningType {
+                id: type_id,
+                parameters: p.clone()
+            }]
+        )
+        .is_err()
+    );
+    assert_eq!(doc.model(), &before);
+    assert_eq!(doc.history_stats(), history);
+    p.family.frame_material = Some(id);
+    doc.execute(
+        "Materials",
+        vec![Command::UpdateOpeningType {
+            id: type_id,
+            parameters: p,
+        }],
+    )
+    .unwrap();
+    let after = doc.model().clone();
+    let history_after = doc.history_stats();
+    assert!(
+        doc.execute(
+            "Remove referenced material",
+            vec![Command::RemoveMaterial(id)]
+        )
+        .is_err()
+    );
+    assert_eq!(doc.model(), &after);
+    assert_eq!(doc.history_stats(), history_after);
+    assert_eq!(after.openings, before.openings);
+    assert!(doc.undo());
+    assert_eq!(doc.model(), &before);
+    assert!(doc.redo());
+    assert_eq!(doc.model(), &after);
+}
+
 fn fixture() -> (Document, Id, Vec<Id>, Vec<Id>, Id) {
     let mut doc = Document::new("Shared openings").unwrap();
     let level = *doc.model().levels.keys().next().unwrap();
@@ -40,6 +98,9 @@ fn fixture() -> (Document, Id, Vec<Id>, Vec<Id>, Id) {
             let opening = Opening::new(
                 "core.opening",
                 OpeningParams {
+                    width_override: None,
+                    height_override: None,
+                    sill_override: None,
                     hinge: Default::default(),
                     swing: Default::default(),
                     name: "Door".into(),
@@ -68,6 +129,238 @@ fn fixture() -> (Document, Id, Vec<Id>, Vec<Id>, Id) {
     doc.execute("Place shared doors", commands).unwrap();
     doc.drain_events();
     (doc, type_id, openings, walls, view_id)
+}
+
+#[test]
+fn instance_dimensions_propagate_only_to_inherited_sizes_and_keep_atomic_history() {
+    let (mut doc, ty, openings, walls, view) = fixture();
+    let id = openings[0];
+    let before = doc.model().clone();
+    let history = doc.history_stats();
+    let mut parameters = before.openings[&id].parameters.clone();
+    parameters.width_override = Some(0.9);
+    parameters.height_override = Some(2.1);
+    doc.execute(
+        "Pin dimensions",
+        vec![Command::UpdateOpening { id, parameters }],
+    )
+    .unwrap();
+    assert_eq!(doc.history_stats().undo_entries, history.undo_entries + 1);
+    let pinned = doc.model().clone();
+    let event = doc.drain_events().pop().unwrap();
+    for dependent in [id, walls[0], view] {
+        assert!(event.invalidated.contains(&dependent));
+    }
+    assert!(doc.undo());
+    assert_eq!(doc.model(), &before);
+    assert_eq!(
+        doc.drain_events().pop().unwrap().invalidated,
+        event.invalidated
+    );
+    assert!(doc.redo());
+    assert_eq!(doc.model(), &pinned);
+    assert_eq!(
+        doc.drain_events().pop().unwrap().invalidated,
+        event.invalidated
+    );
+    let mut parameters = pinned.opening_types[&ty].parameters.clone();
+    parameters.width = 1.2;
+    parameters.height = 2.3;
+    doc.execute(
+        "Change default sizes",
+        vec![Command::UpdateOpeningType { id: ty, parameters }],
+    )
+    .unwrap();
+    let changed = doc.model().clone();
+    for opening in &openings {
+        let resolved = changed
+            .resolve_opening(&changed.openings[opening].parameters)
+            .unwrap();
+        assert_eq!(
+            (resolved.width, resolved.height),
+            if *opening == id {
+                (0.9, 2.1)
+            } else {
+                (1.2, 2.3)
+            }
+        );
+    }
+    let event = doc.drain_events().pop().unwrap();
+    for dependent in openings.iter().chain(walls.iter()).chain([&view, &ty]) {
+        assert!(event.invalidated.contains(dependent));
+    }
+    assert!(doc.undo());
+    assert_eq!(doc.model(), &pinned);
+    assert!(doc.redo());
+    assert_eq!(doc.model(), &changed);
+    doc.drain_events();
+    let history = doc.history_stats();
+    let revision = doc.revision();
+    for (width, height) in [
+        (Some(2.5), None),
+        (None, Some(3.0)),
+        (Some(0.0005), None),
+        (None, Some(f64::NAN)),
+    ] {
+        let mut p = changed.openings[&id].parameters.clone();
+        p.width_override = width;
+        p.height_override = height;
+        assert!(
+            doc.execute(
+                "Invalid size",
+                vec![Command::UpdateOpening { id, parameters: p }]
+            )
+            .is_err()
+        );
+        assert_eq!(doc.model(), &changed);
+        assert_eq!(doc.history_stats(), history);
+        assert_eq!(doc.revision(), revision);
+        assert!(doc.drain_events().is_empty());
+    }
+    let mut p = changed.opening_types[&ty].parameters.clone();
+    p.width = 2.5; // inherited instances overlap
+    assert!(
+        doc.execute(
+            "Invalid shared size",
+            vec![Command::UpdateOpeningType {
+                id: ty,
+                parameters: p
+            }]
+        )
+        .is_err()
+    );
+    assert_eq!(doc.model(), &changed);
+    assert_eq!(doc.history_stats(), history);
+    let mut p = changed.openings[&id].parameters.clone();
+    p.width_override = Some(0.3);
+    doc.execute(
+        "Narrow pin",
+        vec![Command::UpdateOpening { id, parameters: p }],
+    )
+    .unwrap();
+    let before_frame = doc.model().clone();
+    let mut p = before_frame.opening_types[&ty].parameters.clone();
+    p.family.frame_width = 0.2; // default fits, pinned instance does not
+    assert!(
+        doc.execute(
+            "Invalid frame",
+            vec![Command::UpdateOpeningType {
+                id: ty,
+                parameters: p
+            }]
+        )
+        .is_err()
+    );
+    assert_eq!(doc.model(), &before_frame);
+}
+
+#[test]
+fn sill_override_and_type_default_are_atomic_undoable_and_invalidate_dependents() {
+    let (mut doc, ty, openings, walls, view) = fixture();
+    let mut model = doc.model().clone();
+    let parameters = &mut model.opening_types.get_mut(&ty).unwrap().parameters;
+    parameters.kind = OpeningKind::Window;
+    parameters.height = 1.2;
+    parameters.sill = 0.8;
+    let schedule = os_model::Schedule::new(
+        "core.schedule",
+        os_model::ScheduleParams::new("Windows", os_model::ScheduleCategory::Window),
+    );
+    let schedule_id = schedule.id();
+    model.schedules.insert(schedule_id, schedule);
+    doc = Document::from_model(model).unwrap();
+    doc.drain_events();
+    let before = doc.model().clone();
+    let history = doc.history_stats();
+    let id = openings[0];
+    let mut parameters = before.openings[&id].parameters.clone();
+    parameters.sill_override = Some(0.8); // equal is still pinned
+    doc.execute("Pin sill", vec![Command::UpdateOpening { id, parameters }])
+        .unwrap();
+    assert_eq!(doc.history_stats().undo_entries, history.undo_entries + 1);
+    let pinned = doc.model().clone();
+    let event = doc.drain_events().pop().unwrap();
+    for dependent in [id, walls[0], view, schedule_id] {
+        assert!(event.invalidated.contains(&dependent));
+    }
+    assert!(doc.undo());
+    assert_eq!(doc.model(), &before);
+    assert_eq!(
+        doc.drain_events().pop().unwrap().invalidated,
+        event.invalidated
+    );
+    assert!(doc.redo());
+    assert_eq!(doc.model(), &pinned);
+    assert_eq!(
+        doc.drain_events().pop().unwrap().invalidated,
+        event.invalidated
+    );
+    let mut parameters = pinned.opening_types[&ty].parameters.clone();
+    parameters.sill = 1.0;
+    doc.execute(
+        "Default sill",
+        vec![Command::UpdateOpeningType { id: ty, parameters }],
+    )
+    .unwrap();
+    let changed = doc.model().clone();
+    for opening in &openings {
+        assert_eq!(
+            changed
+                .resolve_opening(&changed.openings[opening].parameters)
+                .unwrap()
+                .sill,
+            if *opening == id { 0.8 } else { 1.0 }
+        );
+    }
+    let event = doc.drain_events().pop().unwrap();
+    for dependent in openings.iter().chain(walls.iter()).chain([&view, &ty]) {
+        assert!(event.invalidated.contains(dependent));
+    }
+    assert!(doc.undo());
+    assert_eq!(doc.model(), &pinned);
+    assert!(doc.redo());
+    assert_eq!(doc.model(), &changed);
+    doc.drain_events();
+    let history = doc.history_stats();
+    let revision = doc.revision();
+    for invalid in [f64::NAN, 0.0005, -1.0, 1.8] {
+        let mut p = changed.openings[&id].parameters.clone();
+        p.sill_override = Some(invalid);
+        assert!(
+            doc.execute(
+                "Invalid sill",
+                vec![Command::UpdateOpening { id, parameters: p }]
+            )
+            .is_err()
+        );
+        let mut p = changed.opening_types[&ty].parameters.clone();
+        p.sill = invalid;
+        assert!(
+            doc.execute(
+                "Invalid default",
+                vec![Command::UpdateOpeningType {
+                    id: ty,
+                    parameters: p
+                }]
+            )
+            .is_err()
+        );
+        assert_eq!(doc.model(), &changed);
+        assert_eq!(doc.history_stats(), history);
+        assert_eq!(doc.revision(), revision);
+        assert!(doc.drain_events().is_empty());
+    }
+    let mut p = changed.openings[&id].parameters.clone();
+    p.sill_override = Some(0.1);
+    p.offset = changed.openings[&openings[1]].parameters.offset;
+    assert!(
+        doc.execute(
+            "Overlap",
+            vec![Command::UpdateOpening { id, parameters: p }]
+        )
+        .is_err()
+    );
+    assert_eq!(doc.model(), &changed);
 }
 
 #[test]
@@ -165,6 +458,46 @@ fn invalid_type_edits_roll_back_model_history_revision_and_events() {
     assert_eq!(doc.model(), &before);
     assert_eq!(doc.history_stats(), history);
     assert!(doc.drain_events().is_empty());
+}
+
+#[test]
+fn rehosting_opening_invalidates_old_and_new_hosts_through_history() {
+    let (mut doc, _, openings, walls, _) = fixture();
+    let before = doc.model().clone();
+    let id = openings[0];
+    let mut parameters = before.openings[&id].parameters.clone();
+    parameters.host = walls[1];
+    parameters.offset = 5.0;
+
+    doc.execute(
+        "Rehost opening",
+        vec![Command::UpdateOpening { id, parameters }],
+    )
+    .unwrap();
+    let committed = doc.model().clone();
+    let event = doc.drain_events().pop().unwrap();
+    assert!(event.changed.contains(&id));
+    assert!(
+        event
+            .invalidated
+            .is_superset(&BTreeSet::from([walls[0], walls[1], id]))
+    );
+
+    assert!(doc.undo());
+    assert_eq!(doc.model(), &before);
+    let undo = doc.drain_events().pop().unwrap();
+    assert!(
+        undo.invalidated
+            .is_superset(&BTreeSet::from([walls[0], walls[1], id]))
+    );
+
+    assert!(doc.redo());
+    assert_eq!(doc.model(), &committed);
+    let redo = doc.drain_events().pop().unwrap();
+    assert!(
+        redo.invalidated
+            .is_superset(&BTreeSet::from([walls[0], walls[1], id]))
+    );
 }
 
 #[test]

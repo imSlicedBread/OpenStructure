@@ -826,7 +826,9 @@ fn concave_floor_fill_picking_and_crop_are_context_bound() {
         entity: Id::new(),
         area_m2: 5.0,
         triangles: os_geometry::floors::triangulate_floor(&boundary).unwrap(),
+        vertices: boundary.clone(),
         boundary,
+        holes: vec![],
     };
     let floor_id = floor.entity;
     let drawing = PlanDrawing::from_prisms(context, &BTreeMap::new(), vec![])
@@ -861,5 +863,51 @@ fn concave_floor_fill_picking_and_crop_are_context_bound() {
             .unwrap()
             .with_floors(vec![invalid])
             .is_err()
+    );
+}
+
+#[test]
+fn floor_openings_are_excluded_from_plan_fill_and_picking() {
+    let context = context();
+    let boundary = vec![
+        Point2::new(0., 0.),
+        Point2::new(10., 0.),
+        Point2::new(10., 8.),
+        Point2::new(0., 8.),
+    ];
+    let holes = vec![vec![
+        Point2::new(4., 3.),
+        Point2::new(6., 3.),
+        Point2::new(6., 5.),
+        Point2::new(4., 5.),
+    ]];
+    let triangulation =
+        os_geometry::floor_holes::triangulate_floor_rings(&boundary, &holes).unwrap();
+    let floor = PlanFloorItem {
+        entity: Id::new(),
+        boundary,
+        holes,
+        vertices: triangulation.vertices,
+        triangles: triangulation.triangles,
+        area_m2: triangulation.net_area,
+    };
+    let floor_id = floor.entity;
+    let drawing = PlanDrawing::from_prisms(context, &BTreeMap::new(), vec![])
+        .unwrap()
+        .with_floors(vec![floor])
+        .unwrap();
+    assert_eq!(
+        drawing.pick_floor(context, Point2::new(2., 2.)).unwrap(),
+        Some(floor_id)
+    );
+    assert_eq!(
+        drawing.pick_floor(context, Point2::new(5., 4.)).unwrap(),
+        None
+    );
+    assert!(
+        drawing.floors(context).unwrap()[0]
+            .triangles
+            .iter()
+            .all(|triangle| triangle.iter().all(|index| (*index as usize) < 8))
     );
 }

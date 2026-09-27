@@ -77,6 +77,33 @@ impl RasterFrame {
         selected: Option<Id>,
         style: RasterStyle,
     ) -> Result<Self> {
+        Self::render_with_color(triangles, logical_size, scale, selected, style, |s| {
+            s.color()
+        })
+    }
+    /// Native project rendering resolves material appearance from the current model.
+    pub fn render_with_materials(
+        triangles: &[Triangle],
+        logical_size: [f32; 2],
+        scale: f32,
+        selected: Option<Id>,
+        style: RasterStyle,
+        materials: &BTreeMap<Id, [u8; 3]>,
+    ) -> Result<Self> {
+        Self::render_with_color(triangles, logical_size, scale, selected, style, |s| {
+            s.material
+                .and_then(|id| materials.get(&id).copied())
+                .or_else(|| s.color())
+        })
+    }
+    fn render_with_color(
+        triangles: &[Triangle],
+        logical_size: [f32; 2],
+        scale: f32,
+        selected: Option<Id>,
+        style: RasterStyle,
+        surface_color: impl Fn(os_geometry::SurfaceIdentity) -> Option<[u8; 3]>,
+    ) -> Result<Self> {
         ensure(
             logical_size.iter().all(|x| x.is_finite() && *x > 0.)
                 && scale.is_finite()
@@ -162,7 +189,7 @@ impl RasterFrame {
             let base = if selected == Some(t.entity) {
                 style.selected
             } else {
-                t.surface.color().unwrap_or(style.normal)
+                surface_color(t.surface).unwrap_or(style.normal)
             };
             let mut color = [0; 4];
             for i in 0..3 {

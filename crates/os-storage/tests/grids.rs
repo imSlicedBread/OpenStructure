@@ -1,3 +1,5 @@
+mod common;
+
 use os_core::Point2;
 use os_document::Command;
 use os_model::{Grid, GridParams, Model, SCHEMA_VERSION};
@@ -19,6 +21,9 @@ fn frozen_three_migration_and_grid_save_reopen_preserve_original() {
     assert_eq!(migrated["grids"], json!({}));
     let mut expected = original.clone();
     expected["schema_version"] = json!(SCHEMA_VERSION);
+    expected["stairs"] = json!({});
+    expected["roofs"] = json!({});
+    expected["opening_tags"] = json!({});
     expected["grids"] = json!({});
     expected["openings"] = json!({});
     expected["opening_types"] = json!({});
@@ -36,6 +41,9 @@ fn frozen_three_migration_and_grid_save_reopen_preserve_original() {
     expected["columns"] = json!({});
     expected["plan_graphics_templates"] = json!({});
     expected["plan_graphics"] = json!({});
+    expected["phases"] = migrated["phases"].clone();
+    expected["element_lifecycles"] = migrated["element_lifecycles"].clone();
+    common::apply_schema_38_defaults(&mut expected);
     expected["project"]["header"]["schema_version"] = json!(SCHEMA_VERSION);
     for collection in [
         "sites",

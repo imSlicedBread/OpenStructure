@@ -48,6 +48,8 @@ fn frozen_eight_migration_adds_only_floors_and_native_versions() {
     assert_eq!(model.schema_version, SCHEMA_VERSION);
     assert!(model.floors.is_empty());
     assert_eq!(migrated["extensions"], old["extensions"]);
+    remove_phase_fields_from_legacy_fixture(&mut migrated);
+    migrated.as_object_mut().unwrap().remove("opening_tags");
     migrated.as_object_mut().unwrap().remove("floors");
     migrated.as_object_mut().unwrap().remove("room_tags");
     migrated.as_object_mut().unwrap().remove("sheets");
@@ -98,6 +100,10 @@ fn frozen_eight_migration_adds_only_floors_and_native_versions() {
         .unwrap()
         .remove("plan_graphics_templates");
     migrated.as_object_mut().unwrap().remove("plan_graphics");
+    migrated.as_object_mut().unwrap().remove("stairs");
+    migrated.as_object_mut().unwrap().remove("roofs");
+    migrated.as_object_mut().unwrap().remove("ceilings");
+    reverse_schema_38_plan_settings(&mut migrated);
     assert_eq!(migrated, old);
     for case in 0..3 {
         let mut bad = old.clone();
@@ -154,9 +160,15 @@ fn old_archive_migrates_then_floor_saves_reopens_without_identity_or_payload_los
             boundary: vec![
                 Point2::new(0., 0.),
                 Point2::new(4., 0.),
-                Point2::new(1., 1.),
+                Point2::new(4., 4.),
                 Point2::new(0., 4.),
             ],
+            holes: vec![vec![
+                Point2::new(1., 1.),
+                Point2::new(2., 1.),
+                Point2::new(2., 2.),
+                Point2::new(1., 2.),
+            ]],
             thickness: 0.2,
             top_offset: 0.1,
         },
@@ -173,4 +185,81 @@ fn old_archive_migrates_then_floor_saves_reopens_without_identity_or_payload_los
         old["extensions"]
     );
     assert!(!reopened.can_undo());
+}
+
+#[test]
+fn schema_35_floor_migration_adds_an_empty_opening_ring_list() {
+    let mut model = Model::new("Schema 35 floor");
+    let level = *model.levels.keys().next().unwrap();
+    let floor = Floor::new(
+        "core.floor",
+        FloorParams {
+            name: "Existing slab".into(),
+            level,
+            material: None,
+            boundary: vec![
+                Point2::new(0., 0.),
+                Point2::new(8., 0.),
+                Point2::new(8., 8.),
+                Point2::new(0., 8.),
+            ],
+            holes: Vec::new(),
+            thickness: 0.2,
+            top_offset: 0.0,
+        },
+    );
+    let floor_id = floor.id();
+    model.floors.insert(floor_id, floor);
+    let mut old = serde_json::to_value(model).unwrap();
+    remove_phase_fields_from_legacy_fixture(&mut old);
+    old.as_object_mut().unwrap().remove("stairs");
+    old.as_object_mut().unwrap().remove("roofs");
+    old["schema_version"] = json!(35);
+    for collection in [
+        "project",
+        "sites",
+        "buildings",
+        "levels",
+        "walls",
+        "wall_joins",
+        "wall_types",
+        "openings",
+        "opening_types",
+        "opening_tags",
+        "rooms",
+        "room_tags",
+        "detail_lines",
+        "room_separation_lines",
+        "dimensions",
+        "grids",
+        "materials",
+        "views",
+        "floors",
+        "columns",
+        "sheets",
+        "schedules",
+        "plan_graphics_templates",
+    ] {
+        if collection == "project" {
+            old[collection]["header"]["schema_version"] = json!(35);
+        } else {
+            for entity in old[collection].as_object_mut().unwrap().values_mut() {
+                entity["header"]["schema_version"] = json!(35);
+            }
+        }
+    }
+    old["floors"][floor_id.to_string()]["parameters"]
+        .as_object_mut()
+        .unwrap()
+        .remove("holes");
+
+    migrate(&mut old, 35).unwrap();
+    assert_eq!(
+        old["floors"][floor_id.to_string()]["parameters"]["holes"],
+        json!([])
+    );
+    let model: Model = serde_json::from_value(old).unwrap();
+    model.validate().unwrap();
+    assert_eq!(model.schema_version, SCHEMA_VERSION);
+    assert!(model.floors[&floor_id].parameters.holes.is_empty());
 }

@@ -24,9 +24,26 @@ rebuilding the host after installation. Native workflows are recorded for
 [Plugin-owned migrations](docs/plugin-migration-service.md) use isolated candidate
 batches and one final validated transaction; independent single/mixed-type examples
 cover cancellation, late failures, undo/redo and persistence. Container 2 preserves
-bounded opaque auxiliary files; model schema 28 preserves plugin envelopes, exact
+bounded opaque auxiliary files; model schema 31 adds associative view-owned door/window tags; schema 32 adds typed door/window panel/pane and frame material assignments; schema 30 added per-instance typed door/window
+width and height overrides alongside schema-29 window sill overrides, preserving plugin envelopes, exact
 provider requirements and versioned named plan settings. Opening a file never
 installs or automatically executes a plugin from that file.
+
+Typed opening properties independently inherit, pin or reset dimensions.
+Selected jamb handles resize with the opposite jamb fixed; the center grip
+still moves the whole opening. Drafts do not mutate the model or 3D scene.
+Native full-model plugins require API 21/schema 40; generic API 2/container 2 are unchanged.
+Schema 35 adds independent floor/wall/ceiling project material assignments to rooms,
+live material-name-plus-code schedule cells, and subdued floor RGB fills in resolved
+plan rooms. See [room finishes](docs/native-rooms.md).
+Schema 34 adds [editable shared material RGB](docs/native-material-colors.md)
+for native wall layers and opening panels/frames, preserving old UUID swatches on migration.
+Model schema 33 added optional room floor/wall/ceiling finish codes and saved
+[Room Finish schedules](docs/native-rooms.md). Rows derive area from current
+room boundaries, retain diagnostics with blank area when unresolved, and reach
+the existing sheet preview/vector-PDF table path.
+Bounded IFC v3 exchange preserves type defaults and per-instance inherit/pin
+intent (including pins equal to defaults), while accepting earlier v1/v2 files.
 
 Model schema 5 added [native hosted doors and windows](docs/native-hosted-openings.md)
 for straight walls, with repeatable click-to-place previews and real 3D/plan

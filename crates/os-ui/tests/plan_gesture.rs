@@ -298,6 +298,99 @@ fn rotated_moves_keep_level_and_fixed_resize_endpoint_without_coordinate_roundtr
 }
 
 #[test]
+fn trim_extend_intersects_finite_same_level_boundaries_without_reversing_the_wall() {
+    use os_ui::plan_gesture::WallEdit;
+
+    let (mut editor, view, mut source) = setup();
+    source.start = Point2::new(0.0, 0.0);
+    source.end = Point2::new(2.0, 0.0);
+    editor
+        .wall_command("Create", os_plugin_api::Request::CreateWall(source.clone()))
+        .unwrap();
+    let id = *editor.document.model().walls.keys().next().unwrap();
+    let vertical = WallParams {
+        start: Point2::new(1.0, -1.0),
+        end: Point2::new(1.0, 1.0),
+        ..source.clone()
+    };
+
+    let trim_end = WallGesture::begin_edit(&editor, view, id, WallEdit::TrimEnd).unwrap();
+    let point = trim_end.trim_extend_point(&vertical).unwrap();
+    let parameters = trim_end.parameters(point).unwrap();
+    assert!(parameters.end.distance(Point2::new(1.0, 0.0)) < 1e-12);
+    assert_eq!(parameters.start, source.start);
+
+    let trim_start = WallGesture::begin_edit(&editor, view, id, WallEdit::TrimStart).unwrap();
+    let left_boundary = WallParams {
+        start: Point2::new(-1.0, -1.0),
+        end: Point2::new(-1.0, 1.0),
+        ..source.clone()
+    };
+    let point = trim_start.trim_extend_point(&left_boundary).unwrap();
+    let parameters = trim_start.parameters(point).unwrap();
+    assert!(parameters.start.distance(Point2::new(-1.0, 0.0)) < 1e-12);
+    assert_eq!(parameters.end, source.end);
+
+    let parallel = WallParams {
+        start: Point2::new(0.0, 1.0),
+        end: Point2::new(2.0, 1.0),
+        ..source.clone()
+    };
+    assert!(trim_end.trim_extend_point(&parallel).is_err());
+    let finite_segment_misses = WallParams {
+        start: Point2::new(3.0, 1.0),
+        end: Point2::new(3.0, 2.0),
+        ..source.clone()
+    };
+    assert!(trim_end.trim_extend_point(&finite_segment_misses).is_err());
+    assert!(trim_end.trim_extend_point(&left_boundary).is_err());
+    let wrong_level = WallParams {
+        level: os_core::Id::new(),
+        ..vertical
+    };
+    assert!(trim_end.trim_extend_point(&wrong_level).is_err());
+    assert_eq!(editor.document.model().walls[&id].parameters, source);
+}
+
+#[test]
+fn trim_extend_keeps_precision_in_rotated_basis_at_large_coordinates() {
+    use os_model::PlanViewBasis;
+    use os_ui::plan_gesture::WallEdit;
+
+    let (mut editor, view, mut source) = setup();
+    let base = 100_000_000.0;
+    source.start = Point2::new(base, base);
+    source.end = Point2::new(base + 2.0, base);
+    editor
+        .wall_command("Create", os_plugin_api::Request::CreateWall(source.clone()))
+        .unwrap();
+    let id = *editor.document.model().walls.keys().next().unwrap();
+    let mut settings = editor.document.model().views[&view]
+        .parameters
+        .plan
+        .unwrap();
+    settings.basis = PlanViewBasis {
+        origin: Point2::new(base, base),
+        rotation: 0.63,
+    };
+    editor
+        .update_floor_plan(view, "Large rotated trim", source.level, settings)
+        .unwrap();
+
+    let boundary = WallParams {
+        start: Point2::new(base + 3.0, base - 1.0),
+        end: Point2::new(base + 3.0, base + 1.0),
+        ..source.clone()
+    };
+    let gesture = WallGesture::begin_edit(&editor, view, id, WallEdit::TrimEnd).unwrap();
+    let point = gesture.trim_extend_point(&boundary).unwrap();
+    let parameters = gesture.parameters(point).unwrap();
+    assert!(parameters.end.distance(Point2::new(base + 3.0, base)) < 1e-6);
+    assert!(parameters.start.distance(source.start) < 1e-7);
+    assert_eq!(editor.document.model().walls[&id].parameters, source);
+}
+
+#[test]
 fn invalid_edit_hidden_target_and_noop_leave_history_intact() {
     use os_ui::plan_gesture::WallEdit;
     let (mut editor, view, p) = setup();

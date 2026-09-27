@@ -13,10 +13,10 @@ use os_model::{Model, WallParams};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
-/// Full native Model transport, schema 28. Older native guests require rebuilding.
+/// Full native Model transport, schema 45. Older native guests require rebuilding.
 /// Generic API 2 uses independent DTOs and remains compatible.
-pub const API_VERSION: u32 = 9;
-pub const REQUIRED_MODEL_SCHEMA_VERSION: u32 = 28;
+pub const API_VERSION: u32 = 26;
+pub const REQUIRED_MODEL_SCHEMA_VERSION: u32 = 45;
 pub mod generic;
 pub mod geometry;
 pub mod plan;
@@ -122,7 +122,7 @@ impl Manifest {
     pub fn validate(&self) -> ProtocolResult<()> {
         ensure(
             matches!(self.api_version, API_VERSION | generic::VERSION),
-            "plugin API version mismatch: native Model guests require API 9/schema 28; rebuild and reinstall API 1/API 3/API 4/API 5/API 6/API 7/API 8 guests",
+            "plugin API version mismatch: native Model guests require API 26/schema 45; rebuild and reinstall API 1/API 3/API 4/API 5/API 6/API 7/API 8/API 9/API 10/API 11/API 12/API 13/API 14/API 15/API 16/API 17/API 18/API 19/API 20/API 21/API 22/API 23/API 24/API 25 guests",
         )?;
         ensure(
             self.id.len() <= 128 && valid_id(&self.id),
@@ -265,11 +265,13 @@ mod tests {
             Manifest::from_toml(include_str!("../../../plugins/walls/plugin.toml")).unwrap();
         m.api_version = 999;
         assert!(m.validate().is_err());
-        for version in [1, 3, 4, 5, 6, 7, 8] {
+        for version in [
+            1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
+        ] {
             m.api_version = version;
             let error = m.validate().unwrap_err().to_string();
             assert!(
-                error.contains("API 9/schema 28")
+                error.contains("API 26/schema 45")
                     && error.contains("rebuild")
                     && error.contains(&format!("API {version}"))
             );

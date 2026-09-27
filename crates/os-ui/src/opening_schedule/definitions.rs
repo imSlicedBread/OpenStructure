@@ -1,6 +1,7 @@
 use super::*;
 use os_document::Command;
 use os_model::Schedule;
+mod filters;
 
 pub(super) struct DefinitionDraft {
     id: Option<Id>,
@@ -46,6 +47,7 @@ impl DesktopApp {
                 ScheduleCategory::Door => "Door schedule",
                 ScheduleCategory::Window => "Window schedule",
                 ScheduleCategory::All => "Opening schedule",
+                ScheduleCategory::RoomFinish => "Room Finish schedule",
             };
             let names: Vec<_> = self
                 .editor
@@ -143,6 +145,9 @@ impl DesktopApp {
             if ui.button("New Window schedule").clicked() {
                 self.begin_definition(Some(ScheduleCategory::Window));
             }
+            if ui.button("New Room Finish schedule").clicked() {
+                self.begin_definition(Some(ScheduleCategory::RoomFinish));
+            }
             if ui
                 .add_enabled(
                     self.opening_schedule.selected.is_some(),
@@ -174,10 +179,12 @@ impl DesktopApp {
             ui.label("Schedule name");
             ui.text_edit_singleline(&mut draft.parameters.name);
             ui.horizontal_wrapped(|ui| {
+                let previous = draft.parameters.category;
                 for category in [
                     ScheduleCategory::Door,
                     ScheduleCategory::Window,
                     ScheduleCategory::All,
+                    ScheduleCategory::RoomFinish,
                 ] {
                     ui.selectable_value(
                         &mut draft.parameters.category,
@@ -185,10 +192,18 @@ impl DesktopApp {
                         format!("{category:?}"),
                     );
                 }
+                if (previous == ScheduleCategory::RoomFinish)
+                    != (draft.parameters.category == ScheduleCategory::RoomFinish)
+                {
+                    draft.parameters = ScheduleParams::new(
+                        draft.parameters.name.clone(),
+                        draft.parameters.category,
+                    );
+                }
                 egui::ComboBox::from_id_salt("schedule_sort")
                     .selected_text(format!("Sort: {:?}", draft.parameters.sort))
                     .show_ui(ui, |ui| {
-                        for sort in ScheduleSort::ALL {
+                        for &sort in draft.parameters.available_sorts() {
                             ui.selectable_value(
                                 &mut draft.parameters.sort,
                                 sort,
@@ -199,7 +214,7 @@ impl DesktopApp {
             });
             ui.label("Columns · check to include, use arrows to reorder");
             ui.horizontal_wrapped(|ui| {
-                for column in ScheduleColumn::ALL {
+                for &column in draft.parameters.available_columns() {
                     let mut enabled = draft.parameters.columns.contains(&column);
                     if ui.checkbox(&mut enabled, column.label()).changed() {
                         if enabled {
@@ -220,6 +235,11 @@ impl DesktopApp {
                     });
                 }
             });
+            if draft.parameters.category != ScheduleCategory::RoomFinish {
+                filters::controls(ui, &mut draft.parameters);
+            } else {
+                ui.label("RoomFinish filters are not supported.");
+            }
             if let Some(error) = &draft.error {
                 ui.colored_label(crate::theme::ERROR, error);
             }

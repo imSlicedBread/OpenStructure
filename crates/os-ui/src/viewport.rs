@@ -1,6 +1,7 @@
 use super::*;
 
 pub(super) struct ViewportCache {
+    document_key: (Id, u64),
     triangles: Vec<os_render::Triangle>,
     size: [f32; 2],
     scale: f32,
@@ -139,19 +140,33 @@ impl DesktopApp {
         );
         let size = [rect.width(), rect.height()];
         let scale = ctx.pixels_per_point();
+        let document_key = (
+            self.editor.document.session_id(),
+            self.editor.document.revision(),
+        );
         let changed = self.viewport_cache.as_ref().is_none_or(|c| {
-            c.triangles != triangles
+            c.document_key != document_key
+                || c.triangles != triangles
                 || c.size != size
                 || c.scale != scale
                 || c.selected != self.selected
         });
         if changed {
-            match os_render::RasterFrame::render(
+            let colors = self
+                .editor
+                .document
+                .model()
+                .materials
+                .iter()
+                .map(|(id, m)| (*id, m.parameters.color))
+                .collect();
+            match os_render::RasterFrame::render_with_materials(
                 &triangles,
                 size,
                 scale,
                 self.selected,
                 os_render::RasterStyle::default(),
+                &colors,
             ) {
                 Ok(frame) => {
                     let pixels = frame
@@ -171,6 +186,7 @@ impl DesktopApp {
                         )
                     };
                     self.viewport_cache = Some(ViewportCache {
+                        document_key,
                         triangles,
                         size,
                         scale,

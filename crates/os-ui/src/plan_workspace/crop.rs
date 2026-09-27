@@ -266,6 +266,7 @@ impl DesktopApp {
         self.cancel_aligned_dimension();
         self.cancel_opening_placement();
         self.plans.room_tag_draft = None;
+        self.plans.opening_tag_draft = None;
         self.plans.room_placement_active = false;
         self.plans.floor_sketch = None;
         self.grid_draft = None;

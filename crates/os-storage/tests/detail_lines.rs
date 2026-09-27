@@ -1,3 +1,5 @@
+mod common;
+
 use os_core::Point2;
 use os_document::{Command, Document};
 use os_model::{DetailLine, DetailLineParams, Model, SCHEMA_VERSION};
@@ -15,6 +17,7 @@ fn schema_seventeen_migration_is_explicit_and_atomic() {
     migrate(&mut migrated, 17).unwrap();
     let mut expected = original.clone();
     expected["schema_version"] = json!(SCHEMA_VERSION);
+    expected["opening_tags"] = json!({});
     expected["detail_lines"] = json!({});
     expected["room_separation_lines"] = json!({});
     expected["wall_joins"] = json!({});
@@ -23,6 +26,11 @@ fn schema_seventeen_migration_is_explicit_and_atomic() {
     expected["columns"] = json!({});
     expected["plan_graphics_templates"] = json!({});
     expected["plan_graphics"] = json!({});
+    expected["stairs"] = json!({});
+    expected["roofs"] = json!({});
+    expected["phases"] = migrated["phases"].clone();
+    expected["element_lifecycles"] = migrated["element_lifecycles"].clone();
+    common::apply_schema_38_defaults(&mut expected);
     expected["project"]["header"]["schema_version"] = json!(SCHEMA_VERSION);
     for map in ["sites", "buildings", "levels", "views"] {
         for entity in expected[map].as_object_mut().unwrap().values_mut() {

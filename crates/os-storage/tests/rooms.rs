@@ -1,3 +1,5 @@
+mod common;
+
 use os_core::{Id, Point2};
 use os_document::{Command, Document};
 use os_model::{
@@ -37,6 +39,9 @@ fn existing_model() -> Model {
     let opening = Opening::new(
         "core.opening",
         OpeningParams {
+            width_override: None,
+            height_override: None,
+            sill_override: None,
             hinge: Default::default(),
             swing: Default::default(),
             name: "Door".into(),
@@ -67,7 +72,11 @@ fn existing_model() -> Model {
 }
 fn schema_five() -> Value {
     let mut value = serde_json::to_value(existing_model()).unwrap();
+    common::remove_phase_fields(&mut value);
+    value.as_object_mut().unwrap().remove("stairs");
+    value.as_object_mut().unwrap().remove("roofs");
     value.as_object_mut().unwrap().remove("room_tags");
+    value.as_object_mut().unwrap().remove("opening_tags");
     value.as_object_mut().unwrap().remove("sheets");
     value.as_object_mut().unwrap().remove("schedules");
     value.as_object_mut().unwrap().remove("detail_lines");
@@ -91,6 +100,8 @@ fn schema_five() -> Value {
     value.as_object_mut().unwrap().remove("dimensions");
     value.as_object_mut().unwrap().remove("opening_types");
     value.as_object_mut().unwrap().remove("floors");
+    value.as_object_mut().unwrap().remove("stairs");
+    value.as_object_mut().unwrap().remove("roofs");
     opening_data_to_schema_seven(&mut value);
     set_version(&mut value, 5);
     value
@@ -102,6 +113,10 @@ fn opening_data_to_schema_seven(value: &mut Value) {
         // Schema 7 predates per-door hinge/swing orientation.
         parameters.remove("hinge");
         parameters.remove("swing");
+        assert_eq!(parameters.remove("sill_override"), Some(Value::Null));
+        for field in ["width_override", "height_override"] {
+            assert_eq!(parameters.remove(field), Some(Value::Null));
+        }
         let definition = parameters.remove("definition").unwrap();
         let legacy = definition.get("Legacy").unwrap();
         for key in ["kind", "width", "height", "sill"] {
@@ -132,6 +147,7 @@ fn five_to_current_adds_native_maps_and_updates_native_versions() {
     let model: Model = serde_json::from_value(value.clone()).unwrap();
     model.validate().unwrap();
     value.as_object_mut().unwrap().remove("room_tags");
+    value.as_object_mut().unwrap().remove("opening_tags");
     value.as_object_mut().unwrap().remove("sheets");
     value.as_object_mut().unwrap().remove("schedules");
     value.as_object_mut().unwrap().remove("detail_lines");
@@ -155,8 +171,11 @@ fn five_to_current_adds_native_maps_and_updates_native_versions() {
     value.as_object_mut().unwrap().remove("dimensions");
     value.as_object_mut().unwrap().remove("opening_types");
     value.as_object_mut().unwrap().remove("floors");
+    value.as_object_mut().unwrap().remove("stairs");
+    value.as_object_mut().unwrap().remove("roofs");
     opening_data_to_schema_seven(&mut value);
     set_version(&mut value, 5);
+    common::remove_phase_fields(&mut value);
     assert_eq!(value, original); // Includes native identities, opening data and exact opaque numbers.
 }
 
@@ -190,6 +209,12 @@ fn saved_room_signature_and_stale_wall_ids_survive_reopen_and_history() {
     let room = Room::new(
         "core.room",
         RoomParams {
+            floor_material: None,
+            wall_material: None,
+            ceiling_material: None,
+            floor_finish: None,
+            wall_finish: None,
+            ceiling_finish: None,
             number: "101".into(),
             name: "Office".into(),
             level: *model.levels.keys().next().unwrap(),

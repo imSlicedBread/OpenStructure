@@ -30,7 +30,7 @@ impl Plugin for WallsPlugin {
             .ok_or_else(|| Error::Permission("wall plugin requires model.read".into()))?;
         ensure(
             model.schema_version == REQUIRED_MODEL_SCHEMA_VERSION,
-            "native Model request requires schema 28",
+            "native Model request requires schema 45",
         )?;
         let response = match request.request {
             Request::CreateWall(parameters) => {

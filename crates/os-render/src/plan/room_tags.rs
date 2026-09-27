@@ -103,6 +103,7 @@ impl PlanDrawing {
                 .saturating_add(self.grids.len())
                 .saturating_add(self.floors.len())
                 .saturating_add(self.rooms.len())
+                .saturating_add(self.opening_tags.len())
                 .saturating_add(
                     self.dimensions
                         .iter()

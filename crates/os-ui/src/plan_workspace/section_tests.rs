@@ -259,6 +259,7 @@ fn section_elevation_bounds_use_building_wall_and_floor_extents() {
                 Point2::new(4.0, 0.0),
                 Point2::new(4.0, 2.0),
             ],
+            holes: Vec::new(),
             thickness: 0.3,
             top_offset: -0.5,
         },

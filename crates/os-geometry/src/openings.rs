@@ -78,13 +78,16 @@ pub fn component_mesh(p: &ResolvedOpening, wall: &WallParams, elevation: f64) ->
         panel.end = world(wall, end.x, end.y);
         panel.height = p.height;
         panel.thickness = thickness;
-        return crate::PrismKernel
-            .tessellate(&crate::walls::wall_solid(&panel, elevation + p.sill)?);
+        let mut mesh = crate::PrismKernel
+            .tessellate(&crate::walls::wall_solid(&panel, elevation + p.sill)?)?;
+        assign_material(&mut mesh, p.family.panel_material);
+        return Ok(mesh);
     }
     // Triangulate normalized coordinates so small/large type dimensions do not
     // change polygon predicates. Rotate the extrusion into the vertical plane.
     let profile = p.family.component_profile(p.width, p.height, p.kind);
     let mut mesh = extrude_floor(&profile, thickness / 2., thickness)?;
+    assign_material(&mut mesh, p.family.panel_material);
     let a = component_point(p, wall, 0.);
     let b = component_point(p, wall, 1.);
     let (dx, dy) = ((b.x - a.x) / p.width, (b.y - a.y) / p.width);
@@ -112,6 +115,7 @@ pub fn component_mesh(p: &ResolvedOpening, wall: &WallParams, elevation: f64) ->
     let frame_offset = frame_offset(p, wall);
     for bar in bars {
         let mut frame = extrude_floor(&bar, frame_depth / 2., frame_depth)?;
+        assign_material(&mut frame, p.family.frame_material);
         for v in &mut frame.vertices {
             let xy = world(wall, p.offset + v.x * p.width, frame_offset + v.z);
             *v = crate::Vec3::new(xy.x, xy.y, elevation + p.sill + v.y * p.height);
@@ -135,9 +139,30 @@ fn rect_profile(x0: f64, y0: f64, x1: f64, y1: f64) -> Vec<Point2> {
     ]
 }
 
-fn append_mesh(target: &mut Mesh, addition: Mesh) -> Result<()> {
+fn assign_material(mesh: &mut Mesh, material: Option<os_core::Id>) {
+    if material.is_some() {
+        mesh.surfaces = vec![
+            crate::SurfaceIdentity {
+                layer: None,
+                material
+            };
+            mesh.triangles.len()
+        ];
+    }
+}
+
+fn append_mesh(target: &mut Mesh, mut addition: Mesh) -> Result<()> {
     let offset = u32::try_from(target.vertices.len())
         .map_err(|_| os_core::Error::Invalid("opening family mesh is too large".into()))?;
+    if !target.surfaces.is_empty() || !addition.surfaces.is_empty() {
+        target
+            .surfaces
+            .resize(target.triangles.len(), Default::default());
+        addition
+            .surfaces
+            .resize(addition.triangles.len(), Default::default());
+        target.surfaces.extend(addition.surfaces);
+    }
     target.triangles.extend(
         addition
             .triangles
@@ -294,6 +319,9 @@ mod tests {
             model.opening_types.insert(type_id, ty);
             let p = model
                 .resolve_opening(&os_model::OpeningParams {
+                    width_override: None,
+                    height_override: None,
+                    sill_override: None,
                     name: format!("{kind:?} instance"),
                     host: level,
                     offset: 1.,
@@ -304,6 +332,38 @@ mod tests {
                 .unwrap();
             let mesh = component_mesh(&p, &wall, 0.).unwrap();
             mesh.validate().unwrap();
+            // Material assignment classifies each triangle without changing geometry.
+            for (panel_material, frame_material) in [
+                (Some(os_core::Id::new()), Some(os_core::Id::new())),
+                (None, Some(os_core::Id::new())),
+                (Some(os_core::Id::new()), None),
+            ] {
+                let mut assigned = p.clone();
+                assigned.family.panel_material = panel_material;
+                assigned.family.frame_material = frame_material;
+                let colored = component_mesh(&assigned, &wall, 0.).unwrap();
+                colored.validate().unwrap();
+                assert_eq!(colored.vertices, mesh.vertices);
+                assert_eq!(colored.triangles, mesh.triangles);
+                // The rectangular component is a prism; remaining triangles are rails.
+                assert!(
+                    colored.surfaces[..12]
+                        .iter()
+                        .all(|s| s.material == panel_material && s.layer.is_none())
+                );
+                assert!(
+                    colored.surfaces[12..]
+                        .iter()
+                        .all(|s| s.material == frame_material && s.layer.is_none())
+                );
+                assert_eq!(colored.surfaces.len(), colored.triangles.len());
+                assigned.family.frame_width = 0.;
+                let plain = component_mesh(&assigned, &wall, 0.).unwrap();
+                assert!(plain.surfaces.iter().all(|s| s.material == panel_material));
+                if panel_material.is_some() {
+                    assert_eq!(plain.surfaces.len(), plain.triangles.len());
+                }
+            }
 
             let width = p.width;
             let height = p.height;
@@ -369,6 +429,9 @@ mod tests {
             for swing in [DoorSwing::Left, DoorSwing::Right] {
                 let p = model
                     .resolve_opening(&os_model::OpeningParams {
+                        width_override: None,
+                        height_override: None,
+                        sill_override: None,
                         name: "Door".into(),
                         host: level,
                         offset: 1.,

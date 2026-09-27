@@ -24,9 +24,122 @@ pub enum DimensionEndpoint {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct DimensionReference {
-    pub wall: Id,
-    pub endpoint: DimensionEndpoint,
+pub enum DimensionReference {
+    WallEndpoint {
+        wall: Id,
+        endpoint: DimensionEndpoint,
+    },
+    OpeningJamb {
+        opening: Id,
+        jamb: DimensionJamb,
+    },
+}
+
+/// Void jamb in the current host's stored start-to-end direction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DimensionJamb {
+    Start,
+    End,
+}
+
+impl DimensionReference {
+    pub fn entity(self) -> Id {
+        match self {
+            Self::WallEndpoint { wall, .. } => wall,
+            Self::OpeningJamb { opening, .. } => opening,
+        }
+    }
+
+    pub fn wall_endpoint(self) -> Option<(Id, DimensionEndpoint)> {
+        match self {
+            Self::WallEndpoint { wall, endpoint } => Some((wall, endpoint)),
+            Self::OpeningJamb { .. } => None,
+        }
+    }
+
+    /// Shared by model resolution and revision-bound render snapshots.
+    pub fn resolve_with(
+        self,
+        level: Id,
+        mut wall: impl FnMut(Id) -> Option<(Id, Point2, Point2)>,
+        mut opening: impl FnMut(Id) -> std::result::Result<(Id, f64, f64), DimensionDiagnostic>,
+    ) -> std::result::Result<Point2, DimensionDiagnostic> {
+        let (host, station) = match self {
+            Self::WallEndpoint { wall, .. } => (wall, None),
+            Self::OpeningJamb { opening: id, jamb } => {
+                let (host, offset, width) = opening(id)?;
+                (
+                    host,
+                    Some(
+                        offset
+                            + if jamb == DimensionJamb::End {
+                                width
+                            } else {
+                                0.0
+                            },
+                    ),
+                )
+            }
+        };
+        let (host_level, start, end) = wall(host).ok_or(match self {
+            Self::WallEndpoint { .. } => DimensionDiagnostic::MissingWall,
+            Self::OpeningJamb { .. } => DimensionDiagnostic::MissingOpeningHost,
+        })?;
+        if host_level != level {
+            return Err(DimensionDiagnostic::WrongLevel);
+        }
+        let point = if let Some(station) = station {
+            let length = start.distance(end);
+            if !length.is_finite() || length <= 1e-6 {
+                return Err(DimensionDiagnostic::InvalidGeometry);
+            }
+            Point2::new(
+                start.x + (end.x - start.x) / length * station,
+                start.y + (end.y - start.y) / length * station,
+            )
+        } else if matches!(
+            self,
+            Self::WallEndpoint {
+                endpoint: DimensionEndpoint::Start,
+                ..
+            }
+        ) {
+            start
+        } else {
+            end
+        };
+        if !point.is_finite() {
+            return Err(DimensionDiagnostic::InvalidGeometry);
+        }
+        Ok(point)
+    }
+
+    pub fn resolve(
+        self,
+        model: &Model,
+        level: Id,
+    ) -> std::result::Result<Point2, DimensionDiagnostic> {
+        self.resolve_with(
+            level,
+            |id| {
+                model
+                    .walls
+                    .get(&id)
+                    .map(|w| (w.parameters.level, w.parameters.start, w.parameters.end))
+            },
+            |id| {
+                let p = &model
+                    .openings
+                    .get(&id)
+                    .ok_or(DimensionDiagnostic::MissingOpening)?
+                    .parameters;
+                let effective = model
+                    .resolve_opening(p)
+                    .map_err(|_| DimensionDiagnostic::InvalidGeometry)?;
+                Ok((p.host, p.offset, effective.width))
+            },
+        )
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -49,12 +162,16 @@ pub type Dimension = Entity<DimensionParams>;
 pub enum DimensionDiagnostic {
     MissingPlanView,
     MissingWall,
+    MissingOpening,
+    MissingOpeningHost,
     WrongLevel,
     CoincidentAnchors,
     InvalidGeometry,
     OffAxis(usize),
     Backtracking(usize),
     MissingWallAt(usize),
+    MissingOpeningAt(usize),
+    MissingOpeningHostAt(usize),
     WrongLevelAt(usize),
     ParallelWalls,
 }
@@ -105,8 +222,16 @@ impl DimensionParams {
         if self.layout != DimensionLayout::Angular || self.validate().is_err() {
             return Err(DimensionDiagnostic::InvalidGeometry);
         }
-        let (a, b) = wall(self.first.wall)?;
-        let (c, d) = wall(self.second.wall)?;
+        let (first_wall, first_endpoint) = self
+            .first
+            .wall_endpoint()
+            .ok_or(DimensionDiagnostic::InvalidGeometry)?;
+        let (second_wall, second_endpoint) = self
+            .second
+            .wall_endpoint()
+            .ok_or(DimensionDiagnostic::InvalidGeometry)?;
+        let (a, b) = wall(first_wall)?;
+        let (c, d) = wall(second_wall)?;
         let unit = |a: Point2, b: Point2| {
             let length = a.distance(b);
             if !length.is_finite() || length <= 1e-6 {
@@ -129,8 +254,8 @@ impl DimensionParams {
                 -1.0
             }
         };
-        let start = (u.y * sign(self.first.endpoint)).atan2(u.x * sign(self.first.endpoint));
-        let end = (v.y * sign(self.second.endpoint)).atan2(v.x * sign(self.second.endpoint));
+        let start = (u.y * sign(first_endpoint)).atan2(u.x * sign(first_endpoint));
+        let end = (v.y * sign(second_endpoint)).atan2(v.x * sign(second_endpoint));
         let sweep = (end - start + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU)
             - std::f64::consts::PI;
         if !center.is_finite()
@@ -171,13 +296,23 @@ impl DimensionParams {
 
     /// Choose one of four non-reflex sectors; placement on either axis is invalid.
     pub fn place_angular(&mut self, model: &Model, placement: Point2) -> Result<()> {
+        ensure(
+            self.first.wall_endpoint().is_some() && self.second.wall_endpoint().is_some(),
+            "angular dimensions require wall references",
+        )?;
         let mut candidate = self.clone();
         candidate.offset_m = 1.0;
         candidate.orphan_hint = placement;
         for first in [DimensionEndpoint::Start, DimensionEndpoint::End] {
             for second in [DimensionEndpoint::Start, DimensionEndpoint::End] {
-                candidate.first.endpoint = first;
-                candidate.second.endpoint = second;
+                candidate.first = DimensionReference::WallEndpoint {
+                    wall: self.first.entity(),
+                    endpoint: first,
+                };
+                candidate.second = DimensionReference::WallEndpoint {
+                    wall: self.second.entity(),
+                    endpoint: second,
+                };
                 if let Ok(geometry) = candidate.resolve_angular(model) {
                     candidate.offset_m = geometry.center.distance(placement);
                     if geometry.contains_placement(placement)
@@ -217,6 +352,12 @@ impl DimensionParams {
                         reason
                     } else {
                         match reason {
+                            DimensionDiagnostic::MissingOpening => {
+                                DimensionDiagnostic::MissingOpeningAt(i + 1)
+                            }
+                            DimensionDiagnostic::MissingOpeningHost => {
+                                DimensionDiagnostic::MissingOpeningHostAt(i + 1)
+                            }
                             DimensionDiagnostic::MissingWall => {
                                 DimensionDiagnostic::MissingWallAt(i + 1)
                             }
@@ -271,7 +412,9 @@ impl DimensionParams {
         )?;
         if self.layout == DimensionLayout::Angular {
             ensure(
-                self.first.wall != self.second.wall,
+                self.first.wall_endpoint().is_some()
+                    && self.second.wall_endpoint().is_some()
+                    && self.first.entity() != self.second.entity(),
                 "angular dimension requires distinct walls",
             )?;
             ensure(
@@ -288,15 +431,11 @@ impl DimensionParams {
         let references: Vec<_> = self.references().collect();
         for (i, reference) in references.iter().enumerate() {
             ensure(
-                !reference.wall.0.is_nil() && !references[..i].contains(reference),
+                !reference.entity().0.is_nil() && !references[..i].contains(reference),
                 "nil or repeated dimension reference",
             )?;
         }
         ensure(!self.view.0.is_nil(), "dimension view ID is nil")?;
-        ensure(
-            !self.first.wall.0.is_nil() && !self.second.wall.0.is_nil(),
-            "dimension wall ID is nil",
-        )?;
         ensure(
             self.first != self.second,
             "dimension references must differ",
@@ -339,20 +478,7 @@ impl DimensionParams {
             .parameters
             .level
             .ok_or(DimensionDiagnostic::MissingPlanView)?;
-        let anchor = |reference: DimensionReference| {
-            let wall = model
-                .walls
-                .get(&reference.wall)
-                .ok_or(DimensionDiagnostic::MissingWall)?;
-            if wall.parameters.level != level {
-                return Err(DimensionDiagnostic::WrongLevel);
-            }
-            Ok(match reference.endpoint {
-                DimensionEndpoint::Start => wall.parameters.start,
-                DimensionEndpoint::End => wall.parameters.end,
-            })
-        };
-        self.resolve_anchors_with(anchor)
+        self.resolve_anchors_with(|reference| reference.resolve(model, level))
     }
 
     pub fn validate_creation(&self, model: &Model) -> Result<()> {
@@ -419,11 +545,11 @@ mod tests {
             additional: vec![],
             baseline_spacing_m: 0.25,
             view: view_id,
-            first: DimensionReference {
+            first: DimensionReference::WallEndpoint {
                 wall: aid,
                 endpoint: DimensionEndpoint::End,
             },
-            second: DimensionReference {
+            second: DimensionReference::WallEndpoint {
                 wall: bid,
                 endpoint: DimensionEndpoint::End,
             },
@@ -453,7 +579,10 @@ mod tests {
             assert_eq!(p, saved);
         }
         let mut same = p.clone();
-        same.second.wall = aid;
+        same.second = DimensionReference::WallEndpoint {
+            wall: aid,
+            endpoint: DimensionEndpoint::End,
+        };
         assert!(same.validate_creation(&model).is_err());
         for (end, diagnostic) in [
             (Point2::new(3.0, 0.0), DimensionDiagnostic::ParallelWalls),
@@ -497,11 +626,11 @@ mod tests {
                 additional: Vec::new(),
                 baseline_spacing_m: 0.25,
                 view: view.id(),
-                first: DimensionReference {
+                first: DimensionReference::WallEndpoint {
                     wall: Id::new(),
                     endpoint: DimensionEndpoint::Start,
                 },
-                second: DimensionReference {
+                second: DimensionReference::WallEndpoint {
                     wall: Id::new(),
                     endpoint: DimensionEndpoint::End,
                 },
@@ -548,15 +677,15 @@ mod tests {
 
     #[test]
     fn chain_and_baseline_anchor_lists_are_collinear_forward_and_orphan_safe() {
-        let first = DimensionReference {
+        let first = DimensionReference::WallEndpoint {
             wall: Id::new(),
             endpoint: DimensionEndpoint::Start,
         };
-        let second = DimensionReference {
+        let second = DimensionReference::WallEndpoint {
             wall: Id::new(),
             endpoint: DimensionEndpoint::End,
         };
-        let third = DimensionReference {
+        let third = DimensionReference::WallEndpoint {
             wall: Id::new(),
             endpoint: DimensionEndpoint::Start,
         };

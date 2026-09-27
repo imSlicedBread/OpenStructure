@@ -50,9 +50,18 @@ pub struct SnapCandidate {
     pub point: Point2,
     pub distance_pixels: f64,
 }
+/// Legal acquisition line in view-plane metres. Filtering precedes ranking.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SnapAxis {
+    pub origin: Point2,
+    pub direction: Point2,
+}
+
 pub struct SnapResult {
     context: PlanContext,
     query: SnapQuery,
+    excluded_entities: BTreeSet<Id>,
+    axis: Option<SnapAxis>,
     candidate: Option<SnapCandidate>,
 }
 impl SnapResult {
@@ -62,8 +71,48 @@ impl SnapResult {
         query: SnapQuery,
     ) -> Result<Option<SnapCandidate>> {
         ensure(
-            self.context == context && self.query == query,
+            self.context == context
+                && self.query == query
+                && self.excluded_entities.is_empty()
+                && self.axis.is_none(),
             "snap result is stale for this view or navigation query",
+        )?;
+        Ok(self.candidate)
+    }
+
+    /// Read a result produced with the same explicit multi-entity exclusions.
+    pub fn candidate_excluding(
+        &self,
+        context: PlanContext,
+        query: SnapQuery,
+        excluded_entities: &BTreeSet<Id>,
+    ) -> Result<Option<SnapCandidate>> {
+        ensure(
+            self.context == context
+                && self.query == query
+                && self.excluded_entities == *excluded_entities,
+            "snap result is stale for this view or navigation query",
+        )?;
+        ensure(
+            self.axis.is_none(),
+            "snap result requires its acquisition axis",
+        )?;
+        Ok(self.candidate)
+    }
+
+    pub fn candidate_on_axis(
+        &self,
+        context: PlanContext,
+        query: SnapQuery,
+        excluded_entities: &BTreeSet<Id>,
+        axis: SnapAxis,
+    ) -> Result<Option<SnapCandidate>> {
+        ensure(
+            self.context == context
+                && self.query == query
+                && self.excluded_entities == *excluded_entities
+                && self.axis == Some(axis),
+            "snap result is stale for this acquisition axis",
         )?;
         Ok(self.candidate)
     }
@@ -145,6 +194,43 @@ impl SnapScene {
     }
 
     pub fn query(&self, current: PlanContext, query: SnapQuery) -> Result<SnapResult> {
+        self.query_excluding(current, query, &BTreeSet::new())
+    }
+
+    /// Query semantic snaps while excluding multiple edited entities. The set is
+    /// part of the result identity and must be supplied again to read the result.
+    pub fn query_excluding(
+        &self,
+        current: PlanContext,
+        query: SnapQuery,
+        excluded_entities: &BTreeSet<Id>,
+    ) -> Result<SnapResult> {
+        self.query_constrained(current, query, excluded_entities, None)
+    }
+
+    pub fn query_on_axis(
+        &self,
+        current: PlanContext,
+        query: SnapQuery,
+        excluded_entities: &BTreeSet<Id>,
+        axis: SnapAxis,
+    ) -> Result<SnapResult> {
+        ensure(
+            axis.origin.is_finite()
+                && axis.direction.is_finite()
+                && (axis.direction.x.hypot(axis.direction.y) - 1.0).abs() <= 1e-9,
+            "snap axis must have a finite origin and unit direction",
+        )?;
+        self.query_constrained(current, query, excluded_entities, Some(axis))
+    }
+
+    fn query_constrained(
+        &self,
+        current: PlanContext,
+        query: SnapQuery,
+        excluded_entities: &BTreeSet<Id>,
+        axis: Option<SnapAxis>,
+    ) -> Result<SnapResult> {
         ensure(
             self.context == current,
             "snap scene is stale for this document/view/settings",
@@ -165,6 +251,14 @@ impl SnapScene {
         let mut offer =
             |segment: &SnapSegment, other, kind, endpoint, point: Point2| -> Result<()> {
                 ensure(point.is_finite(), "snap geometry overflow")?;
+                if axis.is_some_and(|a| {
+                    ((point.x - a.origin.x) * a.direction.y
+                        - (point.y - a.origin.y) * a.direction.x)
+                        .abs()
+                        > 1e-9
+                }) {
+                    return Ok(());
+                }
                 if let Some(crop) = current.crop
                     && (point.x < crop.min.x
                         || point.x > crop.max.x
@@ -214,7 +308,9 @@ impl SnapScene {
         let mut nearby = Vec::new();
         for prepared in &self.segments {
             let segment = &prepared.segment;
-            if query.exclude_entity == Some(segment.entity) {
+            if query.exclude_entity == Some(segment.entity)
+                || excluded_entities.contains(&segment.entity)
+            {
                 continue;
             }
             let dx = segment.end.x - segment.start.x;
@@ -332,6 +428,8 @@ impl SnapScene {
         Ok(SnapResult {
             context: current,
             query,
+            excluded_entities: excluded_entities.clone(),
+            axis,
             candidate: best,
         })
     }
@@ -362,4 +460,135 @@ fn intersection(a: &PreparedSegment, b: &PreparedSegment) -> Result<Option<Point
     let point = Point2::new(a.start.x + ax * t, a.start.y + ay * t);
     ensure(point.is_finite(), "intersection point overflow")?;
     Ok(Some(point))
+}
+
+#[cfg(test)]
+mod axis_tests {
+    use super::*;
+
+    #[test]
+    fn graph_axis_query_checks_axis_exclusion_context_and_preserves_legacy_ranking() {
+        let context = PlanContext {
+            session_id: Id::new(),
+            model_revision: 0,
+            view_id: Id::new(),
+            settings_revision: 0,
+            basis: Default::default(),
+            range: Default::default(),
+            crop: None,
+            scale_denominator: 100.0,
+            show_walls: true,
+            show_extensions: true,
+        };
+        let ids = [Id::new(), Id::new(), Id::new()];
+        let scene = SnapScene::new(
+            context,
+            vec![
+                SnapSegment {
+                    entity: ids[0],
+                    feature: 0,
+                    start: Point2::new(0.0, 0.01),
+                    end: Point2::new(0.0, 1.0),
+                },
+                SnapSegment {
+                    entity: ids[1],
+                    feature: 0,
+                    start: Point2::new(0.04, 0.0),
+                    end: Point2::new(0.04, 1.0),
+                },
+                SnapSegment {
+                    entity: ids[2],
+                    feature: 0,
+                    start: Point2::new(0.0, 0.0),
+                    end: Point2::new(-1.0, 0.0),
+                },
+            ],
+        )
+        .unwrap();
+        let camera = PlanCamera {
+            center: Point2::default(),
+            pixels_per_metre: 100.0,
+        };
+        let query = SnapQuery {
+            camera,
+            viewport: [800.0, 600.0],
+            pointer: Point2::new(400.0, 300.0),
+            radius_pixels: 12.0,
+            endpoints: true,
+            midpoints: false,
+            intersections: false,
+            perpendicular_from: None,
+            nearest: false,
+            axis_extensions: false,
+            exclude_entity: None,
+        };
+        let excluded = BTreeSet::from([ids[2]]);
+        let axis = SnapAxis {
+            origin: Point2::default(),
+            direction: Point2::new(1.0, 0.0),
+        };
+        assert_eq!(
+            scene
+                .query_excluding(context, query, &excluded)
+                .unwrap()
+                .candidate_excluding(context, query, &excluded)
+                .unwrap()
+                .unwrap()
+                .entity,
+            ids[0]
+        );
+        let hit = scene
+            .query_on_axis(context, query, &excluded, axis)
+            .unwrap();
+        assert_eq!(
+            hit.candidate_on_axis(context, query, &excluded, axis)
+                .unwrap()
+                .unwrap()
+                .entity,
+            ids[1]
+        );
+        assert!(hit.candidate(context, query).is_err());
+        assert!(hit.candidate_excluding(context, query, &excluded).is_err());
+        assert!(
+            hit.candidate_on_axis(context, query, &BTreeSet::new(), axis)
+                .is_err()
+        );
+        assert!(
+            hit.candidate_on_axis(
+                context,
+                query,
+                &excluded,
+                SnapAxis {
+                    origin: Point2::new(0.1, 0.0),
+                    ..axis
+                }
+            )
+            .is_err()
+        );
+        assert!(
+            hit.candidate_on_axis(
+                PlanContext {
+                    model_revision: 1,
+                    ..context
+                },
+                query,
+                &excluded,
+                axis
+            )
+            .is_err()
+        );
+        assert!(
+            scene
+                .query_on_axis(
+                    context,
+                    query,
+                    &excluded,
+                    SnapAxis {
+                        direction: Point2::default(),
+                        ..axis
+                    }
+                )
+                .is_err()
+        );
+    }
 }

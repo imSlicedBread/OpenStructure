@@ -3,7 +3,11 @@ use os_core::{Id, Point2, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub const SCHEMA_VERSION: u32 = 28;
+pub const SCHEMA_VERSION: u32 = 45;
+mod phases;
+pub use phases::*;
+mod opening_tags;
+pub use opening_tags::*;
 mod plan_graphics;
 pub use plan_graphics::*;
 mod columns;
@@ -22,6 +26,12 @@ mod sections;
 pub use sections::*;
 mod floors;
 pub use floors::*;
+mod stairs;
+pub use stairs::*;
+mod ceilings;
+pub use ceilings::*;
+mod roofs;
+pub use roofs::*;
 mod dimensions;
 pub use dimensions::*;
 mod room_separation_lines;
@@ -104,6 +114,13 @@ pub struct LevelParams {
 pub struct MaterialParams {
     pub name: String,
     pub density_kg_m3: f64,
+    /// Opaque display RGB bytes, independent of density and material identity.
+    pub color: [u8; 3],
+}
+/// Frozen pre-schema-34 display swatch, also used for unassigned layer fallback.
+pub fn legacy_surface_color(id: Id) -> [u8; 3] {
+    let b = id.0.as_bytes();
+    [140 + b[0] % 80, 140 + b[1] % 80, 140 + b[2] % 80]
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -119,6 +136,13 @@ pub struct ViewParams {
     pub section: Option<SectionViewSettings>,
 }
 impl ViewParams {
+    pub fn reflected_ceiling_plan(name: impl Into<String>, level: Id) -> Self {
+        Self {
+            plan: Some(PlanSettings::reflected_ceiling()),
+            ..Self::floor_plan(name, level)
+        }
+    }
+
     pub fn floor_plan(name: impl Into<String>, level: Id) -> Self {
         Self {
             name: name.into(),
@@ -246,12 +270,18 @@ pub struct Model {
     pub wall_type_assignments: BTreeMap<Id, WallTypeAssignment>,
     pub wall_joins: BTreeMap<Id, WallJoin>,
     pub floors: BTreeMap<Id, Floor>,
+    pub stairs: BTreeMap<Id, Stair>,
+    pub roofs: BTreeMap<Id, Roof>,
+    pub ceilings: BTreeMap<Id, Ceiling>,
     pub columns: BTreeMap<Id, Column>,
     pub openings: BTreeMap<Id, Opening>,
     pub opening_types: BTreeMap<Id, OpeningType>,
     pub rooms: BTreeMap<Id, Room>,
     pub room_separation_lines: BTreeMap<Id, RoomSeparationLine>,
+    pub phases: BTreeMap<Id, Phase>,
+    pub element_lifecycles: BTreeMap<Id, ElementLifecycle>,
     pub room_tags: BTreeMap<Id, RoomTag>,
+    pub opening_tags: BTreeMap<Id, OpeningTag>,
     pub detail_lines: BTreeMap<Id, DetailLine>,
     pub dimensions: BTreeMap<Id, Dimension>,
     pub grids: BTreeMap<Id, Grid>,
@@ -301,6 +331,8 @@ impl Model {
                 section: None,
             },
         );
+        let existing_phase = new_phase("Existing", 0);
+        let new_construction_phase = new_phase("New Construction", 1);
         Self {
             schema_version: SCHEMA_VERSION,
             project,
@@ -312,12 +344,21 @@ impl Model {
             wall_type_assignments: BTreeMap::new(),
             wall_joins: BTreeMap::new(),
             floors: BTreeMap::new(),
+            stairs: BTreeMap::new(),
+            roofs: BTreeMap::new(),
+            ceilings: BTreeMap::new(),
             columns: BTreeMap::new(),
             openings: BTreeMap::new(),
             opening_types: BTreeMap::new(),
             rooms: BTreeMap::new(),
             room_separation_lines: BTreeMap::new(),
+            phases: BTreeMap::from([
+                (existing_phase.id(), existing_phase),
+                (new_construction_phase.id(), new_construction_phase),
+            ]),
+            element_lifecycles: BTreeMap::new(),
             room_tags: BTreeMap::new(),
+            opening_tags: BTreeMap::new(),
             detail_lines: BTreeMap::new(),
             dimensions: BTreeMap::new(),
             grids: BTreeMap::new(),
@@ -388,11 +429,17 @@ impl Model {
         check_map!(opening_types, "core.opening_type");
         check_map!(rooms, "core.room");
         check_map!(room_separation_lines, "core.room_separation_line");
+        check_map!(phases, "core.phase");
+        self.validate_phases()?;
         room_separation_lines::validate(self)?;
         check_map!(room_tags, "core.room_tag");
+        check_map!(opening_tags, "core.opening_tag");
         check_map!(detail_lines, "core.detail_line");
         detail_lines::validate(self)?;
         check_map!(floors, "core.floor");
+        check_map!(stairs, "core.stair");
+        check_map!(roofs, "core.roof");
+        check_map!(ceilings, "core.ceiling");
         check_map!(dimensions, "core.dimension");
         check_map!(materials, "core.material");
         check_map!(views, "core.view");
@@ -468,6 +515,15 @@ impl Model {
         for column in self.columns.values() {
             column.parameters.validate_in(self)?;
         }
+        for stair in self.stairs.values() {
+            stair.parameters.validate_in(self)?;
+        }
+        for ceiling in self.ceilings.values() {
+            ceiling.parameters.validate_in(self)?;
+        }
+        for roof in self.roofs.values() {
+            roof.parameters.validate_in(self)?;
+        }
         for floor in self.floors.values() {
             let p = &floor.parameters;
             p.validate()?;
@@ -486,9 +542,23 @@ impl Model {
         }
         dimensions::validate(self)?;
         room_tags::validate(self)?;
+        opening_tags::validate(self)?;
         let mut room_numbers = BTreeSet::new();
         for room in self.rooms.values() {
             room.parameters.validate()?;
+            for material in [
+                room.parameters.floor_material,
+                room.parameters.wall_material,
+                room.parameters.ceiling_material,
+            ]
+            .into_iter()
+            .flatten()
+            {
+                ensure(
+                    self.materials.contains_key(&material),
+                    "room material missing",
+                )?;
+            }
             ensure(
                 self.levels.contains_key(&room.parameters.level),
                 "room level missing",
@@ -509,12 +579,19 @@ impl Model {
         }
         for e in self.views.values() {
             e.parameters.validate()?;
+            if let Some(phase) = e.parameters.plan.and_then(|plan| plan.target_phase) {
+                ensure(
+                    self.phases.contains_key(&phase),
+                    "plan target phase missing",
+                )?;
+            }
             if let Some(id) = e.parameters.level {
                 ensure(self.levels.contains_key(&id), "view level missing")?;
                 if let Some(settings) = e.parameters.plan {
-                    settings
-                        .range
-                        .at_level(self.levels[&id].parameters.elevation)?;
+                    settings.range.at_level_for_view(
+                        settings.view_type,
+                        self.levels[&id].parameters.elevation,
+                    )?;
                 }
             }
         }

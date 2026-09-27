@@ -1,3 +1,5 @@
+mod common;
+
 use os_document::{Command, Document};
 use os_model::*;
 use os_storage::{StorageBackend, ZipJsonStorage, migrate};
@@ -41,6 +43,19 @@ fn migration_preserves_ids_metadata_and_opaque_data_then_multiple_definitions_ro
     migrate(&mut migrated, 15).unwrap();
     let mut expected = original;
     expected["schema_version"] = json!(SCHEMA_VERSION);
+    for room in expected["rooms"].as_object_mut().unwrap().values_mut() {
+        for field in [
+            "floor_finish",
+            "wall_finish",
+            "ceiling_finish",
+            "floor_material",
+            "wall_material",
+            "ceiling_material",
+        ] {
+            room["parameters"][field] = Value::Null;
+        }
+    }
+    expected["opening_tags"] = json!({});
     expected["schedules"] = json!({});
     expected["detail_lines"] = json!({});
     expected["room_separation_lines"] = json!({});
@@ -48,6 +63,11 @@ fn migration_preserves_ids_metadata_and_opaque_data_then_multiple_definitions_ro
     expected["wall_types"] = json!({});
     expected["wall_type_assignments"] = json!({});
     expected["columns"] = json!({});
+    expected["stairs"] = json!({});
+    expected["roofs"] = json!({});
+    expected["phases"] = migrated["phases"].clone();
+    expected["element_lifecycles"] = migrated["element_lifecycles"].clone();
+    common::apply_schema_38_defaults(&mut expected);
     expected["plan_graphics_templates"] = json!({});
     expected["plan_graphics"] = json!({});
     expected["project"]["header"]["schema_version"] = json!(SCHEMA_VERSION);
@@ -71,6 +91,7 @@ fn migration_preserves_ids_metadata_and_opaque_data_then_multiple_definitions_ro
             entity["header"]["schema_version"] = json!(SCHEMA_VERSION);
         }
     }
+    common::apply_schema_43_dimension_references(&mut expected);
     assert_eq!(
         migrated, expected,
         "all prior values including opaque version-like keys are preserved"

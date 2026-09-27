@@ -183,11 +183,11 @@ impl PluginHost {
         }
         ensure(
             p.manifest.api_version == API_VERSION,
-            "native Model request requires API 9/schema 28; rebuild and reinstall older guests",
+            "native Model request requires API 26/schema 45; rebuild and reinstall older guests",
         )?;
         ensure(
             model.schema_version == REQUIRED_MODEL_SCHEMA_VERSION,
-            "native Model request requires schema 28",
+            "native Model request requires schema 45",
         )?;
         require(p, Permission::ModelRead)?;
         let geometry = matches!(request, Request::GenerateWall { .. });

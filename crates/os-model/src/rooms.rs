@@ -8,6 +8,20 @@ use serde::{Deserialize, Serialize};
 pub struct RoomParams {
     pub number: String,
     pub name: String,
+    /// Optional finish codes, not physical material assignments.
+    #[serde(deserialize_with = "Option::<String>::deserialize")]
+    pub floor_finish: Option<String>,
+    #[serde(deserialize_with = "Option::<String>::deserialize")]
+    pub wall_finish: Option<String>,
+    #[serde(deserialize_with = "Option::<String>::deserialize")]
+    pub ceiling_finish: Option<String>,
+    /// Stable project material assignments, independent of the legacy finish codes.
+    #[serde(deserialize_with = "Option::<Id>::deserialize")]
+    pub floor_material: Option<Id>,
+    #[serde(deserialize_with = "Option::<Id>::deserialize")]
+    pub wall_material: Option<Id>,
+    #[serde(deserialize_with = "Option::<Id>::deserialize")]
+    pub ceiling_material: Option<Id>,
     pub level: Id,
     pub seed: Point2,
     /// Accepted ordered boundary entity UUID/orientation cycle from `FaceKey::as_signature`.
@@ -21,6 +35,18 @@ pub type Room = Entity<RoomParams>;
 impl RoomParams {
     /// Validate intent only. Loss of enclosure must never prevent a wall edit.
     pub fn validate(&self) -> Result<()> {
+        for code in [&self.floor_finish, &self.wall_finish, &self.ceiling_finish]
+            .into_iter()
+            .flatten()
+        {
+            ensure(
+                !code.is_empty()
+                    && code.len() <= 128
+                    && code.trim() == code
+                    && !code.chars().any(char::is_control),
+                "room finish code must be trimmed, nonempty, and at most 128 bytes without control characters",
+            )?;
+        }
         for (value, field) in [(&self.number, "number"), (&self.name, "name")] {
             ensure(
                 !value.trim().is_empty()
@@ -80,6 +106,12 @@ mod tests {
         let room = Room::new(
             "core.room",
             RoomParams {
+                floor_material: None,
+                wall_material: None,
+                ceiling_material: None,
+                floor_finish: None,
+                wall_finish: None,
+                ceiling_finish: None,
                 number: "101".into(),
                 name: "Office".into(),
                 level: *model.levels.keys().next().unwrap(),
@@ -119,6 +151,12 @@ mod tests {
             Room::new(
                 "core.room",
                 RoomParams {
+                    floor_material: None,
+                    wall_material: None,
+                    ceiling_material: None,
+                    floor_finish: None,
+                    wall_finish: None,
+                    ceiling_finish: None,
                     number: number.into(),
                     name: format!("Room {number}"),
                     level,

@@ -22,6 +22,20 @@ pub(super) struct Providers {
 }
 
 impl Providers {
+    pub(super) fn current(&self, editor: &Editor, view: Id) -> bool {
+        let Ok(context) = editor.native_plan_context(view) else {
+            return false;
+        };
+        if !context.show_extensions || editor.document.model().extensions.is_empty() {
+            return true;
+        }
+        let activations = editor
+            .host
+            .manifests()
+            .filter_map(|m| editor.host.activation_id(&m.id).map(|a| (m.id.clone(), a)))
+            .collect();
+        self.attempted && self.signature.as_ref() == Some(&(context, activations))
+    }
     pub fn busy(&self) -> bool {
         self.batch.is_some() || self.pending.is_some()
     }

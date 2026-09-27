@@ -1,3 +1,5 @@
+mod common;
+
 use os_model::{Model, SCHEMA_VERSION};
 use os_storage::{StorageBackend, ZipJsonStorage, migrate};
 use serde_json::{Value, json};
@@ -12,6 +14,7 @@ fn frozen_21_preserves_every_existing_field_and_never_shares_old_walls() {
     assert_eq!(model.schema_version, SCHEMA_VERSION);
     assert!(model.wall_types.is_empty() && model.wall_type_assignments.is_empty());
     let mut restored = value;
+    restored.as_object_mut().unwrap().remove("opening_tags");
     restored.as_object_mut().unwrap().remove("wall_types");
     restored
         .as_object_mut()
@@ -38,6 +41,34 @@ fn frozen_21_preserves_every_existing_field_and_never_shares_old_walls() {
             }
         }
     }
+    for opening in restored["openings"].as_object_mut().unwrap().values_mut() {
+        for field in ["width_override", "height_override"] {
+            assert_eq!(
+                opening["parameters"].as_object_mut().unwrap().remove(field),
+                Some(Value::Null)
+            );
+        }
+        assert_eq!(
+            opening["parameters"]
+                .as_object_mut()
+                .unwrap()
+                .remove("sill_override"),
+            Some(Value::Null)
+        );
+    }
+    for material in restored["materials"].as_object_mut().unwrap().values_mut() {
+        assert_eq!(
+            material["parameters"]
+                .as_object_mut()
+                .unwrap()
+                .remove("color"),
+            Some(json!([140, 140, 140])),
+            "frozen UUID's original swatch"
+        );
+    }
+    restored.as_object_mut().unwrap().remove("stairs");
+    restored.as_object_mut().unwrap().remove("roofs");
+    common::reverse_schema_38_migration(&mut restored, &old);
     assert_eq!(restored, old);
     for wall in model.walls.values() {
         assert_eq!(

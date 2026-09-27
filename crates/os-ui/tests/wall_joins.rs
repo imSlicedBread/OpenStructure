@@ -269,6 +269,9 @@ fn butt_join_openings_quantities_storage_and_section_interfaces() {
     let opening = Opening::new(
         "core.opening",
         OpeningParams {
+            width_override: None,
+            height_override: None,
+            sill_override: None,
             name: "Door".into(),
             host: a.wall,
             offset: 0.5,

@@ -120,6 +120,50 @@ fn graphics(editor: &Editor, view: Id, element: Id) -> PlanGraphics {
 }
 
 #[test]
+fn phase_settings_reject_inflight_provider_output_and_keep_generic_graphics_unphased() {
+    let (mut editor, view, id, _) = setup();
+    let prepared = editor
+        .prepare_provider_plan(view, vec![graphics(&editor, view, id)])
+        .unwrap();
+    let old = editor.native_plan_context(view).unwrap();
+    let level = editor.document.model().views[&view]
+        .parameters
+        .level
+        .unwrap();
+    let mut settings = editor.document.model().views[&view]
+        .parameters
+        .plan
+        .unwrap();
+    settings.target_phase = editor.document.model().existing_phase();
+    settings.phase_filter = os_model::PhaseFilter::ShowTemporary;
+    editor
+        .update_floor_plan(view, "Provider view", level, settings)
+        .unwrap();
+    assert!(prepared.derive().unwrap().drawing(&editor, view).is_err());
+    let fresh = editor
+        .plan_with_provider_graphics(view, vec![graphics(&editor, view, id)])
+        .unwrap();
+    let drawing = fresh.drawing(&editor, view).unwrap();
+    let context = editor.native_plan_context(view).unwrap();
+    assert_ne!(context, old);
+    assert!(
+        drawing
+            .provider_lines(context)
+            .unwrap()
+            .iter()
+            .any(|line| line.entity == id)
+    );
+    assert_eq!(
+        drawing
+            .appearance(context, id, os_geometry::plan::PlanRole::Cut)
+            .unwrap(),
+        None
+    );
+    editor.host.unload(OWNER).unwrap();
+    assert!(fresh.drawing(&editor, view).is_err());
+}
+
+#[test]
 fn checked_provider_results_compose_clipped_lines_and_snaps_without_retransforming() {
     let (editor, view, id, missing) = setup();
     let before = editor.document.model().clone();

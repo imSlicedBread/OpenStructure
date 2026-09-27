@@ -1,3 +1,5 @@
+mod common;
+
 use os_core::{Id, Point2};
 use os_document::{Command, Document};
 use os_model::*;
@@ -14,6 +16,10 @@ fn schema16() -> Value {
     let sheet = Sheet::new("core.sheet", SheetParams::new("A101", "Plan"));
     model.sheets.insert(sheet.id(), sheet);
     let mut value = serde_json::to_value(model).unwrap();
+    common::remove_phase_fields(&mut value);
+    value.as_object_mut().unwrap().remove("stairs");
+    value.as_object_mut().unwrap().remove("roofs");
+    value.as_object_mut().unwrap().remove("opening_tags");
     value.as_object_mut().unwrap().remove("detail_lines");
     value
         .as_object_mut()
@@ -57,6 +63,12 @@ fn schema16() -> Value {
                     .as_object_mut()
                     .unwrap()
                     .remove("schedule_placements");
+            } else if map == "schedules" {
+                assert_eq!(entity["parameters"]["filters"], json!([]));
+                entity["parameters"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("filters");
             }
         }
     }
@@ -155,4 +167,71 @@ fn placements_update_sheet_history_references_and_archive_roundtrip() {
         ZipJsonStorage.save(&doc, &path).unwrap();
         assert_eq!(ZipJsonStorage.open(&path).unwrap().model(), &after);
     }
+}
+
+#[test]
+fn mixed_plan_and_section_viewports_round_trip_with_independent_scales() {
+    let mut model = Model::new("Mixed view sheet");
+    let level = *model.levels.keys().next().unwrap();
+    let plan = View::new("core.view", ViewParams::floor_plan("Ground plan", level));
+    let section = View::new(
+        "core.view",
+        ViewParams {
+            name: "Building section".into(),
+            kind: ViewKind::Section,
+            level: Some(level),
+            settings_revision: 0,
+            plan: None,
+            section: Some(SectionViewSettings::new(
+                Point2::new(0.0, 0.0),
+                Point2::new(8.0, 0.0),
+                -0.5,
+                4.0,
+            )),
+        },
+    );
+    let plan_id = plan.id();
+    let section_id = section.id();
+    model.views.insert(plan_id, plan);
+    model.views.insert(section_id, section);
+
+    let mut parameters = SheetParams::new("A101", "Plan and section");
+    parameters.viewports = vec![
+        SheetViewport {
+            id: Id::new(),
+            view: plan_id,
+            model_center_m: Point2::new(12.0, 7.0),
+            paper_center_mm: Point2::new(100.0, 80.0),
+            width_mm: 180.0,
+            height_mm: 124.0,
+            scale_denominator: 100.0,
+            title_override: None,
+        },
+        SheetViewport {
+            id: Id::new(),
+            view: section_id,
+            model_center_m: Point2::new(4.0, 1.75),
+            paper_center_mm: Point2::new(310.0, 80.0),
+            width_mm: 180.0,
+            height_mm: 124.0,
+            scale_denominator: 50.0,
+            title_override: None,
+        },
+    ];
+    let sheet = Sheet::new("core.sheet", parameters);
+    let sheet_id = sheet.id();
+    model.sheets.insert(sheet_id, sheet);
+    let doc = Document::from_model(model).unwrap();
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("mixed-viewports.osb");
+    ZipJsonStorage.save(&doc, &path).unwrap();
+    let reopened = ZipJsonStorage.open(&path).unwrap();
+    assert_eq!(reopened.model(), doc.model());
+    let viewports = &reopened.model().sheets[&sheet_id].parameters.viewports;
+    assert_eq!(viewports.len(), 2);
+    assert_eq!(viewports[0].view, plan_id);
+    assert_eq!(viewports[0].scale_denominator, 100.0);
+    assert_eq!(viewports[1].view, section_id);
+    assert_eq!(viewports[1].scale_denominator, 50.0);
 }

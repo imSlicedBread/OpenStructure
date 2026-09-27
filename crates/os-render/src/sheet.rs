@@ -397,6 +397,72 @@ pub fn compose_view_sheet(
     context: PlanContext,
     drawing: &PlanDrawing,
 ) -> Result<SheetPage> {
+    compose_sheet_views(paper, &[(viewport_title, viewport, context, drawing)])
+}
+
+/// Compose one or two checked drawings, with independent mappings and clips.
+pub fn compose_sheet_views(
+    paper: PaperSheetInfo<'_>,
+    views: &[(&str, PaperViewport, PlanContext, &PlanDrawing)],
+) -> Result<SheetPage> {
+    ensure(
+        (1..=2).contains(&views.len()),
+        "sheet requires one or two viewports",
+    )?;
+    let mut marks = Vec::new();
+    for (index, (title, viewport, context, drawing)) in views.iter().enumerate() {
+        let rect = viewport.paper_rect()?;
+        if views.len() == 1 {
+            // Preserve the original single-viewport renderer contract. The
+            // reserved title-block layout applies to the new combined-sheet
+            // composition; existing callers may intentionally use the full page.
+            ensure(
+                rect.max_mm.x <= paper.width_mm && rect.max_mm.y <= paper.height_mm,
+                "sheet viewport lies outside paper",
+            )?;
+        } else {
+            ensure(
+                rect.min_mm.x >= 8.0
+                    && rect.min_mm.y >= 8.0
+                    && rect.max_mm.x <= paper.width_mm - 8.0
+                    && rect.max_mm.y <= paper.height_mm - 48.0,
+                "viewport overlaps paper frame or title block",
+            )?;
+        }
+        for (_, other, _, _) in &views[..index] {
+            let other = other.paper_rect()?;
+            ensure(
+                !(rect.min_mm.x < other.max_mm.x
+                    && rect.max_mm.x > other.min_mm.x
+                    && rect.min_mm.y < other.max_mm.y
+                    && rect.max_mm.y > other.min_mm.y),
+                "drawing viewports overlap",
+            )?;
+        }
+        let page = compose_view_marks(
+            paper,
+            title,
+            *viewport,
+            *context,
+            drawing,
+            index,
+            views.len(),
+        )?;
+        marks.extend(page.marks);
+        ensure(marks.len() <= MAX_SHEET_MARKS, "sheet mark budget exceeded")?;
+    }
+    SheetPage::new(paper.width_mm, paper.height_mm, marks)
+}
+
+fn compose_view_marks(
+    paper: PaperSheetInfo<'_>,
+    viewport_title: &str,
+    viewport: PaperViewport,
+    context: PlanContext,
+    drawing: &PlanDrawing,
+    index: usize,
+    count: usize,
+) -> Result<SheetPage> {
     ensure(
         !paper.number.trim().is_empty()
             && paper.number.len() <= 64
@@ -427,7 +493,11 @@ pub fn compose_view_sheet(
     let clip = Some(viewport_rect);
     if let Some(bounds) = model_bounds {
         let viewport_color = PaperColor::BLACK;
-        for item in drawing.items(context)? {
+        for item in drawing
+            .items(context)?
+            .iter()
+            .chain(drawing.columns(context)?)
+        {
             append_item(
                 &mut marks,
                 item,
@@ -435,6 +505,7 @@ pub fn compose_view_sheet(
                 viewport,
                 clip,
                 drawing.appearance(context, item.entity, item.footprint.role)?,
+                drawing.surface_color(item.surface),
             )?;
         }
         for grid in drawing.grids(context)? {
@@ -464,8 +535,38 @@ pub fn compose_view_sheet(
                 drawing.appearance(context, floor.entity, PlanRole::Projected)?,
             )?;
         }
+        for ceiling in drawing.ceilings(context)? {
+            append_floor(
+                &mut marks,
+                ceiling,
+                bounds,
+                viewport,
+                clip,
+                drawing.appearance(context, ceiling.entity, PlanRole::Projected)?,
+            )?;
+        }
         for room in drawing.rooms(context)? {
-            append_room(&mut marks, room, bounds, viewport, clip)?;
+            append_room(
+                &mut marks,
+                room,
+                bounds,
+                viewport,
+                clip,
+                drawing.appearance(context, room.entity, PlanRole::Projected)?,
+            )?;
+        }
+        for line in drawing.room_separation_lines(context)? {
+            if let Some((start, end)) = clip_segment(line.start, line.end, bounds) {
+                let stroke = drawing
+                    .appearance(context, line.entity, PlanRole::Projected)?
+                    .map(paper_stroke)
+                    .unwrap_or(PaperStroke {
+                        color: PaperColor::BLACK,
+                        width_mm: crate::plan::ROOM_SEPARATOR_WEIGHT_MM,
+                        dashed: false,
+                    });
+                push_line(&mut marks, start, end, stroke, viewport, clip)?;
+            }
         }
         for tag in drawing.room_tags(context)? {
             if bounds_contains(bounds, tag.anchor) {
@@ -479,6 +580,9 @@ pub fn compose_view_sheet(
                     viewport_color,
                 )?;
             }
+        }
+        for tag in drawing.opening_tags(context)? {
+            append_opening_tag(&mut marks, tag, bounds, viewport)?;
         }
         for dimension in drawing.dimensions(context)? {
             append_dimension(&mut marks, dimension, bounds, viewport, clip)?;
@@ -503,73 +607,88 @@ pub fn compose_view_sheet(
             }
         }
     }
+    let geometry_count = marks.len();
     // The viewport frame and title block are paper annotations, not model geometry.
     let frame = PaperRect {
         min_mm: Point2::new(8.0, 8.0),
         max_mm: Point2::new(paper.width_mm - 8.0, paper.height_mm - 8.0),
     };
-    marks.push(path_mark(
-        vec![
-            frame.min_mm,
-            Point2::new(frame.max_mm.x, frame.min_mm.y),
-            frame.max_mm,
-            Point2::new(frame.min_mm.x, frame.max_mm.y),
-        ],
-        true,
-        Some(PaperStroke {
-            color: PaperColor::BLACK,
-            width_mm: 0.25,
-            dashed: false,
-        }),
-        None,
-        None,
-    ));
-    marks.push(path_mark(
-        vec![
-            Point2::new(frame.min_mm.x, paper.height_mm - 48.0),
-            Point2::new(frame.max_mm.x, paper.height_mm - 48.0),
-        ],
-        false,
-        Some(PaperStroke {
-            color: PaperColor::BLACK,
-            width_mm: 0.25,
-            dashed: false,
-        }),
-        None,
-        None,
-    ));
-    marks.push(path_mark(
-        vec![
-            Point2::new(paper.width_mm - 145.0, paper.height_mm - 48.0),
-            Point2::new(paper.width_mm - 145.0, frame.max_mm.y),
-        ],
-        false,
-        Some(PaperStroke {
-            color: PaperColor::BLACK,
-            width_mm: 0.18,
-            dashed: false,
-        }),
-        None,
-        None,
-    ));
+    if index == 0 {
+        marks.push(path_mark(
+            vec![
+                frame.min_mm,
+                Point2::new(frame.max_mm.x, frame.min_mm.y),
+                frame.max_mm,
+                Point2::new(frame.min_mm.x, frame.max_mm.y),
+            ],
+            true,
+            Some(PaperStroke {
+                color: PaperColor::BLACK,
+                width_mm: 0.25,
+                dashed: false,
+            }),
+            None,
+            None,
+        ));
+        marks.push(path_mark(
+            vec![
+                Point2::new(frame.min_mm.x, paper.height_mm - 48.0),
+                Point2::new(frame.max_mm.x, paper.height_mm - 48.0),
+            ],
+            false,
+            Some(PaperStroke {
+                color: PaperColor::BLACK,
+                width_mm: 0.25,
+                dashed: false,
+            }),
+            None,
+            None,
+        ));
+        marks.push(path_mark(
+            vec![
+                Point2::new(paper.width_mm - 145.0, paper.height_mm - 48.0),
+                Point2::new(paper.width_mm - 145.0, frame.max_mm.y),
+            ],
+            false,
+            Some(PaperStroke {
+                color: PaperColor::BLACK,
+                width_mm: 0.18,
+                dashed: false,
+            }),
+            None,
+            None,
+        ));
+        push_page_text(
+            &mut marks,
+            Point2::new(frame.min_mm.x + 4.0, paper.height_mm - 30.0),
+            paper.name,
+            4.0,
+            PaperColor::BLACK,
+        )?;
+        push_page_text(
+            &mut marks,
+            Point2::new(paper.width_mm - 137.0, paper.height_mm - 30.0),
+            paper.number,
+            4.0,
+            PaperColor::BLACK,
+        )?;
+        // Put the single page frame/title block before the first viewport.
+        marks.rotate_left(geometry_count);
+    }
+    let title = format!("{viewport_title} - 1:{}", viewport.scale_denominator);
+    if count > 1 {
+        ensure(
+            title.chars().count() as f64 * 2.5 * 1.05 <= 190.0,
+            "viewport title overflow; shorten source name or title",
+        )?;
+    }
     push_page_text(
         &mut marks,
-        Point2::new(frame.min_mm.x + 4.0, paper.height_mm - 30.0),
-        paper.name,
-        4.0,
-        PaperColor::BLACK,
-    )?;
-    push_page_text(
-        &mut marks,
-        Point2::new(paper.width_mm - 137.0, paper.height_mm - 30.0),
-        paper.number,
-        4.0,
-        PaperColor::BLACK,
-    )?;
-    push_page_text(
-        &mut marks,
-        Point2::new(frame.min_mm.x + 4.0, paper.height_mm - 39.0),
-        &format!("{viewport_title} - 1:{:.0}", viewport.scale_denominator),
+        Point2::new(
+            frame.min_mm.x + 4.0 + index as f64 * 200.0,
+            paper.height_mm - 39.0,
+        ),
+        &title,
         2.5,
         PaperColor::BLACK,
     )?;
@@ -609,6 +728,84 @@ fn intersect_crop(first: Option<PlanCrop>, second: Option<PlanCrop>) -> Option<P
         (Some(crop), None) | (None, Some(crop)) => Some(crop),
         (None, None) => None,
     }
+}
+
+/// Opening tags have an explicit centered paper label box. The baseline is
+/// inset in that box and text is clipped to it, so neither PDF nor sheet preview
+/// can paint text across the leader. This does not alter other sheet text.
+fn append_opening_tag(
+    marks: &mut Vec<PaperMark>,
+    tag: &crate::plan::PlanOpeningTag,
+    bounds: PlanCrop,
+    viewport: PaperViewport,
+) -> Result<()> {
+    if !bounds_contains(bounds, tag.anchor) {
+        return Ok(());
+    }
+    let center = viewport.model_to_paper(tag.anchor)?;
+    let size = 2.5;
+    // Same bounded label proportions as the plan badge, in paper millimetres.
+    let half = (tag.label.chars().count() as f64 * 4.5 + 10.0).clamp(24.0, 160.0) * size / 12.0;
+    let crop_min = viewport.model_to_paper(Point2::new(bounds.min.x, bounds.max.y))?;
+    let crop_max = viewport.model_to_paper(Point2::new(bounds.max.x, bounds.min.y))?;
+    let label = PaperRect {
+        min_mm: Point2::new(
+            (center.x - half).max(crop_min.x),
+            (center.y - size).max(crop_min.y),
+        ),
+        max_mm: Point2::new(
+            (center.x + half).min(crop_max.x),
+            (center.y + size).min(crop_max.y),
+        ),
+    };
+    let crop = PlanCrop {
+        min: crop_min,
+        max: crop_max,
+    };
+    if let Some(source) = tag.leader_source.filter(|_| tag.diagnostic.is_none())
+        && let Some((a, b)) = crate::plan::PlanOpeningTag::leader_to_box(
+            viewport.model_to_paper(source)?,
+            [label.min_mm, label.max_mm],
+            0.1,
+        )
+        && let Some((a, b)) = clip_segment(a, b, crop)
+        && a.distance(b) > 1e-9
+    {
+        marks.push(path_mark(
+            vec![a, b],
+            false,
+            Some(PaperStroke {
+                color: PaperColor::BLACK,
+                width_mm: 0.18,
+                dashed: false,
+            }),
+            None,
+            Some(PaperRect {
+                min_mm: crop_min,
+                max_mm: crop_max,
+            }),
+        ));
+    }
+    // Padding protects text from the leader stroke, including font descenders.
+    let pad = 0.5_f64
+        .min((label.max_mm.x - label.min_mm.x) * 0.25)
+        .min((label.max_mm.y - label.min_mm.y) * 0.25);
+    marks.push(PaperMark {
+        clip: Some(PaperRect {
+            min_mm: Point2::new(label.min_mm.x + pad, label.min_mm.y + pad),
+            max_mm: Point2::new(label.max_mm.x - pad, label.max_mm.y - pad),
+        }),
+        kind: PaperMarkKind::Text {
+            baseline_mm: Point2::new(
+                label.min_mm.x + pad,
+                (label.min_mm.y + label.max_mm.y) * 0.5 + size * 0.3,
+            ),
+            text: tag.label.clone(),
+            size_mm: size,
+            color: PaperColor::BLACK,
+        },
+    });
+    Ok(())
 }
 
 fn bounds_contains(bounds: PlanCrop, point: Point2) -> bool {
@@ -810,6 +1007,7 @@ fn append_item(
     viewport: PaperViewport,
     clip: Option<PaperRect>,
     appearance: Option<crate::plan::PlanStroke>,
+    surface_color: Option<[u8; 3]>,
 ) -> Result<()> {
     let polygon = clip_polygon(item.footprint.vertices(), bounds);
     if polygon.len() < 3 {
@@ -819,10 +1017,12 @@ fn append_item(
         .into_iter()
         .map(|point| viewport.model_to_paper(point))
         .collect::<Result<Vec<_>>>()?;
-    let [red, green, blue] = item.surface.color().unwrap_or([232, 232, 232]);
+    let [red, green, blue] = surface_color.unwrap_or([232, 232, 232]);
     let fill = (item.footprint.role == PlanRole::Cut).then_some(PaperColor { red, green, blue });
     if let Some(style) = appearance {
-        marks.push(path_mark(points_mm, true, None, fill, clip));
+        if fill.is_some() {
+            marks.push(path_mark(points_mm, true, None, fill, clip));
+        }
         for (start, end) in item.outline() {
             if let Some((start, end)) = clip_segment(start, end, bounds) {
                 push_line(marks, start, end, paper_stroke(style), viewport, clip)?;
@@ -915,7 +1115,7 @@ fn append_floor(
         blue: 245,
     };
     for triangle in &floor.triangles {
-        let points = triangle.map(|index| floor.boundary[index as usize]);
+        let points = triangle.map(|index| floor.vertices[index as usize]);
         let clipped = clip_polygon(&points, bounds);
         if clipped.len() >= 3 {
             marks.push(path_mark(
@@ -942,24 +1142,27 @@ fn append_floor(
         },
         paper_stroke,
     );
-    if appearance.is_some() && boundary_inside_crop(bounds, &floor.boundary) {
-        let points = floor
-            .boundary
-            .iter()
-            .map(|point| viewport.model_to_paper(*point))
-            .collect::<Result<Vec<_>>>()?;
-        marks.push(path_mark(points, true, Some(stroke), None, clip));
+    let rings = std::iter::once(&floor.boundary).chain(floor.holes.iter());
+    if appearance.is_some() && rings.clone().all(|ring| boundary_inside_crop(bounds, ring)) {
+        for ring in rings {
+            let points = ring
+                .iter()
+                .map(|point| viewport.model_to_paper(*point))
+                .collect::<Result<Vec<_>>>()?;
+            marks.push(path_mark(points, true, Some(stroke), None, clip));
+        }
         return Ok(());
     }
-    for (start, end) in floor
-        .boundary
-        .iter()
-        .copied()
-        .zip(floor.boundary.iter().copied().cycle().skip(1))
-        .take(floor.boundary.len())
-    {
-        if let Some((a, b)) = clip_segment(start, end, bounds) {
-            push_line(marks, a, b, stroke, viewport, clip)?;
+    for ring in rings {
+        for (start, end) in ring
+            .iter()
+            .copied()
+            .zip(ring.iter().copied().cycle().skip(1))
+            .take(ring.len())
+        {
+            if let Some((a, b)) = clip_segment(start, end, bounds) {
+                push_line(marks, a, b, stroke, viewport, clip)?;
+            }
         }
     }
     Ok(())
@@ -977,8 +1180,9 @@ fn append_room(
     bounds: PlanCrop,
     viewport: PaperViewport,
     clip: Option<PaperRect>,
+    appearance: Option<crate::plan::PlanStroke>,
 ) -> Result<()> {
-    let stroke = PaperStroke {
+    let stroke = appearance.map(paper_stroke).unwrap_or(PaperStroke {
         color: PaperColor {
             red: 110,
             green: 110,
@@ -986,7 +1190,7 @@ fn append_room(
         },
         width_mm: 0.15,
         dashed: false,
-    };
+    });
     for (start, end) in room
         .boundary
         .iter()
@@ -1276,6 +1480,165 @@ mod tests {
     use std::collections::BTreeMap;
 
     #[test]
+    fn vector_sheet_floor_fill_and_outlines_keep_the_slab_opening() {
+        let boundary = vec![
+            Point2::new(0., 0.),
+            Point2::new(10., 0.),
+            Point2::new(10., 10.),
+            Point2::new(0., 10.),
+        ];
+        let holes = vec![vec![
+            Point2::new(4., 4.),
+            Point2::new(6., 4.),
+            Point2::new(6., 6.),
+            Point2::new(4., 6.),
+        ]];
+        let triangulation =
+            os_geometry::floor_holes::triangulate_floor_rings(&boundary, &holes).unwrap();
+        let floor = PlanFloorItem {
+            entity: Id::new(),
+            boundary,
+            holes,
+            vertices: triangulation.vertices,
+            triangles: triangulation.triangles,
+            area_m2: triangulation.net_area,
+        };
+        let viewport = PaperViewport {
+            center_mm: Point2::new(100.0, 100.0),
+            width_mm: 200.0,
+            height_mm: 200.0,
+            model_center_m: Point2::new(5.0, 5.0),
+            scale_denominator: 50.0,
+        };
+        let mut marks = Vec::new();
+        append_floor(
+            &mut marks,
+            &floor,
+            PlanCrop {
+                min: Point2::new(-1., -1.),
+                max: Point2::new(11., 11.),
+            },
+            viewport,
+            None,
+            None,
+        )
+        .unwrap();
+        let filled = marks
+            .iter()
+            .filter(|mark| matches!(&mark.kind, PaperMarkKind::Path { fill: Some(_), .. }))
+            .count();
+        let outlines = marks.len() - filled;
+        assert_eq!(filled, floor.triangles.len());
+        assert_eq!(
+            outlines, 8,
+            "outer and inner boundary rings must both print"
+        );
+    }
+
+    #[test]
+    fn opening_tag_sheet_box_termination_crop_orphan_and_vector_pdf() {
+        let viewport = PaperViewport {
+            center_mm: Point2::new(100., 100.),
+            width_mm: 100.,
+            height_mm: 100.,
+            model_center_m: Point2::default(),
+            scale_denominator: 100.,
+        };
+        let bounds = PlanCrop {
+            min: Point2::new(-4., -4.),
+            max: Point2::new(4., 4.),
+        };
+        let mut tag = crate::plan::PlanOpeningTag {
+            entity: Id::new(),
+            view: Id::new(),
+            opening: Id::new(),
+            anchor: Point2::default(),
+            label: "D1".into(),
+            diagnostic: None,
+            leader_source: None,
+        };
+        for (source, start, end) in [
+            (
+                Point2::new(-10., 0.),
+                Point2::new(60., 100.),
+                Point2::new(95., 100.),
+            ),
+            (
+                Point2::new(10., 0.),
+                Point2::new(140., 100.),
+                Point2::new(105., 100.),
+            ),
+            (
+                Point2::new(0., 10.),
+                Point2::new(100., 60.),
+                Point2::new(100., 97.5),
+            ),
+            (
+                Point2::new(0., -10.),
+                Point2::new(100., 140.),
+                Point2::new(100., 102.5),
+            ),
+        ] {
+            tag.leader_source = Some(source);
+            let mut marks = Vec::new();
+            append_opening_tag(&mut marks, &tag, bounds, viewport).unwrap();
+            assert_eq!(marks.len(), 2);
+            let PaperMarkKind::Path {
+                points_mm,
+                closed,
+                stroke,
+                fill,
+            } = &marks[0].kind
+            else {
+                panic!("leader precedes text")
+            };
+            assert_eq!(points_mm, &[start, end]);
+            assert!(!closed && stroke.is_some() && fill.is_none());
+            let text_clip = marks[1].clip.unwrap();
+            assert!(
+                !text_clip.contains(end),
+                "leader must stop outside actual text clip"
+            );
+            let PaperMarkKind::Text { baseline_mm, .. } = &marks[1].kind else {
+                panic!("vector text")
+            };
+            assert_eq!(*baseline_mm, Point2::new(95.5, 100.75));
+            assert!(text_clip.contains(*baseline_mm));
+            let page = SheetPage::new(210., 297., marks).unwrap();
+            let pdf = String::from_utf8(page.to_pdf().unwrap()).unwrap();
+            let path = format!(
+                "{:.6} {:.6} m\n{:.6} {:.6} l",
+                start.x * MM_TO_PT,
+                (297. - start.y) * MM_TO_PT,
+                end.x * MM_TO_PT,
+                (297. - end.y) * MM_TO_PT
+            );
+            assert!(pdf.contains(" re W n"));
+            assert!(pdf.find(&path).unwrap() < pdf.find("<4431> Tj").unwrap());
+        }
+        for source in [None, Some(Point2::default()), Some(Point2::new(0., 0.259))] {
+            tag.leader_source = source;
+            let mut marks = Vec::new();
+            append_opening_tag(&mut marks, &tag, bounds, viewport).unwrap();
+            assert_eq!(marks.len(), 1, "orphan, overlap or touch emits only text");
+        }
+        tag.leader_source = Some(Point2::new(-10., 0.));
+        tag.anchor = Point2::new(-3.9, 0.);
+        let mut marks = Vec::new();
+        append_opening_tag(&mut marks, &tag, bounds, viewport).unwrap();
+        assert_eq!(
+            marks.len(),
+            1,
+            "leader entirely outside clipped label is omitted"
+        );
+        assert!(marks[0].clip.unwrap().min_mm.x >= 60.);
+        tag.anchor = Point2::new(4.1, 0.);
+        let mut marks = Vec::new();
+        append_opening_tag(&mut marks, &tag, bounds, viewport).unwrap();
+        assert!(marks.is_empty(), "outside-crop label hides its leader too");
+    }
+
+    #[test]
     fn scale_conversion_page_bounds_and_pdf_media_box_are_measurable() {
         let viewport = PaperViewport {
             center_mm: Point2::new(210.0, 148.5),
@@ -1442,7 +1805,11 @@ mod tests {
             &drawing,
         )
         .unwrap();
-        let first = &page.marks()[0];
+        let first = page
+            .marks()
+            .iter()
+            .find(|mark| mark.clip.is_some())
+            .unwrap();
         let PaperMarkKind::Path { points_mm, .. } = &first.kind else {
             panic!("the first plan mark is the clipped grid line")
         };
@@ -1484,6 +1851,118 @@ mod tests {
                 viewport,
                 context,
                 &unavailable,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn two_drawings_have_independent_scales_clips_and_one_page_frame() {
+        let context = PlanContext {
+            session_id: Id::new(),
+            model_revision: 1,
+            view_id: Id::new(),
+            settings_revision: 0,
+            basis: HorizontalBasis::default(),
+            range: PlanRange::default(),
+            crop: None,
+            scale_denominator: 100.0,
+            show_walls: true,
+            show_extensions: false,
+        };
+        let second = PlanContext {
+            view_id: Id::new(),
+            ..context
+        };
+        let make = |context| {
+            PlanDrawing::from_prisms(context, &BTreeMap::new(), vec![])
+                .unwrap()
+                .with_grids(vec![PlanGrid {
+                    entity: Id::new(),
+                    name: "Axis".into(),
+                    start: Point2::new(-20.0, 0.0),
+                    end: Point2::new(20.0, 0.0),
+                }])
+                .unwrap()
+        };
+        let a = make(context);
+        let b = make(second);
+        let left = PaperViewport {
+            center_mm: Point2::new(110.0, 128.0),
+            width_mm: 184.0,
+            height_mm: 220.0,
+            model_center_m: Point2::default(),
+            scale_denominator: 100.0,
+        };
+        let right = PaperViewport {
+            center_mm: Point2::new(310.0, 128.0),
+            scale_denominator: 50.0,
+            ..left
+        };
+        assert_eq!(
+            left.model_to_paper(Point2::new(1.0, 0.0)).unwrap().x - left.center_mm.x,
+            10.0
+        );
+        assert_eq!(
+            right.model_to_paper(Point2::new(1.0, 0.0)).unwrap().x - right.center_mm.x,
+            20.0
+        );
+        let paper = PaperSheetInfo {
+            width_mm: 420.0,
+            height_mm: 297.0,
+            number: "A101",
+            name: "Combined",
+        };
+        let page = compose_sheet_views(
+            paper,
+            &[("Plan", left, context, &a), ("Section", right, second, &b)],
+        )
+        .unwrap();
+        assert!(
+            page.marks()[0].clip.is_none(),
+            "page frame precedes viewport geometry"
+        );
+        for viewport in [left, right] {
+            let rect = viewport.paper_rect().unwrap();
+            let paths: Vec<_> = page
+                .marks()
+                .iter()
+                .filter(|m| m.clip == Some(rect))
+                .filter_map(|m| match &m.kind {
+                    PaperMarkKind::Path { points_mm, .. } => Some(points_mm),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(paths.len(), 1);
+            assert_eq!(paths[0][0].x, rect.min_mm.x);
+            assert_eq!(paths[0][1].x, rect.max_mm.x);
+        }
+        assert_eq!(
+            page.marks()
+                .iter()
+                .filter(|m| matches!(&m.kind,PaperMarkKind::Text { text,.. } if text=="Combined"))
+                .count(),
+            1
+        );
+        assert_eq!(
+            page.marks()
+                .iter()
+                .filter(|m| matches!(&m.kind,PaperMarkKind::Text { text,.. } if text=="A101"))
+                .count(),
+            1
+        );
+        assert!(page.to_pdf().unwrap().starts_with(b"%PDF"));
+        assert!(
+            compose_sheet_views(
+                paper,
+                &[("Plan", left, context, &a), ("Section", left, second, &b)]
+            )
+            .is_err()
+        );
+        assert!(
+            compose_sheet_views(
+                paper,
+                &[("Plan", left, context, &a), ("Section", right, context, &b)]
             )
             .is_err()
         );

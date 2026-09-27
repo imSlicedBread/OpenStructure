@@ -9,6 +9,7 @@ fn fixture() -> (Document, Column, Id, Id) {
         MaterialParams {
             name: "Concrete".into(),
             density_kg_m3: 2400.0,
+            color: [180, 180, 180],
         },
     );
     let material_id = material.id();

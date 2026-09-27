@@ -83,6 +83,9 @@ impl PlanDrawing {
                 && radius_pixels <= 64.0,
             "invalid plan pick query",
         )?;
+        if let Some(id) = self.pick_opening_tag_screen(current, camera, viewport, pointer)? {
+            return Ok(Some(id));
+        }
         if let Some(id) = self.pick_room_tag_screen(current, camera, viewport, pointer)? {
             return Ok(Some(id));
         }

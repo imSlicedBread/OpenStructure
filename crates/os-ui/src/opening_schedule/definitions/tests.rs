@@ -1,4 +1,49 @@
 use super::*;
+mod filters;
+
+#[test]
+fn room_finish_definition_creation_and_category_switch_at_both_dpis() {
+    for (size, scale) in [
+        (egui::vec2(1280., 800.), 1.),
+        (egui::vec2(1000., 650.), 1.5),
+    ] {
+        let (mut app, _, _, _, _) = super::super::rooms::tests::fixture();
+        let ctx = egui::Context::default();
+        crate::theme::apply(&ctx);
+        click(&mut app, &ctx, size, scale, "New Room Finish schedule");
+        let draft = app.opening_schedule.definition_draft.as_ref().unwrap();
+        assert_eq!(draft.parameters.columns, ScheduleColumn::ROOM);
+        assert_eq!(draft.parameters.sort, ScheduleSort::LevelNumber);
+        let before = app.editor.document.model().clone();
+        click(&mut app, &ctx, size, scale, "Door");
+        assert_eq!(
+            app.opening_schedule
+                .definition_draft
+                .as_ref()
+                .unwrap()
+                .parameters
+                .columns,
+            ScheduleColumn::ALL
+        );
+        click(&mut app, &ctx, size, scale, "RoomFinish");
+        assert_eq!(app.editor.document.model(), &before);
+        click(&mut app, &ctx, size, scale, "Save definition");
+        assert!(
+            app.opening_schedule.definition_draft.is_none(),
+            "{}",
+            app.status
+        );
+        let id = app.opening_schedule.selected.unwrap();
+        assert_eq!(
+            app.editor.document.model().schedules[&id]
+                .parameters
+                .category,
+            ScheduleCategory::RoomFinish
+        );
+        app.editor.undo().unwrap();
+        assert_eq!(app.editor.document.model(), &before);
+    }
+}
 
 fn click(app: &mut DesktopApp, ctx: &egui::Context, size: egui::Vec2, scale: f32, label: &str) {
     let frame = |app: &mut DesktopApp, events| {
@@ -37,6 +82,93 @@ fn click(app: &mut DesktopApp, ctx: &egui::Context, size: egui::Vec2, scale: f32
                 },
             ],
         );
+    }
+}
+
+#[test]
+fn window_sill_schedule_uses_effective_values_sorting_and_instance_edit_at_both_dpis() {
+    use os_model::{OpeningDefinition, OpeningKind, OpeningType, OpeningTypeParams};
+    for (size, scale) in [
+        (egui::vec2(1280., 800.), 1.),
+        (egui::vec2(1000., 650.), 1.5),
+    ] {
+        let (mut app, door, _) = super::super::tests::fixture();
+        let plan = app
+            .editor
+            .create_floor_plan("Plan", app.active_level)
+            .unwrap();
+        let mut model = app.editor.document.model().clone();
+        let window = *model.openings.keys().find(|id| **id != door).unwrap();
+        let ty = OpeningType::new(
+            "core.opening_type",
+            OpeningTypeParams {
+                name: "Shared window".into(),
+                kind: OpeningKind::Window,
+                width: 1.2,
+                height: 1.1,
+                sill: 0.9,
+                family: Default::default(),
+                pane_position: Default::default(),
+            },
+        );
+        let type_id = ty.id();
+        model.opening_types.insert(type_id, ty);
+        model
+            .openings
+            .get_mut(&window)
+            .unwrap()
+            .parameters
+            .definition = OpeningDefinition::Typed { type_id };
+        model
+            .openings
+            .get_mut(&window)
+            .unwrap()
+            .parameters
+            .sill_override = Some(1.4);
+        let mut inherited = model.openings[&window].clone();
+        inherited.header.id = Id::new();
+        inherited.parameters.offset = 7.;
+        inherited.parameters.sill_override = None;
+        let inherited_id = inherited.id();
+        model.openings.insert(inherited_id, inherited);
+        let pinned = &mut model.openings.get_mut(&window).unwrap().parameters;
+        pinned.width_override = Some(1.4);
+        pinned.height_override = Some(1.3);
+        app.editor.document = os_document::Document::from_model(model).unwrap();
+        app.editor.regenerate().unwrap();
+        let mut definition = ScheduleParams::new("Sills", ScheduleCategory::Window);
+        definition.sort = ScheduleSort::Sill;
+        let rows =
+            super::super::defined_rows(app.editor.document.model(), Some(&definition)).unwrap();
+        assert_eq!(
+            rows.iter().map(|r| (r.id, r.sill)).collect::<Vec<_>>(),
+            vec![(inherited_id, 0.9), (window, 1.4)]
+        );
+        assert_eq!(rows[1].cell(ScheduleColumn::Sill), "1.400");
+        for (sort, column, expected) in [
+            (ScheduleSort::Width, ScheduleColumn::Width, "1.400"),
+            (ScheduleSort::Height, ScheduleColumn::Height, "1.300"),
+        ] {
+            definition.sort = sort;
+            let rows =
+                super::super::defined_rows(app.editor.document.model(), Some(&definition)).unwrap();
+            assert_eq!(
+                rows.iter().map(|r| r.id).collect::<Vec<_>>(),
+                vec![inherited_id, window]
+            );
+            assert_eq!(rows[1].cell(column), expected);
+        }
+        app.select_schedule_opening(window);
+        let before = app.editor.document.model().clone();
+        let history = app.editor.document.history_stats();
+        let ctx = egui::Context::default();
+        crate::theme::apply(&ctx);
+        click(&mut app, &ctx, size, scale, "Edit window properties");
+        assert_eq!(app.plans.active, Some(plan));
+        assert_eq!(app.selected, Some(window));
+        assert!(app.opening_draft.is_some());
+        assert_eq!(app.editor.document.model(), &before);
+        assert_eq!(app.editor.document.history_stats(), history);
     }
 }
 

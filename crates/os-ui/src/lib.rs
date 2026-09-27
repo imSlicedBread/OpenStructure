@@ -17,8 +17,10 @@ mod exchange;
 mod grid_tools;
 mod opening_schedule;
 mod opening_tools;
+mod opening_type_package_ui;
 mod opening_type_tools;
 mod palettes;
+mod phase_tools;
 pub mod plan;
 pub mod plan_gesture;
 #[cfg(feature = "external-plugins")]
@@ -68,9 +70,9 @@ pub struct Editor {
     #[cfg(feature = "external-plugins")]
     staged_open: Option<plugin_open::StagedOpen>,
 }
-#[cfg(all(test, not(feature = "external-plugins")))]
+#[cfg(not(feature = "external-plugins"))]
 impl Editor {
-    // Feature-disabled headless harnesses have no asynchronous plugin jobs.
+    // Feature-disabled builds have no asynchronous plugin jobs.
     fn plugin_work_pending(&self) -> bool {
         false
     }
@@ -148,8 +150,9 @@ impl Editor {
             let top_z = level.parameters.elevation + floor.parameters.top_offset;
             scene.insert(
                 *id,
-                os_geometry::floors::extrude_floor(
+                os_geometry::floor_holes::extrude_floor_rings(
                     &floor.parameters.boundary,
+                    &floor.parameters.holes,
                     top_z,
                     floor.parameters.thickness,
                 )?,
@@ -164,6 +167,41 @@ impl Editor {
                 os_geometry::columns::column_mesh(&column.parameters, elevation)?,
             );
         }
+        for (id, stair) in &document.model().stairs {
+            let lower_z = document.model().levels[&stair.parameters.lower_level]
+                .parameters
+                .elevation;
+            let upper_z = document.model().levels[&stair.parameters.upper_level]
+                .parameters
+                .elevation;
+            scene.insert(
+                *id,
+                os_geometry::stairs::stair_mesh(&stair.parameters, lower_z, upper_z)?,
+            );
+        }
+        for (id, roof) in &document.model().roofs {
+            let elevation = document.model().levels[&roof.parameters.level]
+                .parameters
+                .elevation;
+            scene.insert(
+                *id,
+                os_geometry::roofs::roof_mesh(&roof.parameters, elevation)?,
+            );
+        }
+        let mut ceiling_resolver = os_geometry::ceilings::CeilingResolver::default();
+        for (id, ceiling) in &document.model().ceilings {
+            let elevation = document.model().levels[&ceiling.parameters.level]
+                .parameters
+                .elevation;
+            if let Some(parameters) =
+                ceiling_resolver.effective_parameters(document.model(), &ceiling.parameters)?
+            {
+                scene.insert(
+                    *id,
+                    os_geometry::ceilings::ceiling_mesh(&parameters, elevation)?,
+                );
+            }
+        }
         self.document = document;
         self.scene = scene;
         self.pending_geometry.clear();
@@ -176,6 +214,7 @@ impl Editor {
             self.pending_geometry.extend(event.invalidated);
         }
         let mut error = None;
+        let mut ceiling_resolver = os_geometry::ceilings::CeilingResolver::default();
         for id in self.pending_geometry.clone() {
             self.scene.remove(&id);
             #[cfg(feature = "external-plugins")]
@@ -214,8 +253,9 @@ impl Editor {
                         .get(&floor.parameters.level)
                         .ok_or_else(|| Error::Invalid("floor level missing".into()))?;
                     let top_z = level.parameters.elevation + floor.parameters.top_offset;
-                    os_geometry::floors::extrude_floor(
+                    os_geometry::floor_holes::extrude_floor_rings(
                         &floor.parameters.boundary,
+                        &floor.parameters.holes,
                         top_z,
                         floor.parameters.thickness,
                     )
@@ -244,7 +284,71 @@ impl Editor {
                     }
                 }
             }
+            if let Some(stair) = self.document.model().stairs.get(&id) {
+                let result = (|| {
+                    let model = self.document.model();
+                    let lower_z = model
+                        .levels
+                        .get(&stair.parameters.lower_level)
+                        .ok_or_else(|| Error::Invalid("stair lower level missing".into()))?
+                        .parameters
+                        .elevation;
+                    let upper_z = model
+                        .levels
+                        .get(&stair.parameters.upper_level)
+                        .ok_or_else(|| Error::Invalid("stair upper level missing".into()))?
+                        .parameters
+                        .elevation;
+                    os_geometry::stairs::stair_mesh(&stair.parameters, lower_z, upper_z)
+                })();
+                match result {
+                    Ok(mesh) => {
+                        self.scene.insert(id, mesh);
+                    }
+                    Err(e) => {
+                        error = Some(e);
+                        continue;
+                    }
+                }
+            }
             self.pending_geometry.remove(&id);
+            if let Some(roof) = self.document.model().roofs.get(&id) {
+                let elevation = self.document.model().levels[&roof.parameters.level]
+                    .parameters
+                    .elevation;
+                match os_geometry::roofs::roof_mesh(&roof.parameters, elevation) {
+                    Ok(mesh) => {
+                        self.scene.insert(id, mesh);
+                    }
+                    Err(e) => {
+                        error = Some(e);
+                        self.pending_geometry.insert(id);
+                    }
+                }
+            }
+            if let Some(ceiling) = self.document.model().ceilings.get(&id) {
+                let elevation = self.document.model().levels[&ceiling.parameters.level]
+                    .parameters
+                    .elevation;
+                match ceiling_resolver
+                    .effective_parameters(self.document.model(), &ceiling.parameters)
+                    .and_then(|parameters| {
+                        parameters
+                            .map(|parameters| {
+                                os_geometry::ceilings::ceiling_mesh(&parameters, elevation)
+                            })
+                            .transpose()
+                    }) {
+                    Ok(Some(mesh)) => {
+                        self.scene.insert(id, mesh);
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        error = Some(e);
+                        self.pending_geometry.insert(id);
+                    }
+                }
+            }
         }
         if let Some(e) = error { Err(e) } else { Ok(()) }
     }
@@ -271,16 +375,27 @@ pub struct DesktopApp {
     opening_draft: Option<opening_tools::OpeningDraft>,
     opening_schedule: opening_schedule::OpeningSchedule,
     opening_type_draft: Option<opening_type_tools::OpeningTypeDraft>,
+    opening_type_package_dialog: Option<opening_type_package_ui::PackageDialog>,
+    opening_type_library_dialog: Option<opening_type_package_ui::OpeningTypeLibraryDialog>,
+    opening_type_library_path: String,
     wall_type_draft: Option<wall_type_tools::WallTypeDraft>,
+    phase_draft: Option<phase_tools::PhaseDraft>,
+    lifecycle_draft: Option<phase_tools::LifecycleDraft>,
     preferred_door_type: Option<Id>,
     preferred_window_type: Option<Id>,
     room_number_draft: String,
     room_name_draft: String,
+    room_finish_draft: [String; 3],
+    room_material_draft: [Option<Id>; 3],
+    room_draft_context: Option<(Id, u64)>,
     room_tag_position: Point2,
+    opening_tag_position: Point2,
+    opening_tag_label_preset: os_model::OpeningTagLabelPreset,
     dimension_offset_draft: f64,
     dimension_spacing_draft: f64,
     wall_gesture: Option<plan_gesture::WallGesture>,
     selected: Option<Id>,
+    selected_ids: std::collections::BTreeSet<Id>,
     active_level: Id,
     draft: WallParams,
     draft_length: f64,
@@ -326,16 +441,27 @@ impl DesktopApp {
             opening_draft: None,
             opening_schedule: opening_schedule::OpeningSchedule::default(),
             opening_type_draft: None,
+            opening_type_package_dialog: None,
+            opening_type_library_dialog: None,
+            opening_type_library_path: "opening-library".into(),
             wall_type_draft: None,
+            phase_draft: None,
+            lifecycle_draft: None,
             preferred_door_type: None,
             preferred_window_type: None,
             room_number_draft: String::new(),
             room_name_draft: String::new(),
+            room_finish_draft: Default::default(),
+            room_material_draft: [None; 3],
+            room_draft_context: None,
             room_tag_position: Point2::new(0.0, 0.0),
+            opening_tag_position: Point2::new(0.0, 0.0),
+            opening_tag_label_preset: Default::default(),
             dimension_offset_draft: 0.0,
             dimension_spacing_draft: 0.25,
             wall_gesture: None,
             selected: None,
+            selected_ids: Default::default(),
             active_level,
             draft_length: draft.length(),
             draft,
@@ -383,6 +509,8 @@ impl DesktopApp {
         };
     }
     fn select(&mut self, id: Option<Id>) {
+        self.lifecycle_draft = None;
+        self.cancel_overlap_selection();
         self.cancel_plan_wall();
         self.opening_draft = None;
         self.opening_type_draft = None;
@@ -393,10 +521,14 @@ impl DesktopApp {
             model.walls.contains_key(id)
                 || model.floors.contains_key(id)
                 || model.columns.contains_key(id)
+                || model.stairs.contains_key(id)
+                || model.roofs.contains_key(id)
+                || model.ceilings.contains_key(id)
                 || model.openings.contains_key(id)
                 || model.opening_types.contains_key(id)
                 || model.rooms.contains_key(id)
                 || model.room_tags.contains_key(id)
+                || model.opening_tags.contains_key(id)
                 || model.detail_lines.contains_key(id)
                 || model.room_separation_lines.contains_key(id)
                 || model.dimensions.contains_key(id)
@@ -409,6 +541,7 @@ impl DesktopApp {
             self.plugin_form = plugin_forms::FormState::default();
         }
         self.selected = selected;
+        self.selected_ids = selected.into_iter().collect();
         self.ribbon_tab = if self
             .selected
             .is_some_and(|id| self.editor.document.model().walls.contains_key(&id))
@@ -435,6 +568,21 @@ impl DesktopApp {
         {
             self.room_number_draft = room.parameters.number.clone();
             self.room_name_draft = room.parameters.name.clone();
+            self.room_material_draft = [
+                room.parameters.floor_material,
+                room.parameters.wall_material,
+                room.parameters.ceiling_material,
+            ];
+            self.room_finish_draft = [
+                &room.parameters.floor_finish,
+                &room.parameters.wall_finish,
+                &room.parameters.ceiling_finish,
+            ]
+            .map(|s| s.clone().unwrap_or_default());
+            self.room_draft_context = Some((
+                self.editor.document.session_id(),
+                self.editor.document.revision(),
+            ));
         }
         if let Some(tag) = self
             .selected
@@ -442,6 +590,15 @@ impl DesktopApp {
             .cloned()
         {
             self.room_tag_position = tag.parameters.position;
+            self.focus_plan(Some(tag.parameters.view));
+        }
+        if let Some(tag) = self
+            .selected
+            .and_then(|id| self.editor.document.model().opening_tags.get(&id))
+            .cloned()
+        {
+            self.opening_tag_position = tag.parameters.position;
+            self.opening_tag_label_preset = tag.parameters.label_preset;
             self.focus_plan(Some(tag.parameters.view));
         }
         self.dimension_spacing_draft = self
@@ -487,6 +644,16 @@ impl DesktopApp {
         }
     }
     fn apply_room_properties(&mut self) {
+        if self.room_draft_context
+            != Some((
+                self.editor.document.session_id(),
+                self.editor.document.revision(),
+            ))
+        {
+            self.select(self.selected);
+            self.status = "Room edit cancelled: document changed.".into();
+            return;
+        }
         let Some(id) = self
             .selected
             .filter(|id| self.editor.document.model().rooms.contains_key(id))
@@ -498,7 +665,12 @@ impl DesktopApp {
             id,
             &self.room_number_draft,
             &self.room_name_draft,
+            &self.room_finish_draft,
+            &self.room_material_draft,
         );
+        if result.is_ok() {
+            self.select(Some(id));
+        }
         self.report(result, "Room properties updated.");
     }
     fn delete_selected_room(&mut self) {
@@ -843,6 +1015,21 @@ impl DesktopApp {
     }
 
     fn show(&mut self, ctx: &egui::Context) {
+        // Render the phase modal first so its keyboard input cannot reach the
+        // document or plan tools, including on the frame that Cancel closes it.
+        let phase_modal = self.phase_draft.is_some();
+        if phase_modal {
+            self.phase_dialog(ctx);
+            ctx.input_mut(|input| {
+                input
+                    .events
+                    .retain(|event| !matches!(event, egui::Event::Key { .. }));
+            });
+        }
+        self.sync_lifecycle_draft();
+        if !phase_modal {
+            self.cancel_lifecycle_on_escape(ctx);
+        }
         if self
             .wall_gesture
             .as_ref()
@@ -871,12 +1058,15 @@ impl DesktopApp {
         }
         // Modal actions must not let global shortcuts modify the document underneath.
         if self.pending.is_none()
+            && !phase_modal
             && self.exchange_pending.is_none()
             && !self.plans.sheet_pdf_pending()
             && self.plan_draft.is_none()
             && self.grid_draft.is_none()
             && self.opening_draft.is_none()
             && self.opening_type_draft.is_none()
+            && self.opening_type_package_dialog.is_none()
+            && self.opening_type_library_dialog.is_none()
             && self.wall_type_draft.is_none()
             && self.save_destination.is_none()
             && !ctx.wants_keyboard_input()
@@ -898,10 +1088,13 @@ impl DesktopApp {
         self.opening_schedule_window(ctx);
         self.sheet_pdf_confirmation(ctx);
         self.finish_endpoint_input(ctx);
+        self.finish_area_selection_input(ctx);
         self.plan_settings_dialog(ctx);
         self.grid_dialog(ctx);
         self.opening_dialog(ctx);
         self.opening_type_dialog(ctx);
+        self.show_opening_type_library_dialog(ctx);
+        self.show_opening_type_package_dialog(ctx);
         self.wall_type_dialog(ctx);
         self.save_destination_dialog(ctx);
         self.confirmation(ctx);
@@ -970,9 +1163,15 @@ fn default_wall(level: Id) -> WallParams {
 
 #[cfg(test)]
 mod desktop_tests {
+    mod phase_tests;
+    mod plan_phase_tests;
     use super::*;
     mod opening_family_tests;
+    mod opening_tag_tests;
+    mod opening_type_library_tests;
+    mod opening_type_package_tests;
     mod room_tag_tests;
+    mod stair_tests;
     mod wall_join_tests;
     mod wall_type_tests;
 
@@ -2711,12 +2910,7 @@ mod desktop_tests {
         }
         fn scroll_properties(&mut self, delta: f32) {
             let top = self.text_rect("Properties").bottom();
-            let label = if self.app.selected.is_some() {
-                "Apply changes"
-            } else {
-                "Create wall"
-            };
-            let bottom = self.text_rect(label).top();
+            let bottom = self.text_rect("Project Browser").top();
             self.frame(vec![
                 egui::Event::PointerMoved(egui::pos2(180.0, (top + bottom) / 2.0)),
                 egui::Event::MouseWheel {

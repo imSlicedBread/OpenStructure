@@ -47,6 +47,7 @@ impl WallTypeDraft {
         Ok(commands)
     }
 }
+
 impl DesktopApp {
     fn begin_wall_type(&mut self, ty: Option<WallType>, wall: Option<Id>) {
         let model = self.editor.document.model();
@@ -272,16 +273,18 @@ impl DesktopApp {
                 draft.entity.parameters.layers.push(WallLayer { id: Id::new(), name: "New layer".into(), thickness: 0.01, function: LayerFunction::Finish, material: None });
             }
             ui.label(format!("Total thickness: {:.4} m", draft.entity.parameters.layers.iter().map(|l|l.thickness).sum::<f64>()));
-            ui.collapsing("Project materials / density", |ui| {
+            ui.collapsing("Project materials / density / color", |ui| {
                 ui.label("Density edits update quantities for every use of the material on Save.");
+                ui.label("Color edits update all assigned surfaces on Save.");
                 for material in draft.materials.values_mut() {
                     ui.push_id(material.id(), |ui| { ui.horizontal(|ui| {
                         ui.text_edit_singleline(&mut material.parameters.name);
+                        ui.color_edit_button_srgb(&mut material.parameters.color);
                         ui.add(egui::DragValue::new(&mut material.parameters.density_kg_m3).speed(10.0).range(0.001..=100000.0).suffix(" kg/m³"));
                     }); });
                 }
                 if ui.button("New project material").clicked() {
-                    let material = os_model::Material::new("core.material", os_model::MaterialParams { name: "New material".into(), density_kg_m3: 1000.0 });
+                    let material = os_model::Material::new("core.material", os_model::MaterialParams { name: "New material".into(), density_kg_m3: 1000.0, color: [180, 180, 180] });
                     draft.materials.insert(material.id(), material);
                 }
             });
@@ -305,5 +308,75 @@ impl DesktopApp {
         if open && !cancel {
             self.wall_type_draft = Some(draft);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn material_color_draft_is_atomic_revision_bound_and_undoable() {
+        let mut app = DesktopApp::new().unwrap();
+        let material = os_model::Material::new(
+            "core.material",
+            os_model::MaterialParams {
+                name: "Paint".into(),
+                density_kg_m3: 1000.,
+                color: [120, 140, 160],
+            },
+        );
+        let mid = material.id();
+        app.editor
+            .command("Material", Command::AddMaterial(material))
+            .unwrap();
+        app.draft.material = Some(mid);
+        app.apply_wall();
+        let wall = app.selected.unwrap();
+        app.begin_wall_type(None, Some(wall));
+        let draft = app.wall_type_draft.take().unwrap();
+        app.editor
+            .document
+            .execute("Type", draft.commands(&app.editor.document).unwrap())
+            .unwrap();
+        app.editor.regenerate().unwrap();
+        let ty = app.editor.document.model().wall_types[&draft.entity.id()].clone();
+        let before = app.editor.document.model().clone();
+        let scene = app.editor.scene.clone();
+        let history = app.editor.document.history_stats();
+        app.begin_wall_type(Some(ty), None);
+        let mut draft = app.wall_type_draft.take().unwrap();
+        draft.materials.get_mut(&mid).unwrap().parameters.color = [20, 40, 60];
+        assert_eq!(
+            app.editor.document.model(),
+            &before,
+            "draft edits are staged"
+        );
+        assert_eq!(app.editor.document.history_stats(), history);
+        app.editor
+            .document
+            .execute(
+                "Save wall type / layers",
+                draft.commands(&app.editor.document).unwrap(),
+            )
+            .unwrap();
+        app.editor.regenerate().unwrap();
+        let after = app.editor.document.model().clone();
+        assert_eq!(app.editor.scene, scene);
+        assert_eq!(after.wall_types, before.wall_types);
+        assert_eq!(after.wall_type_assignments, before.wall_type_assignments);
+        assert_eq!(after.materials[&mid].parameters.color, [20, 40, 60]);
+        assert_eq!(
+            app.editor.document.history_stats().undo_entries,
+            history.undo_entries + 1
+        );
+        assert!(
+            draft.commands(&app.editor.document).is_err(),
+            "stale draft rejected"
+        );
+        app.editor.undo().unwrap();
+        assert_eq!(app.editor.document.model(), &before);
+        app.editor.redo().unwrap();
+        assert_eq!(app.editor.document.model(), &after);
     }
 }

@@ -17,6 +17,12 @@ fn room_separation_transactions_history_invalidation_and_failed_batch() {
     let room = Room::new(
         "core.room",
         RoomParams {
+            floor_material: None,
+            wall_material: None,
+            ceiling_material: None,
+            floor_finish: None,
+            wall_finish: None,
+            ceiling_finish: None,
             number: "1".into(),
             name: "Room".into(),
             level,

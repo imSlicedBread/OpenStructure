@@ -1,0 +1,354 @@
+{
+  "schema_version": 33,
+  "project": {
+    "header": {
+      "id": "00000000-0000-4000-8000-000000000001",
+      "type_id": "core.project",
+      "schema_version": 33,
+      "properties": {
+        "fixture": "frozen schema 22"
+      },
+      "relationships": {}
+    },
+    "parameters": {
+      "name": "Window pane position migration"
+    }
+  },
+  "sites": {
+    "00000000-0000-4000-8000-000000000002": {
+      "header": {
+        "id": "00000000-0000-4000-8000-000000000002",
+        "type_id": "core.site",
+        "schema_version": 33,
+        "properties": {},
+        "relationships": {}
+      },
+      "parameters": {
+        "name": "Site",
+        "project": "00000000-0000-4000-8000-000000000001"
+      }
+    }
+  },
+  "buildings": {
+    "00000000-0000-4000-8000-000000000003": {
+      "header": {
+        "id": "00000000-0000-4000-8000-000000000003",
+        "type_id": "core.building",
+        "schema_version": 33,
+        "properties": {},
+        "relationships": {}
+      },
+      "parameters": {
+        "name": "Building",
+        "site": "00000000-0000-4000-8000-000000000002"
+      }
+    }
+  },
+  "levels": {
+    "00000000-0000-4000-8000-000000000004": {
+      "header": {
+        "id": "00000000-0000-4000-8000-000000000004",
+        "type_id": "core.level",
+        "schema_version": 33,
+        "properties": {},
+        "relationships": {}
+      },
+      "parameters": {
+        "name": "Ground",
+        "elevation": 2.5,
+        "building": "00000000-0000-4000-8000-000000000003"
+      }
+    }
+  },
+  "walls": {
+    "00000000-0000-4000-8000-000000000006": {
+      "header": {
+        "id": "00000000-0000-4000-8000-000000000006",
+        "type_id": "org.openstructure.walls.wall",
+        "schema_version": 33,
+        "properties": {
+          "retained": 123
+        },
+        "relationships": {}
+      },
+      "parameters": {
+        "name": "Wall",
+        "start": {
+          "x": 0,
+          "y": 0
+        },
+        "end": {
+          "x": 4,
+          "y": 0
+        },
+        "thickness": 0.2,
+        "height": 3,
+        "level": "00000000-0000-4000-8000-000000000004",
+        "material": "12345600-0000-4000-8000-000000000051"
+      }
+    }
+  },
+  "wall_types": {},
+  "wall_type_assignments": {},
+  "wall_joins": {},
+  "openings": {
+    "00000000-0000-4000-8000-000000000008": {
+      "header": {
+        "id": "00000000-0000-4000-8000-000000000008",
+        "type_id": "core.opening",
+        "schema_version": 33,
+        "properties": {},
+        "relationships": {}
+      },
+      "parameters": {
+        "name": "Legacy window",
+        "host": "00000000-0000-4000-8000-000000000006",
+        "offset": 1,
+        "definition": {
+          "Typed": {
+            "type_id": "00000000-0000-4000-8000-000000000011"
+          }
+        },
+        "hinge": "Start",
+        "swing": "Left",
+        "sill_override": 0.8,
+        "width_override": null,
+        "height_override": null
+      }
+    },
+    "00000000-0000-4000-8000-000000000012": {
+      "header": {
+        "id": "00000000-0000-4000-8000-000000000012",
+        "type_id": "core.opening",
+        "schema_version": 33,
+        "properties": {},
+        "relationships": {}
+      },
+      "parameters": {
+        "name": "Legacy sill",
+        "host": "00000000-0000-4000-8000-000000000006",
+        "offset": 2.5,
+        "definition": {
+          "Legacy": {
+            "kind": "Window",
+            "width": 0.5,
+            "height": 1,
+            "sill": 1.1
+          }
+        },
+        "hinge": "Start",
+        "swing": "Left",
+        "sill_override": null,
+        "width_override": null,
+        "height_override": null
+      }
+    }
+  },
+  "opening_types": {
+    "00000000-0000-4000-8000-000000000011": {
+      "header": {
+        "id": "00000000-0000-4000-8000-000000000011",
+        "type_id": "core.opening_type",
+        "schema_version": 33,
+        "properties": {
+          "retained": "opening type metadata"
+        },
+        "relationships": {}
+      },
+      "parameters": {
+        "name": "Shared window",
+        "kind": "Window",
+        "width": 1,
+        "height": 1.2,
+        "sill": 0.8,
+        "pane_position": "RightFace",
+        "family": {
+          "version": 4,
+          "host_cut": "Rectangular",
+          "operation": "ProfileExtrusion",
+          "profile": [
+            {
+              "x": 0,
+              "y": 0
+            },
+            {
+              "x": 1,
+              "y": 0
+            },
+            {
+              "x": 1,
+              "y": 1
+            },
+            {
+              "x": 0,
+              "y": 1
+            }
+          ],
+          "cut_profile": [
+            {
+              "x": 0,
+              "y": 0
+            },
+            {
+              "x": 1,
+              "y": 0
+            },
+            {
+              "x": 1,
+              "y": 1
+            },
+            {
+              "x": 0,
+              "y": 1
+            }
+          ],
+          "depth": 0.025,
+          "frame_width": 0.05,
+          "frame_depth": 0.05,
+          "panel_material": "12345600-0000-4000-8000-000000000051",
+          "frame_material": "ff005000-0000-4000-8000-000000000052"
+        }
+      }
+    }
+  },
+  "materials": {
+    "12345600-0000-4000-8000-000000000051": {
+      "header": {
+        "id": "12345600-0000-4000-8000-000000000051",
+        "type_id": "core.material",
+        "schema_version": 33,
+        "properties": {
+          "fixture": "frozen schema 33 material"
+        },
+        "relationships": {}
+      },
+      "parameters": {
+        "name": "Shared panel/wall",
+        "density_kg_m3": 650
+      }
+    },
+    "ff005000-0000-4000-8000-000000000052": {
+      "header": {
+        "id": "ff005000-0000-4000-8000-000000000052",
+        "type_id": "core.material",
+        "schema_version": 33,
+        "properties": {
+          "fixture": "frozen schema 33 material"
+        },
+        "relationships": {}
+      },
+      "parameters": {
+        "name": "Frame",
+        "density_kg_m3": 8500
+      }
+    }
+  },
+  "floors": {},
+  "rooms": {
+    "00000000-0000-4000-8000-000000000040": {
+      "header": {
+        "id": "00000000-0000-4000-8000-000000000040",
+        "type_id": "core.room",
+        "schema_version": 33,
+        "properties": {
+          "fixture": "legacy room"
+        },
+        "relationships": {}
+      },
+      "parameters": {
+        "number": "101",
+        "name": "Office",
+        "level": "00000000-0000-4000-8000-000000000004",
+        "seed": {
+          "x": 1,
+          "y": 1
+        },
+        "boundary_signature": [
+          [
+            "00000000-0000-4000-8000-000000000006",
+            true
+          ],
+          [
+            "00000000-0000-4000-8000-000000000041",
+            true
+          ],
+          [
+            "00000000-0000-4000-8000-000000000042",
+            false
+          ]
+        ],
+        "floor_finish": "F-01",
+        "wall_finish": null,
+        "ceiling_finish": "C-01"
+      }
+    }
+  },
+  "room_tags": {},
+  "room_separation_lines": {},
+  "detail_lines": {},
+  "dimensions": {},
+  "grids": {},
+  "views": {},
+  "sheets": {},
+  "schedules": {
+    "00000000-0000-4000-8000-000000000043": {
+      "header": {
+        "id": "00000000-0000-4000-8000-000000000043",
+        "type_id": "core.schedule",
+        "schema_version": 33,
+        "properties": {},
+        "relationships": {}
+      },
+      "parameters": {
+        "name": "Legacy openings",
+        "category": "All",
+        "columns": [
+          "Name",
+          "Type",
+          "Level",
+          "Host",
+          "Width",
+          "Height",
+          "Sill",
+          "Id"
+        ],
+        "sort": "LevelKindName"
+      }
+    }
+  },
+  "extensions": {
+    "10000000-0000-0000-0000-000000000003": {
+      "envelope_version": 1,
+      "id": "10000000-0000-0000-0000-000000000003",
+      "owner": "org.example.fixture",
+      "type_id": "org.example.fixture.item",
+      "name": "Opaque",
+      "payload_schema_version": 42,
+      "relationships": {
+        "wall": [
+          "00000000-0000-4000-8000-000000000006"
+        ]
+      },
+      "depends_on": [
+        "00000000-0000-4000-8000-000000000006"
+      ],
+      "payload": {
+        "schema_version": 23,
+        "custom": [
+          1,
+          "preserve",
+          true
+        ]
+      }
+    }
+  },
+  "plugin_requirements": {
+    "org.example.fixture": {
+      "version": "1.0.0"
+    }
+  },
+  "columns": {},
+  "plan_graphics": {},
+  "plan_graphics_templates": {},
+  "opening_tags": {}
+}

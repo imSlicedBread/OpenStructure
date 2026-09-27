@@ -8,6 +8,78 @@ use std::collections::BTreeSet;
 fn close(a: f64, b: f64) {
     assert!((a - b).abs() < 1e-8, "{a} != {b}");
 }
+
+#[test]
+fn material_color_plan_sheet_and_two_wall_assignments_stay_consistent() {
+    use os_render::sheet::{
+        PaperColor, PaperMarkKind, PaperSheetInfo, PaperViewport, compose_view_sheet,
+    };
+    let (mut e, plan, ids, _, mids) = fixture();
+    let scene = e.scene.clone();
+    let baseline = e.document.model().clone();
+    let mut params = baseline.materials[&mids[0]].parameters.clone();
+    params.color = [12, 34, 56];
+    e.command(
+        "Color",
+        Command::UpdateMaterial {
+            id: mids[0],
+            parameters: params,
+        },
+    )
+    .unwrap();
+    assert_eq!(e.scene, scene);
+    for id in ids {
+        assert_eq!(
+            NativeWall::from_model(e.document.model(), id)
+                .unwrap()
+                .layer_quantities()
+                .unwrap(),
+            NativeWall::from_model(&baseline, id)
+                .unwrap()
+                .layer_quantities()
+                .unwrap()
+        );
+    }
+    let context = e.native_plan_context(plan).unwrap();
+    let drawing = e.native_wall_plan(plan).unwrap();
+    let items = drawing.items(context).unwrap();
+    for id in ids {
+        let assigned: Vec<_> = items
+            .iter()
+            .filter(|i| i.entity == id && i.surface.material == Some(mids[0]))
+            .collect();
+        assert!(!assigned.is_empty());
+        for item in assigned {
+            assert_eq!(drawing.surface_color(item.surface), Some([12, 34, 56]));
+        }
+    }
+    let page = compose_view_sheet(
+        PaperSheetInfo {
+            width_mm: 297.,
+            height_mm: 210.,
+            number: "A1",
+            name: "Colors",
+        },
+        "Plan",
+        PaperViewport {
+            center_mm: Point2::new(140., 100.),
+            width_mm: 200.,
+            height_mm: 140.,
+            model_center_m: Point2::new(2., 1.5),
+            scale_denominator: 100.,
+        },
+        context,
+        &drawing,
+    )
+    .unwrap();
+    assert!(page.marks().iter().any(|m| matches!(&m.kind,
+        PaperMarkKind::Path { fill: Some(color), .. } if *color == PaperColor { red: 12, green: 34, blue: 56 })));
+    assert!(!page.to_pdf().unwrap().is_empty());
+    e.undo().unwrap();
+    assert_eq!(e.document.model(), &baseline);
+    e.redo().unwrap();
+    assert_eq!(e.scene, scene);
+}
 fn fixture() -> (Editor, Id, [Id; 2], WallType, [Id; 2]) {
     let mut e = Editor::new().unwrap();
     let level = *e.document.model().levels.keys().next().unwrap();
@@ -18,6 +90,7 @@ fn fixture() -> (Editor, Id, [Id; 2], WallType, [Id; 2]) {
             MaterialParams {
                 name: "Masonry".into(),
                 density_kg_m3: 1800.0,
+                color: [180, 180, 180],
             },
         ),
         Material::new(
@@ -25,6 +98,7 @@ fn fixture() -> (Editor, Id, [Id; 2], WallType, [Id; 2]) {
             MaterialParams {
                 name: "Insulation".into(),
                 density_kg_m3: 40.0,
+                color: [180, 180, 180],
             },
         ),
     ];
@@ -86,6 +160,9 @@ fn door(host: Id, offset: f64) -> Opening {
     Opening::new(
         "core.opening",
         OpeningParams {
+            width_override: None,
+            height_override: None,
+            sill_override: None,
             name: "Door".into(),
             host,
             offset,
@@ -158,6 +235,7 @@ fn shared_edit_reorder_flip_material_density_history_and_reopen() {
             parameters: MaterialParams {
                 name: "Masonry".into(),
                 density_kg_m3: 2000.,
+                color: [180, 180, 180],
             },
         },
     )

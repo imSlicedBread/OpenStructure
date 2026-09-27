@@ -11,6 +11,18 @@ use std::{
 };
 use zip::{ZipArchive, ZipWriter, write::SimpleFileOptions};
 mod json_guard;
+pub mod opening_type_library;
+pub use opening_type_library::{
+    MAX_OPENING_TYPE_LIBRARY_BYTES, MAX_OPENING_TYPE_LIBRARY_ENTRIES,
+    MAX_OPENING_TYPE_LIBRARY_PACKAGES, OpeningTypeLibraryEntry, OpeningTypeLibraryIssue,
+    OpeningTypeLibraryScan, scan_opening_type_library,
+};
+pub mod opening_type_package;
+pub use opening_type_package::{
+    MAX_OPENING_TYPE_PACKAGE_BYTES, OPENING_TYPE_PACKAGE_FORMAT, OPENING_TYPE_PACKAGE_VERSION,
+    OpeningTypePackage, OpeningTypePackageMaterial, export_opening_type_package,
+    parse_opening_type_package, read_opening_type_package, write_opening_type_package,
+};
 
 const MAX_MODEL_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
@@ -357,10 +369,1245 @@ fn validate_serialized_model_size(model: &Model, limit: u64) -> Result<()> {
     serde_json::to_writer_pretty(Counter(limit), model).map_err(storage)
 }
 
+/// Stable project-scoped UUIDs make repeated opens of an unsaved legacy file
+/// produce the same phase identities. Fixed domain salts separate generated
+/// IDs from each other and the existing project identity.
+fn migrated_phase_id(project: Id, salt: u128) -> Id {
+    let mut value = project.0.as_u128().rotate_left(37) ^ salt;
+    value = (value & !(0xf_u128 << 76)) | (4_u128 << 76);
+    value = (value & !(0x3_u128 << 62)) | (0x2_u128 << 62);
+    Id(uuid::Uuid::from_u128(value))
+}
+
 /// Explicit native schema chain; never infer a version from optional field shapes.
 fn migrate_inner(value: &mut serde_json::Value, from: u32) -> Result<()> {
+    ensure(
+        from <= os_model::SCHEMA_VERSION,
+        "unsupported future model schema",
+    )?;
+    // Keep the entire chain within the default desktop/test thread stack.
+    for version in from..os_model::SCHEMA_VERSION {
+        migrate_step(value, version)?;
+    }
+    Ok(())
+}
+
+fn migrate_step(value: &mut serde_json::Value, from: u32) -> Result<()> {
     match from {
-        28 => Ok(()),
+        44 => {
+            let phases = value["phases"]
+                .as_object()
+                .ok_or_else(|| Error::Invalid("missing project phases".into()))?;
+            let latest = phases
+                .values()
+                .max_by_key(|phase| phase["parameters"]["order"].as_u64())
+                .ok_or_else(|| Error::Invalid("missing project phases".into()))?["header"]["id"]
+                .clone();
+            let views = value["views"]
+                .as_object_mut()
+                .ok_or_else(|| Error::Invalid("invalid views map".into()))?;
+            for view in views.values_mut() {
+                if let Some(plan) = view["parameters"]
+                    .get_mut("plan")
+                    .filter(|plan| !plan.is_null())
+                {
+                    let plan = plan
+                        .as_object_mut()
+                        .ok_or_else(|| Error::Invalid("invalid plan settings".into()))?;
+                    ensure(
+                        plan.get("schema_version").and_then(|v| v.as_u64()) == Some(2)
+                            && !plan.contains_key("target_phase")
+                            && !plan.contains_key("phase_filter"),
+                        "ambiguous schema 44 plan phase settings",
+                    )?;
+                    plan.insert("schema_version".into(), 3.into());
+                    plan.insert("target_phase".into(), latest.clone());
+                    plan.insert("phase_filter".into(), "ShowAll".into());
+                }
+            }
+            for collection in [
+                "project",
+                "sites",
+                "buildings",
+                "levels",
+                "walls",
+                "wall_joins",
+                "wall_types",
+                "openings",
+                "opening_types",
+                "opening_tags",
+                "rooms",
+                "room_tags",
+                "detail_lines",
+                "room_separation_lines",
+                "dimensions",
+                "grids",
+                "materials",
+                "views",
+                "floors",
+                "columns",
+                "stairs",
+                "roofs",
+                "ceilings",
+                "sheets",
+                "schedules",
+                "plan_graphics_templates",
+                "phases",
+            ] {
+                let data = value
+                    .get_mut(collection)
+                    .ok_or_else(|| Error::Invalid(format!("missing {collection}")))?;
+                let entities: Vec<_> = if collection == "project" {
+                    vec![data]
+                } else {
+                    data.as_object_mut()
+                        .ok_or_else(|| Error::Invalid(format!("invalid {collection}")))?
+                        .values_mut()
+                        .collect()
+                };
+                for entity in entities {
+                    ensure(
+                        entity["header"]["schema_version"] == 44,
+                        "invalid schema 44 native header",
+                    )?;
+                    entity["header"]["schema_version"] = 45.into();
+                }
+            }
+            value["schema_version"] = 45.into();
+            Ok(())
+        }
+        43 => {
+            let object = value
+                .as_object_mut()
+                .ok_or_else(|| Error::Invalid("model must be an object".into()))?;
+            ensure(
+                !object.contains_key("phases") && !object.contains_key("element_lifecycles"),
+                "ambiguous schema 43 phase data",
+            )?;
+            let project_id: Id = serde_json::from_value(object["project"]["header"]["id"].clone())
+                .map_err(storage)?;
+            let mut existing = os_model::new_phase("Existing", 0);
+            existing.header.schema_version = 44;
+            existing.header.id = migrated_phase_id(project_id, 0x4f53_5048_4153_4501);
+            let mut new_construction = os_model::new_phase("New Construction", 1);
+            new_construction.header.schema_version = 44;
+            new_construction.header.id = migrated_phase_id(project_id, 0x4f53_5048_4153_4502);
+            let existing_id = existing.id();
+            object.insert(
+                "phases".into(),
+                serde_json::to_value(BTreeMap::from([
+                    (existing.id(), existing),
+                    (new_construction.id(), new_construction),
+                ]))
+                .map_err(storage)?,
+            );
+
+            let mut lifecycles = serde_json::Map::new();
+            for collection in [
+                "walls",
+                "openings",
+                "floors",
+                "stairs",
+                "roofs",
+                "ceilings",
+                "columns",
+                "rooms",
+                "room_separation_lines",
+            ] {
+                let elements = object
+                    .get(collection)
+                    .and_then(serde_json::Value::as_object)
+                    .ok_or_else(|| Error::Invalid(format!("missing or invalid {collection}")))?;
+                for key in elements.keys() {
+                    lifecycles.insert(
+                        key.clone(),
+                        serde_json::json!({"created_in": existing_id, "demolished_in": null}),
+                    );
+                }
+            }
+            object.insert(
+                "element_lifecycles".into(),
+                serde_json::Value::Object(lifecycles),
+            );
+
+            for collection in [
+                "project",
+                "sites",
+                "buildings",
+                "levels",
+                "walls",
+                "wall_joins",
+                "wall_types",
+                "openings",
+                "opening_types",
+                "opening_tags",
+                "rooms",
+                "room_tags",
+                "detail_lines",
+                "room_separation_lines",
+                "dimensions",
+                "grids",
+                "materials",
+                "views",
+                "floors",
+                "columns",
+                "stairs",
+                "roofs",
+                "ceilings",
+                "sheets",
+                "schedules",
+                "plan_graphics_templates",
+            ] {
+                let data = object
+                    .get_mut(collection)
+                    .ok_or_else(|| Error::Invalid(format!("missing {collection}")))?;
+                let entities: Vec<&mut serde_json::Value> = if collection == "project" {
+                    vec![data]
+                } else {
+                    data.as_object_mut()
+                        .ok_or_else(|| Error::Invalid(format!("invalid {collection} map")))?
+                        .values_mut()
+                        .collect()
+                };
+                for entity in entities {
+                    ensure(
+                        entity["header"]["schema_version"] == 43,
+                        "invalid schema 43 native header",
+                    )?;
+                    entity["header"]["schema_version"] = 44.into();
+                }
+            }
+            object.insert("schema_version".into(), 44.into());
+            Ok(())
+        }
+        42 => {
+            // Decode the old shape strictly; tagged/new, mixed, and extra-field
+            // references are ambiguous in schema 42 and must never be guessed.
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct LegacyReference {
+                wall: os_core::Id,
+                endpoint: os_model::DimensionEndpoint,
+            }
+            let convert = |reference: &mut serde_json::Value| -> Result<()> {
+                let old: LegacyReference =
+                    serde_json::from_value(reference.clone()).map_err(|e| {
+                        Error::Invalid(format!("ambiguous schema 42 dimension reference: {e}"))
+                    })?;
+                *reference = serde_json::to_value(os_model::DimensionReference::WallEndpoint {
+                    wall: old.wall,
+                    endpoint: old.endpoint,
+                })
+                .map_err(storage)?;
+                Ok(())
+            };
+            let object = value
+                .as_object_mut()
+                .ok_or_else(|| Error::Invalid("model must be an object".into()))?;
+            let dimensions = object
+                .get_mut("dimensions")
+                .and_then(serde_json::Value::as_object_mut)
+                .ok_or_else(|| Error::Invalid("missing or invalid dimensions map".into()))?;
+            for dimension in dimensions.values_mut() {
+                let p = dimension
+                    .get_mut("parameters")
+                    .and_then(serde_json::Value::as_object_mut)
+                    .ok_or_else(|| Error::Invalid("invalid dimension parameters".into()))?;
+                for key in ["first", "second"] {
+                    convert(
+                        p.get_mut(key)
+                            .ok_or_else(|| Error::Invalid(format!("missing dimension {key}")))?,
+                    )?;
+                }
+                let additional = p
+                    .get_mut("additional")
+                    .and_then(serde_json::Value::as_array_mut)
+                    .ok_or_else(|| {
+                        Error::Invalid("invalid dimension additional references".into())
+                    })?;
+                for reference in additional {
+                    convert(reference)?;
+                }
+            }
+            for collection in [
+                "project",
+                "sites",
+                "buildings",
+                "levels",
+                "walls",
+                "wall_joins",
+                "wall_types",
+                "openings",
+                "opening_types",
+                "opening_tags",
+                "rooms",
+                "room_tags",
+                "detail_lines",
+                "room_separation_lines",
+                "dimensions",
+                "grids",
+                "materials",
+                "views",
+                "floors",
+                "columns",
+                "stairs",
+                "roofs",
+                "ceilings",
+                "sheets",
+                "schedules",
+                "plan_graphics_templates",
+            ] {
+                let data = object
+                    .get_mut(collection)
+                    .ok_or_else(|| Error::Invalid(format!("missing {collection}")))?;
+                let entities: Vec<&mut serde_json::Value> = if collection == "project" {
+                    vec![data]
+                } else {
+                    data.as_object_mut()
+                        .ok_or_else(|| Error::Invalid("invalid entity map".into()))?
+                        .values_mut()
+                        .collect()
+                };
+                for entity in entities {
+                    ensure(
+                        entity["header"]["schema_version"] == 42,
+                        "invalid schema 42 native header",
+                    )?;
+                    entity["header"]["schema_version"] = 43.into();
+                }
+            }
+            object.insert("schema_version".into(), 43.into());
+            Ok(())
+        }
+        41 => {
+            let object = value
+                .as_object_mut()
+                .ok_or_else(|| Error::Invalid("model must be an object".into()))?;
+            let schedules = object
+                .get_mut("schedules")
+                .and_then(serde_json::Value::as_object_mut)
+                .ok_or_else(|| Error::Invalid("missing or invalid schedules map".into()))?;
+            for schedule in schedules.values_mut() {
+                let parameters = schedule
+                    .get_mut("parameters")
+                    .and_then(serde_json::Value::as_object_mut)
+                    .ok_or_else(|| Error::Invalid("invalid schedule parameters".into()))?;
+                ensure(
+                    !parameters.contains_key("filters"),
+                    "ambiguous schema 41 schedule filters",
+                )?;
+                parameters.insert("filters".into(), serde_json::json!([]));
+            }
+            for collection in [
+                "project",
+                "sites",
+                "buildings",
+                "levels",
+                "walls",
+                "wall_joins",
+                "wall_types",
+                "openings",
+                "opening_types",
+                "opening_tags",
+                "rooms",
+                "room_tags",
+                "detail_lines",
+                "room_separation_lines",
+                "dimensions",
+                "grids",
+                "materials",
+                "views",
+                "floors",
+                "columns",
+                "stairs",
+                "roofs",
+                "ceilings",
+                "sheets",
+                "schedules",
+                "plan_graphics_templates",
+            ] {
+                let data = object
+                    .get_mut(collection)
+                    .ok_or_else(|| Error::Invalid(format!("missing {collection}")))?;
+                let entities: Vec<&mut serde_json::Value> = if collection == "project" {
+                    vec![data]
+                } else {
+                    data.as_object_mut()
+                        .ok_or_else(|| Error::Invalid("invalid entity map".into()))?
+                        .values_mut()
+                        .collect()
+                };
+                for entity in entities {
+                    ensure(
+                        entity["header"]["schema_version"] == 41,
+                        "invalid schema 41 native header",
+                    )?;
+                    entity["header"]["schema_version"] = 42.into();
+                }
+            }
+            object.insert("schema_version".into(), 42.into());
+            Ok(())
+        }
+        40 => {
+            let object = value
+                .as_object_mut()
+                .ok_or_else(|| Error::Invalid("model must be an object".into()))?;
+            let tags = object
+                .get_mut("opening_tags")
+                .and_then(serde_json::Value::as_object_mut)
+                .ok_or_else(|| Error::Invalid("missing or invalid opening_tags map".into()))?;
+            for tag in tags.values_mut() {
+                let parameters = tag
+                    .get_mut("parameters")
+                    .and_then(serde_json::Value::as_object_mut)
+                    .ok_or_else(|| Error::Invalid("invalid opening tag parameters".into()))?;
+                ensure(
+                    !parameters.contains_key("label_preset"),
+                    "ambiguous schema 40 opening tag label preset",
+                )?;
+                parameters.insert("label_preset".into(), "Full".into());
+            }
+            for collection in [
+                "project",
+                "sites",
+                "buildings",
+                "levels",
+                "walls",
+                "wall_joins",
+                "wall_types",
+                "openings",
+                "opening_types",
+                "opening_tags",
+                "rooms",
+                "room_tags",
+                "detail_lines",
+                "room_separation_lines",
+                "dimensions",
+                "grids",
+                "materials",
+                "views",
+                "floors",
+                "columns",
+                "stairs",
+                "roofs",
+                "ceilings",
+                "sheets",
+                "schedules",
+                "plan_graphics_templates",
+            ] {
+                let data = object
+                    .get_mut(collection)
+                    .ok_or_else(|| Error::Invalid(format!("missing {collection}")))?;
+                let entities: Vec<&mut serde_json::Value> = if collection == "project" {
+                    vec![data]
+                } else {
+                    data.as_object_mut()
+                        .ok_or_else(|| Error::Invalid("invalid entity map".into()))?
+                        .values_mut()
+                        .collect()
+                };
+                for entity in entities {
+                    ensure(
+                        entity["header"]["schema_version"] == 40,
+                        "invalid schema 40 native header",
+                    )?;
+                    entity["header"]["schema_version"] = 41.into();
+                }
+            }
+            object.insert("schema_version".into(), 41.into());
+            Ok(())
+        }
+        39 => {
+            let object = value
+                .as_object_mut()
+                .ok_or_else(|| Error::Invalid("model must be an object".into()))?;
+            let ceilings = object
+                .get_mut("ceilings")
+                .ok_or_else(|| Error::Invalid("missing ceilings".into()))?
+                .as_object_mut()
+                .ok_or_else(|| Error::Invalid("invalid ceiling map".into()))?;
+            for ceiling in ceilings.values_mut() {
+                ensure(
+                    ceiling["header"]["schema_version"] == 39,
+                    "invalid schema 39 ceiling header",
+                )?;
+                let parameters = ceiling["parameters"]
+                    .as_object_mut()
+                    .ok_or_else(|| Error::Invalid("invalid ceiling parameters".into()))?;
+                ensure(
+                    !parameters.contains_key("boundary_room"),
+                    "ambiguous schema 39 ceiling boundary source",
+                )?;
+                parameters.insert("boundary_room".into(), serde_json::Value::Null);
+            }
+            for collection in [
+                "project",
+                "sites",
+                "buildings",
+                "levels",
+                "walls",
+                "wall_joins",
+                "wall_types",
+                "openings",
+                "opening_types",
+                "opening_tags",
+                "rooms",
+                "room_tags",
+                "detail_lines",
+                "room_separation_lines",
+                "dimensions",
+                "grids",
+                "materials",
+                "views",
+                "floors",
+                "columns",
+                "stairs",
+                "roofs",
+                "ceilings",
+                "sheets",
+                "schedules",
+                "plan_graphics_templates",
+            ] {
+                let data = object
+                    .get_mut(collection)
+                    .ok_or_else(|| Error::Invalid(format!("missing {collection}")))?;
+                let entities: Vec<&mut serde_json::Value> = if collection == "project" {
+                    vec![data]
+                } else {
+                    data.as_object_mut()
+                        .ok_or_else(|| Error::Invalid("invalid entity map".into()))?
+                        .values_mut()
+                        .collect()
+                };
+                for entity in entities {
+                    ensure(
+                        entity["header"]["schema_version"] == 39,
+                        "invalid schema 39 native header",
+                    )?;
+                    entity["header"]["schema_version"] = 40.into();
+                }
+            }
+            object.insert("schema_version".into(), 40.into());
+            Ok(())
+        }
+        38 => {
+            let object = value
+                .as_object_mut()
+                .ok_or_else(|| Error::Invalid("model must be an object".into()))?;
+            if let Some(ceilings) = object.get("ceilings") {
+                // Some migration fixtures are produced by serializing the current
+                // model and then downgrading only the schema markers. An empty
+                // collection is unambiguous and safe to retain; real schema-38
+                // data could not contain ceiling entities.
+                ensure(
+                    ceilings.as_object().is_some_and(serde_json::Map::is_empty),
+                    "ambiguous schema 38 ceilings",
+                )?;
+            } else {
+                object.insert("ceilings".into(), serde_json::json!({}));
+            }
+            for collection in [
+                "project",
+                "sites",
+                "buildings",
+                "levels",
+                "walls",
+                "wall_joins",
+                "wall_types",
+                "openings",
+                "opening_types",
+                "opening_tags",
+                "rooms",
+                "room_tags",
+                "detail_lines",
+                "room_separation_lines",
+                "dimensions",
+                "grids",
+                "materials",
+                "views",
+                "floors",
+                "columns",
+                "stairs",
+                "roofs",
+                "ceilings",
+                "sheets",
+                "schedules",
+                "plan_graphics_templates",
+            ] {
+                let data = object
+                    .get_mut(collection)
+                    .ok_or_else(|| Error::Invalid(format!("missing {collection}")))?;
+                let entities: Vec<&mut serde_json::Value> = if collection == "project" {
+                    vec![data]
+                } else {
+                    data.as_object_mut()
+                        .ok_or_else(|| Error::Invalid("invalid entity map".into()))?
+                        .values_mut()
+                        .collect()
+                };
+                for entity in entities {
+                    ensure(
+                        entity["header"]["schema_version"] == 38,
+                        "invalid schema 38 native header",
+                    )?;
+                    entity["header"]["schema_version"] = 39.into();
+                }
+            }
+            for view in object["views"]
+                .as_object_mut()
+                .ok_or_else(|| Error::Invalid("invalid views map".into()))?
+                .values_mut()
+            {
+                if let Some(plan) = view["parameters"].get_mut("plan").filter(|p| !p.is_null()) {
+                    match plan["schema_version"].as_u64() {
+                        Some(1) => {
+                            ensure(
+                                plan.get("view_type").is_none()
+                                    && plan["visibility"].get("ceilings").is_none(),
+                                "ambiguous legacy plan settings",
+                            )?;
+                            plan["schema_version"] = 2.into();
+                            plan["view_type"] = "FloorPlan".into();
+                            plan["visibility"]["ceilings"] = true.into();
+                        }
+                        Some(2) => ensure(
+                            matches!(
+                                plan.get("view_type").and_then(serde_json::Value::as_str),
+                                Some("FloorPlan" | "ReflectedCeilingPlan")
+                            ) && plan["visibility"]["ceilings"].is_boolean(),
+                            "ambiguous current plan settings",
+                        )?,
+                        _ => {
+                            return Err(Error::Invalid("unsupported plan settings version".into()));
+                        }
+                    }
+                }
+            }
+            object.insert("schema_version".into(), 39.into());
+            Ok(())
+        }
+        37 => {
+            let object = value
+                .as_object_mut()
+                .ok_or_else(|| Error::Invalid("model must be an object".into()))?;
+            ensure(!object.contains_key("roofs"), "ambiguous schema 37 roofs")?;
+            object.insert("roofs".into(), serde_json::json!({}));
+            for collection in [
+                "project",
+                "sites",
+                "buildings",
+                "levels",
+                "walls",
+                "wall_joins",
+                "wall_types",
+                "openings",
+                "opening_types",
+                "opening_tags",
+                "rooms",
+                "room_tags",
+                "detail_lines",
+                "room_separation_lines",
+                "dimensions",
+                "grids",
+                "materials",
+                "views",
+                "floors",
+                "columns",
+                "stairs",
+                "roofs",
+                "sheets",
+                "schedules",
+                "plan_graphics_templates",
+            ] {
+                let data = object
+                    .get_mut(collection)
+                    .ok_or_else(|| Error::Invalid(format!("missing {collection}")))?;
+                let entities: Vec<&mut serde_json::Value> = if collection == "project" {
+                    vec![data]
+                } else {
+                    data.as_object_mut()
+                        .ok_or_else(|| Error::Invalid("invalid entity map".into()))?
+                        .values_mut()
+                        .collect()
+                };
+                for entity in entities {
+                    ensure(
+                        entity["header"]["schema_version"] == 37,
+                        "invalid schema 37 native header",
+                    )?;
+                    entity["header"]["schema_version"] = 38.into();
+                }
+            }
+            object.insert("schema_version".into(), 38.into());
+            Ok(())
+        }
+        36 => {
+            let object = value
+                .as_object_mut()
+                .ok_or_else(|| Error::Invalid("model must be an object".into()))?;
+            ensure(!object.contains_key("stairs"), "ambiguous schema 36 stairs")?;
+            object.insert("stairs".into(), serde_json::json!({}));
+            for collection in [
+                "project",
+                "sites",
+                "buildings",
+                "levels",
+                "walls",
+                "wall_joins",
+                "wall_types",
+                "openings",
+                "opening_types",
+                "opening_tags",
+                "rooms",
+                "room_tags",
+                "detail_lines",
+                "room_separation_lines",
+                "dimensions",
+                "grids",
+                "materials",
+                "views",
+                "floors",
+                "columns",
+                "stairs",
+                "sheets",
+                "schedules",
+                "plan_graphics_templates",
+            ] {
+                let data = object
+                    .get_mut(collection)
+                    .ok_or_else(|| Error::Invalid(format!("missing {collection}")))?;
+                let entities: Vec<&mut serde_json::Value> = if collection == "project" {
+                    vec![data]
+                } else {
+                    data.as_object_mut()
+                        .ok_or_else(|| Error::Invalid("invalid entity map".into()))?
+                        .values_mut()
+                        .collect()
+                };
+                for entity in entities {
+                    ensure(
+                        entity["header"]["schema_version"] == 36,
+                        "invalid schema 36 native header",
+                    )?;
+                    entity["header"]["schema_version"] = 37.into();
+                }
+            }
+            object.insert("schema_version".into(), 37.into());
+            Ok(())
+        }
+        35 => {
+            let object = value
+                .as_object_mut()
+                .ok_or_else(|| Error::Invalid("model must be an object".into()))?;
+            for collection in [
+                "project",
+                "sites",
+                "buildings",
+                "levels",
+                "walls",
+                "wall_joins",
+                "wall_types",
+                "openings",
+                "opening_types",
+                "opening_tags",
+                "rooms",
+                "room_tags",
+                "detail_lines",
+                "room_separation_lines",
+                "dimensions",
+                "grids",
+                "materials",
+                "views",
+                "floors",
+                "columns",
+                "sheets",
+                "schedules",
+                "plan_graphics_templates",
+            ] {
+                let data = object
+                    .get_mut(collection)
+                    .ok_or_else(|| Error::Invalid(format!("missing {collection}")))?;
+                let entities: Vec<&mut serde_json::Value> = if collection == "project" {
+                    vec![data]
+                } else {
+                    data.as_object_mut()
+                        .ok_or_else(|| Error::Invalid("invalid entity map".into()))?
+                        .values_mut()
+                        .collect()
+                };
+                for entity in entities {
+                    ensure(
+                        entity["header"]["schema_version"] == 35,
+                        "invalid schema 35 native header",
+                    )?;
+                    if collection == "floors" {
+                        let params = entity
+                            .get_mut("parameters")
+                            .and_then(serde_json::Value::as_object_mut)
+                            .ok_or_else(|| Error::Invalid("invalid floor parameters".into()))?;
+                        ensure(
+                            !params.contains_key("holes"),
+                            "ambiguous schema 35 floor openings",
+                        )?;
+                        params.insert("holes".into(), serde_json::json!([]));
+                    }
+                    entity["header"]["schema_version"] = 36.into();
+                }
+            }
+            object.insert("schema_version".into(), 36.into());
+            Ok(())
+        }
+        34 => {
+            let object = value
+                .as_object_mut()
+                .ok_or_else(|| Error::Invalid("model must be an object".into()))?;
+            for collection in [
+                "project",
+                "sites",
+                "buildings",
+                "levels",
+                "walls",
+                "wall_joins",
+                "wall_types",
+                "openings",
+                "opening_types",
+                "opening_tags",
+                "rooms",
+                "room_tags",
+                "detail_lines",
+                "room_separation_lines",
+                "dimensions",
+                "grids",
+                "materials",
+                "views",
+                "floors",
+                "columns",
+                "sheets",
+                "schedules",
+                "plan_graphics_templates",
+            ] {
+                let data = object
+                    .get_mut(collection)
+                    .ok_or_else(|| Error::Invalid(format!("missing {collection}")))?;
+                let entities: Vec<&mut serde_json::Value> = if collection == "project" {
+                    vec![data]
+                } else {
+                    data.as_object_mut()
+                        .ok_or_else(|| Error::Invalid("invalid entity map".into()))?
+                        .values_mut()
+                        .collect()
+                };
+                for entity in entities {
+                    ensure(
+                        entity["header"]["schema_version"] == 34,
+                        "invalid schema 34 native header",
+                    )?;
+                    if collection == "rooms" {
+                        let params = entity
+                            .get_mut("parameters")
+                            .and_then(serde_json::Value::as_object_mut)
+                            .ok_or_else(|| Error::Invalid("invalid room parameters".into()))?;
+                        for field in ["floor_material", "wall_material", "ceiling_material"] {
+                            ensure(
+                                !params.contains_key(field),
+                                "ambiguous schema 34 room material",
+                            )?;
+                            params.insert(field.into(), serde_json::Value::Null);
+                        }
+                    }
+                    entity["header"]["schema_version"] = 35.into();
+                }
+            }
+            object.insert("schema_version".into(), 35.into());
+            Ok(())
+        }
+        33 => {
+            let object = value
+                .as_object_mut()
+                .ok_or_else(|| Error::Invalid("model must be an object".into()))?;
+            for collection in [
+                "project",
+                "sites",
+                "buildings",
+                "levels",
+                "walls",
+                "wall_joins",
+                "wall_types",
+                "openings",
+                "opening_types",
+                "opening_tags",
+                "rooms",
+                "room_tags",
+                "detail_lines",
+                "room_separation_lines",
+                "dimensions",
+                "grids",
+                "materials",
+                "views",
+                "floors",
+                "columns",
+                "sheets",
+                "schedules",
+                "plan_graphics_templates",
+            ] {
+                let data = object
+                    .get_mut(collection)
+                    .ok_or_else(|| Error::Invalid(format!("missing {collection}")))?;
+                let entities: Vec<&mut serde_json::Value> = if collection == "project" {
+                    vec![data]
+                } else {
+                    data.as_object_mut()
+                        .ok_or_else(|| Error::Invalid("invalid entity map".into()))?
+                        .values_mut()
+                        .collect()
+                };
+                for entity in entities {
+                    ensure(
+                        entity["header"]["schema_version"] == 33,
+                        "invalid schema 33 native header",
+                    )?;
+                    if collection == "materials" {
+                        let id: os_core::Id =
+                            serde_json::from_value(entity["header"]["id"].clone())
+                                .map_err(storage)?;
+                        let params = entity
+                            .get_mut("parameters")
+                            .and_then(serde_json::Value::as_object_mut)
+                            .ok_or_else(|| Error::Invalid("invalid material parameters".into()))?;
+                        ensure(
+                            !params.contains_key("color"),
+                            "ambiguous schema 33 material color",
+                        )?;
+                        params.insert(
+                            "color".into(),
+                            serde_json::json!(os_model::legacy_surface_color(id)),
+                        );
+                    }
+                    entity["header"]["schema_version"] = 34.into();
+                }
+            }
+            object.insert("schema_version".into(), 34.into());
+            Ok(())
+        }
+        32 => {
+            let object = value
+                .as_object_mut()
+                .ok_or_else(|| Error::Invalid("model must be an object".into()))?;
+            for collection in [
+                "project",
+                "sites",
+                "buildings",
+                "levels",
+                "walls",
+                "wall_joins",
+                "wall_types",
+                "openings",
+                "opening_types",
+                "opening_tags",
+                "rooms",
+                "room_tags",
+                "detail_lines",
+                "room_separation_lines",
+                "dimensions",
+                "grids",
+                "materials",
+                "views",
+                "floors",
+                "columns",
+                "sheets",
+                "schedules",
+                "plan_graphics_templates",
+            ] {
+                let data = object
+                    .get_mut(collection)
+                    .ok_or_else(|| Error::Invalid(format!("missing {collection}")))?;
+                let entities: Vec<&mut serde_json::Value> = if collection == "project" {
+                    vec![data]
+                } else {
+                    data.as_object_mut()
+                        .ok_or_else(|| Error::Invalid("invalid entity map".into()))?
+                        .values_mut()
+                        .collect()
+                };
+                for entity in entities {
+                    ensure(
+                        entity["header"]["schema_version"] == 32,
+                        "invalid schema 32 native header",
+                    )?;
+                    if collection == "rooms" {
+                        let params = entity
+                            .get_mut("parameters")
+                            .and_then(serde_json::Value::as_object_mut)
+                            .ok_or_else(|| Error::Invalid("invalid room parameters".into()))?;
+                        for field in ["floor_finish", "wall_finish", "ceiling_finish"] {
+                            ensure(
+                                !params.contains_key(field),
+                                "ambiguous schema 32 room finish code",
+                            )?;
+                            params.insert(field.into(), serde_json::Value::Null);
+                        }
+                    }
+                    if collection == "schedules" {
+                        let params = &entity["parameters"];
+                        ensure(
+                            matches!(params["category"].as_str(), Some("Door" | "Window" | "All")),
+                            "invalid schema 32 schedule category",
+                        )?;
+                        // Validation after migration also checks legacy column/sort compatibility.
+                    }
+                    entity["header"]["schema_version"] = 33.into();
+                }
+            }
+            object.insert("schema_version".into(), 33.into());
+            Ok(())
+        }
+        31 => {
+            let object = value
+                .as_object_mut()
+                .ok_or_else(|| Error::Invalid("model must be an object".into()))?;
+            for collection in [
+                "project",
+                "sites",
+                "buildings",
+                "levels",
+                "walls",
+                "wall_joins",
+                "wall_types",
+                "openings",
+                "opening_types",
+                "opening_tags",
+                "rooms",
+                "room_tags",
+                "detail_lines",
+                "room_separation_lines",
+                "dimensions",
+                "grids",
+                "materials",
+                "views",
+                "floors",
+                "columns",
+                "sheets",
+                "schedules",
+                "plan_graphics_templates",
+            ] {
+                let data = object
+                    .get_mut(collection)
+                    .ok_or_else(|| Error::Invalid(format!("missing {collection}")))?;
+                let entities: Vec<&mut serde_json::Value> = if collection == "project" {
+                    vec![data]
+                } else {
+                    data.as_object_mut()
+                        .ok_or_else(|| Error::Invalid("invalid entity map".into()))?
+                        .values_mut()
+                        .collect()
+                };
+                for entity in entities {
+                    ensure(
+                        entity["header"]["schema_version"] == 31,
+                        "invalid schema 31 native header",
+                    )?;
+                    if collection == "opening_types" {
+                        let family = entity
+                            .get_mut("parameters")
+                            .and_then(|p| p.get_mut("family"))
+                            .and_then(serde_json::Value::as_object_mut)
+                            .ok_or_else(|| Error::Invalid("invalid opening family".into()))?;
+                        ensure(
+                            family.get("version").and_then(serde_json::Value::as_u64) == Some(3),
+                            "invalid schema 31 opening family version",
+                        )?;
+                        ensure(
+                            !family.contains_key("panel_material")
+                                && !family.contains_key("frame_material"),
+                            "ambiguous schema 31 opening materials",
+                        )?;
+                        family.insert("version".into(), 4.into());
+                        family.insert("panel_material".into(), serde_json::Value::Null);
+                        family.insert("frame_material".into(), serde_json::Value::Null);
+                    }
+                    entity["header"]["schema_version"] = 32.into();
+                }
+            }
+            object.insert("schema_version".into(), 32.into());
+            Ok(())
+        }
+        30 => {
+            let object = value
+                .as_object_mut()
+                .ok_or_else(|| Error::Invalid("model must be an object".into()))?;
+            ensure(
+                !object.contains_key("opening_tags"),
+                "ambiguous schema 30 opening_tags",
+            )?;
+            for collection in [
+                "project",
+                "sites",
+                "buildings",
+                "levels",
+                "walls",
+                "wall_joins",
+                "wall_types",
+                "openings",
+                "opening_types",
+                "rooms",
+                "room_tags",
+                "detail_lines",
+                "room_separation_lines",
+                "dimensions",
+                "grids",
+                "materials",
+                "views",
+                "floors",
+                "columns",
+                "sheets",
+                "schedules",
+                "plan_graphics_templates",
+            ] {
+                let data = object
+                    .get_mut(collection)
+                    .ok_or_else(|| Error::Invalid(format!("missing {collection}")))?;
+                let entities: Vec<&mut serde_json::Value> = if collection == "project" {
+                    vec![data]
+                } else {
+                    data.as_object_mut()
+                        .ok_or_else(|| Error::Invalid("invalid entity map".into()))?
+                        .values_mut()
+                        .collect()
+                };
+                for entity in entities {
+                    ensure(
+                        entity["header"]["schema_version"] == 30,
+                        "invalid schema 30 native header",
+                    )?;
+                    entity["header"]["schema_version"] = 31.into();
+                }
+            }
+            object.insert("opening_tags".into(), serde_json::json!({}));
+            object.insert("schema_version".into(), 31.into());
+            Ok(())
+        }
+        29 => {
+            let object = value
+                .as_object_mut()
+                .ok_or_else(|| Error::Invalid("model must be an object".into()))?;
+            for collection in [
+                "project",
+                "sites",
+                "buildings",
+                "levels",
+                "walls",
+                "wall_joins",
+                "wall_types",
+                "openings",
+                "opening_types",
+                "rooms",
+                "room_tags",
+                "detail_lines",
+                "room_separation_lines",
+                "dimensions",
+                "grids",
+                "materials",
+                "views",
+                "floors",
+                "columns",
+                "sheets",
+                "schedules",
+                "plan_graphics_templates",
+            ] {
+                let data = object
+                    .get_mut(collection)
+                    .ok_or_else(|| Error::Invalid(format!("missing {collection}")))?;
+                let entities: Vec<&mut serde_json::Value> = if collection == "project" {
+                    vec![data]
+                } else {
+                    data.as_object_mut()
+                        .ok_or_else(|| Error::Invalid("invalid entity map".into()))?
+                        .values_mut()
+                        .collect()
+                };
+                for entity in entities {
+                    ensure(
+                        entity["header"]["schema_version"] == 29,
+                        "invalid schema 29 native header",
+                    )?;
+                    if collection == "openings" {
+                        let params = entity["parameters"]
+                            .as_object_mut()
+                            .ok_or_else(|| Error::Invalid("invalid opening parameters".into()))?;
+                        ensure(
+                            !params.contains_key("width_override")
+                                && !params.contains_key("height_override"),
+                            "ambiguous schema 29 dimension overrides",
+                        )?;
+                        params.insert("width_override".into(), serde_json::Value::Null);
+                        params.insert("height_override".into(), serde_json::Value::Null);
+                    }
+                    entity["header"]["schema_version"] = 30.into();
+                }
+            }
+            object.insert("schema_version".into(), 30.into());
+            Ok(())
+        }
+        28 => {
+            let object = value
+                .as_object_mut()
+                .ok_or_else(|| Error::Invalid("model must be an object".into()))?;
+            for collection in [
+                "project",
+                "sites",
+                "buildings",
+                "levels",
+                "walls",
+                "wall_joins",
+                "wall_types",
+                "openings",
+                "opening_types",
+                "rooms",
+                "room_tags",
+                "detail_lines",
+                "room_separation_lines",
+                "dimensions",
+                "grids",
+                "materials",
+                "views",
+                "floors",
+                "columns",
+                "sheets",
+                "schedules",
+                "plan_graphics_templates",
+            ] {
+                let data = object
+                    .get_mut(collection)
+                    .ok_or_else(|| Error::Invalid(format!("missing {collection}")))?;
+                let entities: Vec<&mut serde_json::Value> = if collection == "project" {
+                    vec![data]
+                } else {
+                    data.as_object_mut()
+                        .ok_or_else(|| Error::Invalid("invalid entity map".into()))?
+                        .values_mut()
+                        .collect()
+                };
+                for entity in entities {
+                    ensure(
+                        entity["header"]["schema_version"] == 28,
+                        "invalid schema 28 native header",
+                    )?;
+                    if collection == "openings" {
+                        let params = entity["parameters"]
+                            .as_object_mut()
+                            .ok_or_else(|| Error::Invalid("invalid opening parameters".into()))?;
+                        ensure(
+                            !params.contains_key("sill_override"),
+                            "ambiguous schema 28 sill override",
+                        )?;
+                        params.insert("sill_override".into(), serde_json::Value::Null);
+                    }
+                    entity["header"]["schema_version"] = 29.into();
+                }
+            }
+            object.insert("schema_version".into(), 29.into());
+            Ok(())
+        }
         27 => {
             let object = value
                 .as_object_mut()
@@ -415,7 +1662,7 @@ fn migrate_inner(value: &mut serde_json::Value, from: u32) -> Result<()> {
             object.insert("plan_graphics_templates".into(), serde_json::json!({}));
             object.insert("plan_graphics".into(), serde_json::json!({}));
             object.insert("schema_version".into(), 28.into());
-            migrate_inner(value, 28)
+            Ok(())
         }
         26 => {
             let object = value
@@ -468,7 +1715,7 @@ fn migrate_inner(value: &mut serde_json::Value, from: u32) -> Result<()> {
             }
             object.insert("columns".into(), serde_json::json!({}));
             object.insert("schema_version".into(), 27.into());
-            migrate_inner(value, 27)
+            Ok(())
         }
         25 => {
             let object = value
@@ -541,7 +1788,7 @@ fn migrate_inner(value: &mut serde_json::Value, from: u32) -> Result<()> {
                 }
             }
             object.insert("schema_version".into(), 26.into());
-            migrate_inner(value, 26)
+            Ok(())
         }
         24 => {
             let object = value
@@ -608,7 +1855,7 @@ fn migrate_inner(value: &mut serde_json::Value, from: u32) -> Result<()> {
                 }
             }
             object.insert("schema_version".into(), 25.into());
-            migrate_inner(value, 25)
+            Ok(())
         }
         23 => {
             let object = value
@@ -673,12 +1920,14 @@ fn migrate_inner(value: &mut serde_json::Value, from: u32) -> Result<()> {
                         family.remove("frame_width");
                         family.remove("frame_depth");
                         family.remove("cut_profile");
+                        family.remove("panel_material");
+                        family.remove("frame_material");
                         p.insert("family".into(), serde_json::Value::Object(family.clone()));
                     }
                 }
             }
             object.insert("schema_version".into(), 24.into());
-            migrate_inner(value, 24)
+            Ok(())
         }
         22 => {
             let object = value
@@ -743,7 +1992,7 @@ fn migrate_inner(value: &mut serde_json::Value, from: u32) -> Result<()> {
                 }
             }
             object.insert("schema_version".into(), 23.into());
-            migrate_inner(value, 23)
+            Ok(())
         }
         21 => {
             let object = value
@@ -796,7 +2045,7 @@ fn migrate_inner(value: &mut serde_json::Value, from: u32) -> Result<()> {
             object.insert("wall_types".into(), serde_json::json!({}));
             object.insert("wall_type_assignments".into(), serde_json::json!({}));
             object.insert("schema_version".into(), 22.into());
-            migrate_inner(value, 22)
+            Ok(())
         }
         20 => {
             let object = value
@@ -860,7 +2109,7 @@ fn migrate_inner(value: &mut serde_json::Value, from: u32) -> Result<()> {
                 }
             }
             object.insert("schema_version".into(), 21.into());
-            migrate_inner(value, 21)
+            Ok(())
         }
         19 => {
             let object = value
@@ -915,7 +2164,7 @@ fn migrate_inner(value: &mut serde_json::Value, from: u32) -> Result<()> {
             }
             object.insert("wall_joins".into(), serde_json::json!({}));
             object.insert("schema_version".into(), 20.into());
-            migrate_inner(value, 20)
+            Ok(())
         }
         18 => {
             let object = value
@@ -969,7 +2218,7 @@ fn migrate_inner(value: &mut serde_json::Value, from: u32) -> Result<()> {
             }
             object.insert("room_separation_lines".into(), serde_json::json!({}));
             object.insert("schema_version".into(), 19.into());
-            migrate_inner(value, 19)
+            Ok(())
         }
 
         17 => {
@@ -1023,7 +2272,7 @@ fn migrate_inner(value: &mut serde_json::Value, from: u32) -> Result<()> {
             }
             object.insert("detail_lines".into(), serde_json::json!({}));
             object.insert("schema_version".into(), 18.into());
-            migrate_inner(value, 18)
+            Ok(())
         }
         16 => {
             let object = value
@@ -1086,7 +2335,7 @@ fn migrate_inner(value: &mut serde_json::Value, from: u32) -> Result<()> {
                 }
             }
             object.insert("schema_version".into(), 17.into());
-            migrate_inner(value, 17)
+            Ok(())
         }
         15 => {
             let object = value
@@ -1138,7 +2387,7 @@ fn migrate_inner(value: &mut serde_json::Value, from: u32) -> Result<()> {
             }
             object.insert("schedules".into(), serde_json::json!({}));
             object.insert("schema_version".into(), 16.into());
-            migrate_inner(value, 16)
+            Ok(())
         }
         14 => {
             let object = value
@@ -1194,7 +2443,7 @@ fn migrate_inner(value: &mut serde_json::Value, from: u32) -> Result<()> {
                 }
             }
             object.insert("schema_version".into(), 15.into());
-            migrate_inner(value, 15)
+            Ok(())
         }
         13 => {
             let object = value
@@ -1242,7 +2491,7 @@ fn migrate_inner(value: &mut serde_json::Value, from: u32) -> Result<()> {
             }
             object.insert("sheets".into(), serde_json::json!({}));
             object.insert("schema_version".into(), 14.into());
-            migrate_inner(value, 14)
+            Ok(())
         }
         12 => {
             let object = value
@@ -1292,7 +2541,7 @@ fn migrate_inner(value: &mut serde_json::Value, from: u32) -> Result<()> {
             }
             object.insert("room_tags".into(), serde_json::json!({}));
             object.insert("schema_version".into(), 13.into());
-            migrate_inner(value, 13)
+            Ok(())
         }
         11 => {
             let object = value
@@ -1346,7 +2595,7 @@ fn migrate_inner(value: &mut serde_json::Value, from: u32) -> Result<()> {
                 }
             }
             object.insert("schema_version".into(), 12.into());
-            migrate_inner(value, 12)
+            Ok(())
         }
         10 => {
             let object = value
@@ -1406,7 +2655,7 @@ fn migrate_inner(value: &mut serde_json::Value, from: u32) -> Result<()> {
                 }
             }
             object.insert("schema_version".into(), 11.into());
-            migrate_inner(value, 11)
+            Ok(())
         }
         9 => {
             let object = value
@@ -1463,7 +2712,7 @@ fn migrate_inner(value: &mut serde_json::Value, from: u32) -> Result<()> {
                 }
             }
             object.insert("schema_version".into(), 10.into());
-            migrate_inner(value, 10)
+            Ok(())
         }
         8 => {
             let object = value
@@ -1509,7 +2758,7 @@ fn migrate_inner(value: &mut serde_json::Value, from: u32) -> Result<()> {
             }
             object.insert("floors".into(), serde_json::json!({}));
             object.insert("schema_version".into(), 9.into());
-            migrate_inner(value, 9)
+            Ok(())
         }
         7 => {
             let object = value
@@ -1578,7 +2827,7 @@ fn migrate_inner(value: &mut serde_json::Value, from: u32) -> Result<()> {
             }
             object.insert("opening_types".into(), serde_json::json!({}));
             object.insert("schema_version".into(), 8.into());
-            migrate_inner(value, 8)
+            Ok(())
         }
         6 => {
             let object = value
@@ -1625,7 +2874,7 @@ fn migrate_inner(value: &mut serde_json::Value, from: u32) -> Result<()> {
             }
             object.insert("dimensions".into(), serde_json::json!({}));
             object.insert("schema_version".into(), 7.into());
-            migrate_inner(value, 7)
+            Ok(())
         }
         5 => {
             let object = value
@@ -1668,7 +2917,7 @@ fn migrate_inner(value: &mut serde_json::Value, from: u32) -> Result<()> {
             }
             object.insert("rooms".into(), serde_json::json!({}));
             object.insert("schema_version".into(), 6.into());
-            migrate_inner(value, 6)
+            Ok(())
         }
         4 => {
             let object = value
@@ -1713,7 +2962,7 @@ fn migrate_inner(value: &mut serde_json::Value, from: u32) -> Result<()> {
             }
             object.insert("openings".into(), serde_json::json!({}));
             object.insert("schema_version".into(), 5.into());
-            migrate_inner(value, 5)
+            Ok(())
         }
         3 => {
             let object = value
@@ -1754,7 +3003,7 @@ fn migrate_inner(value: &mut serde_json::Value, from: u32) -> Result<()> {
             }
             object.insert("grids".into(), serde_json::json!({}));
             object.insert("schema_version".into(), 4.into());
-            migrate_inner(value, 4)
+            Ok(())
         }
         2 => {
             let object = value
@@ -1802,8 +3051,14 @@ fn migrate_inner(value: &mut serde_json::Value, from: u32) -> Result<()> {
                         )?;
                         let settings =
                             if params.get("kind").and_then(|v| v.as_str()) == Some("Plan") {
-                                serde_json::to_value(os_model::PlanSettings::default())
-                                    .map_err(storage)?
+                                let mut settings =
+                                    serde_json::to_value(os_model::PlanSettings::default())
+                                        .map_err(storage)?;
+                                let plan = settings.as_object_mut().unwrap();
+                                plan.remove("target_phase");
+                                plan.remove("phase_filter");
+                                plan.insert("schema_version".into(), 2.into());
+                                settings
                             } else {
                                 serde_json::Value::Null
                             };
@@ -1813,7 +3068,7 @@ fn migrate_inner(value: &mut serde_json::Value, from: u32) -> Result<()> {
                 }
             }
             object.insert("schema_version".into(), 3.into());
-            migrate_inner(value, 3)
+            Ok(())
         }
         1 => {
             let object = value
@@ -1858,7 +3113,7 @@ fn migrate_inner(value: &mut serde_json::Value, from: u32) -> Result<()> {
                     header.insert("schema_version".into(), 2.into());
                 }
             }
-            migrate_inner(value, 2)
+            Ok(())
         }
         0 => {
             let object = value
@@ -1910,9 +3165,28 @@ fn migrate_inner(value: &mut serde_json::Value, from: u32) -> Result<()> {
                     }
                 }
             }
-            migrate_inner(value, 1)
+            Ok(())
         }
         version => Err(Error::Unsupported(format!("model schema {version}"))),
+    }
+}
+
+#[cfg(test)]
+fn remove_phase_fields_from_legacy_fixture(value: &mut serde_json::Value) {
+    if let Some(views) = value["views"].as_object_mut() {
+        for view in views.values_mut() {
+            if let Some(plan) = view["parameters"]["plan"].as_object_mut() {
+                plan.remove("target_phase");
+                plan.remove("phase_filter");
+                if plan["schema_version"] == 3 {
+                    plan.insert("schema_version".into(), 2.into());
+                }
+            }
+        }
+    }
+    if let Some(object) = value.as_object_mut() {
+        object.remove("phases");
+        object.remove("element_lifecycles");
     }
 }
 
@@ -1927,6 +3201,78 @@ mod floor_tests;
 #[cfg(test)]
 #[path = "tests/columns.rs"]
 mod column_tests;
+
+#[cfg(test)]
+#[path = "tests/stairs.rs"]
+mod stair_tests;
+
+#[cfg(test)]
+#[path = "tests/roofs.rs"]
+mod roof_tests;
+
+#[cfg(test)]
+#[path = "tests/ceilings.rs"]
+mod ceiling_tests;
+
+#[cfg(test)]
+fn reverse_schema_38_plan_settings(value: &mut serde_json::Value) {
+    if let Some(views) = value
+        .get_mut("views")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        for view in views.values_mut() {
+            if let Some(plan) = view
+                .get_mut("parameters")
+                .and_then(|parameters| parameters.get_mut("plan"))
+                .filter(|plan| !plan.is_null())
+            {
+                plan["schema_version"] = 1.into();
+                if let Some(settings) = plan.as_object_mut() {
+                    settings.remove("view_type");
+                    settings.remove("target_phase");
+                    settings.remove("phase_filter");
+                }
+                if let Some(visibility) = plan
+                    .get_mut("visibility")
+                    .and_then(serde_json::Value::as_object_mut)
+                {
+                    visibility.remove("ceilings");
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+fn apply_schema_38_plan_settings(value: &mut serde_json::Value) {
+    let latest = value["phases"]
+        .as_object()
+        .and_then(|phases| {
+            phases
+                .values()
+                .max_by_key(|p| p["parameters"]["order"].as_u64())
+        })
+        .map(|p| p["header"]["id"].clone())
+        .unwrap_or(serde_json::Value::Null);
+    if let Some(views) = value
+        .get_mut("views")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        for view in views.values_mut() {
+            if let Some(plan) = view
+                .get_mut("parameters")
+                .and_then(|parameters| parameters.get_mut("plan"))
+                .filter(|plan| !plan.is_null())
+            {
+                plan["schema_version"] = 3.into();
+                plan["target_phase"] = latest.clone();
+                plan["phase_filter"] = "ShowAll".into();
+                plan["view_type"] = "FloorPlan".into();
+                plan["visibility"]["ceilings"] = true.into();
+            }
+        }
+    }
+}
 
 #[cfg(test)]
 #[path = "tests/sheets.rs"]
@@ -2011,6 +3357,7 @@ mod tests {
             MaterialParams {
                 name: "Timber".into(),
                 density_kg_m3: 500.0,
+                color: [180, 180, 180],
             },
         );
         let material_id = material.id();

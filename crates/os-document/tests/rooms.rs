@@ -20,6 +20,12 @@ fn setup() -> (Document, Room, Wall) {
     let room = Room::new(
         "core.room",
         RoomParams {
+            floor_material: None,
+            wall_material: None,
+            ceiling_material: None,
+            floor_finish: None,
+            wall_finish: None,
+            ceiling_finish: None,
             number: "101".into(),
             name: "Office".into(),
             level,
@@ -31,6 +37,105 @@ fn setup() -> (Document, Room, Wall) {
 }
 
 #[test]
+fn room_material_update_remove_rejection_and_history_are_atomic() {
+    use os_model::{Material, MaterialParams};
+    for slot in 0..3 {
+        let (mut doc, room, _) = setup();
+        let material = Material::new(
+            "core.material",
+            MaterialParams {
+                name: "Oak".into(),
+                density_kg_m3: 650.,
+                color: [160, 100, 60],
+            },
+        );
+        let material_id = material.id();
+        doc.execute(
+            "Setup",
+            vec![
+                Command::AddMaterial(material),
+                Command::AddRoom(room.clone()),
+            ],
+        )
+        .unwrap();
+        let before = doc.model().clone();
+        let mut parameters = room.parameters.clone();
+        parameters.floor_finish = Some("F-01".into());
+        parameters.wall_finish = Some("W-02".into());
+        parameters.ceiling_finish = Some("C-03".into());
+        parameters.name = "Study".into();
+        *[
+            &mut parameters.floor_material,
+            &mut parameters.wall_material,
+            &mut parameters.ceiling_material,
+        ][slot] = Some(material_id);
+        doc.execute(
+            "Assign",
+            vec![Command::UpdateRoom {
+                id: room.id(),
+                parameters: parameters.clone(),
+            }],
+        )
+        .unwrap();
+        let assigned = doc.model().clone();
+        assert!(doc.undo());
+        assert_eq!(doc.model(), &before);
+        assert!(doc.redo());
+        assert_eq!(doc.model(), &assigned);
+        doc.drain_events();
+        let revision = doc.revision();
+        let history = doc.history_stats();
+        let mut invalid = parameters.clone();
+        invalid.floor_material = Some(Id::new());
+        for command in [
+            Command::RemoveMaterial(material_id),
+            Command::UpdateRoom {
+                id: room.id(),
+                parameters: invalid,
+            },
+        ] {
+            assert!(
+                doc.execute(
+                    "Invalid batch",
+                    vec![Command::RenameProject("Rejected".into()), command]
+                )
+                .is_err()
+            );
+            assert_eq!(doc.model(), &assigned);
+            assert_eq!(doc.revision(), revision);
+            assert_eq!(doc.history_stats(), history);
+            assert!(doc.drain_events().is_empty());
+        }
+        parameters.floor_material = None;
+        parameters.wall_material = None;
+        parameters.ceiling_material = None;
+        // Final whole-model state is authoritative, even if removal precedes clearing the reference.
+        doc.execute(
+            "Unassign and remove",
+            vec![
+                Command::RemoveMaterial(material_id),
+                Command::UpdateRoom {
+                    id: room.id(),
+                    parameters,
+                },
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            doc.model().rooms[&room.id()]
+                .parameters
+                .floor_finish
+                .as_deref(),
+            Some("F-01")
+        );
+        assert!(doc.undo());
+        assert_eq!(doc.model(), &assigned);
+        assert!(doc.redo());
+        assert!(!doc.model().materials.contains_key(&material_id));
+    }
+}
+
+#[test]
 fn room_commands_are_atomic_and_preserve_identity_through_history() {
     let (mut doc, room, _) = setup();
     doc.execute("Place", vec![Command::AddRoom(room.clone())])
@@ -39,6 +144,9 @@ fn room_commands_are_atomic_and_preserve_identity_through_history() {
     let mut changed = room.parameters.clone();
     changed.name = "Study".into();
     changed.number = "102".into();
+    changed.floor_finish = Some("F-01".into());
+    changed.wall_finish = Some("W-02".into());
+    changed.ceiling_finish = Some("C-03".into());
     doc.execute(
         "Edit",
         vec![Command::UpdateRoom {
@@ -57,7 +165,7 @@ fn room_commands_are_atomic_and_preserve_identity_through_history() {
     let revision = doc.revision();
     let stats = doc.history_stats();
     let mut invalid = room.parameters.clone();
-    invalid.boundary_signature.clear();
+    invalid.floor_finish = Some("invalid\nfinish".into());
     assert!(
         doc.execute(
             "Invalid batch",

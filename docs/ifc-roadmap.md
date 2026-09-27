@@ -43,11 +43,37 @@ contained in the storey; the opening is never spatially contained.
 Instance UUID/name live on the filling root; type UUID/name live on the type
 root. Void and relationship roots receive new UUIDs. Native offset, sill,
 dimensions, kind, type assignment and door orientation are reconstructed from
-the entities and placements. `Description` on each filling is strictly
-`OpenStructure.Typed.v1` or `OpenStructure.Legacy.v1`; this dialect discriminator
-prevents a missing type link from silently converting a typed instance to Legacy.
-Dimensions and sill on all occurrences of one type must agree exactly. Unused
-types are rejected because these values could not be reconstructed.
+the entities and placements. Legacy fillings retain `OpenStructure.Legacy.v1`;
+historical typed doors/windows accept `OpenStructure.Typed.v1`. Typed windows with v1
+descriptions and null type descriptions import with inherited sills; all v1
+occurrences of a type must agree on dimensions and sill.
+
+Historical v2 typed windows accept `IFCWINDOWTYPE.Description` as
+`OpenStructure.WindowType.v2;default_sill=<canonical Rust f64 debug decimal>`.
+Each filling's Description is exactly `OpenStructure.Typed.v2;sill=inherit` or
+`OpenStructure.Typed.v2;sill=override`. Placement Z always carries the effective
+sill. Thus `Some(default)` survives as pinned, independently of occurrence order.
+Missing, malformed, mixed-version or inconsistent markers are rejected;
+inherited placement Z must equal the type default. Shared width/height must
+still agree. Unused types remain rejected.
+This is an OpenStructure dialect: other applications may discard descriptions
+and are not qualified to preserve native inheritance semantics.
+
+Current typed door/window export uses strict v3 metadata. Type Description is
+`OpenStructure.Type.v3;width=<default>;height=<default>`, with
+`;sill=<default>` appended only for windows. Numbers use canonical Rust f64
+debug decimals. Occurrence Description is
+`OpenStructure.Typed.v3;width=inherit|override;height=inherit|override`, with
+`;sill=inherit|override` only for windows (each choice is one literal token).
+Opening placement Z, aperture and filling dimensions carry effective values.
+An inherited value must match its declared type default; an override preserves
+an explicit pin even when equal to that default. Defaults therefore survive even
+when all occurrences are overridden. Missing, extra, reordered, mixed-version,
+noncanonical or inconsistent metadata is rejected, as are door sill markers.
+Legacy v1 remains independent; v1 and v2 dimensions import as inherited and
+v2 window sill intent is retained. Frozen v1/v2 fixtures and v3 multi-instance
+roundtrips cover compatibility. These markers are a bounded native dialect,
+not a claim of general IFC interoperability or additional viewer qualification.
 
 The mapping follows [IfcDoor placement and operation](https://standards.buildingsmart.org/IFC/RELEASE/IFC4/ADD2_TC1/HTML/schema/ifcsharedbldgelements/lexical/ifcdoor.htm)
 and [IfcDoorTypeOperationEnum](https://standards.buildingsmart.org/IFC/RELEASE/IFC4/ADD2_TC1/HTML/schema/ifcsharedbldgelements/lexical/ifcdoortypeoperationenum.htm),
@@ -91,6 +117,8 @@ extension properties and additional named relationships. CLI export requires
 `--allow-loss` when there are warnings. Keep the original `.osb` file. Import
 creates a fresh default 3D view and reports that original native-only data cannot
 be recovered. Native save is still `.osb`; IFC is an exchange copy, not a backup.
+Custom project phases and element creation/demolition states are also reported
+as omitted data and require the same explicit loss acknowledgement.
 
 Model-schema-2 extension entities have no IFC mapping and block export, including
 with `--allow-loss`. This avoids making an incomplete wall-only representation

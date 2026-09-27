@@ -14,6 +14,118 @@ fn profile_handles(h: &Harness) -> Vec<egui::Pos2> {
 }
 
 #[test]
+fn opening_family_panel_and_frame_material_selectors_work_at_both_dpis() {
+    for (size, scale) in [
+        (egui::vec2(1280., 800.), 1.),
+        (egui::vec2(1000., 650.), 1.5),
+    ] {
+        let mut h = Harness::at_size(size, scale);
+        let panel = os_model::Material::new(
+            "core.material",
+            os_model::MaterialParams {
+                name: "Oak panel".into(),
+                density_kg_m3: 650.,
+                color: [180, 180, 180],
+            },
+        );
+        let frame = os_model::Material::new(
+            "core.material",
+            os_model::MaterialParams {
+                name: "Bronze frame".into(),
+                density_kg_m3: 8_500.,
+                color: [180, 180, 180],
+            },
+        );
+        let (panel_id, frame_id) = (panel.id(), frame.id());
+        h.app
+            .editor
+            .document
+            .execute(
+                "Project materials",
+                vec![Command::AddMaterial(panel), Command::AddMaterial(frame)],
+            )
+            .unwrap();
+        h.app.begin_new_opening_type(os_model::OpeningKind::Door);
+        h.frame(vec![]);
+        h.frame(vec![]);
+
+        let before = h.app.editor.document.model().clone();
+        let history = h.app.editor.document.history_stats();
+        h.click("Materials…");
+        for _ in 0..20 {
+            if h.visible_text_rect("Panel material: No material").is_some() {
+                break;
+            }
+            let pointer = egui::pos2(size.x * 0.5, size.y * 0.5);
+            h.frame(vec![
+                egui::Event::PointerMoved(pointer),
+                egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: egui::vec2(0., -120.),
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]);
+        }
+        for (selector, material_name) in [
+            ("Panel material: No material", "Oak panel"),
+            ("Frame material: No material", "Bronze frame"),
+        ] {
+            assert!(
+                h.visible_text_rect(selector).is_some(),
+                "{selector}; rendered={:?}",
+                h.output
+                    .shapes
+                    .iter()
+                    .filter_map(|s| match &s.shape {
+                        egui::Shape::Text(t) => Some(t.galley.job.text.to_string()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+            );
+            h.click(selector);
+            h.frame(vec![]);
+            assert!(
+                h.visible_text_rect(material_name).is_some(),
+                "{material_name}"
+            );
+            h.click(material_name);
+        }
+        assert_eq!(h.app.editor.document.model(), &before);
+        assert_eq!(h.app.editor.document.history_stats(), history);
+        let material_swatches = h
+            .output
+            .shapes
+            .iter()
+            .filter(|shape| match &shape.shape {
+                egui::Shape::Rect(rect) => {
+                    (rect.rect.width() - 12.).abs() < 0.1
+                        && (rect.rect.height() - 12.).abs() < 0.1
+                        && rect.fill != egui::Color32::TRANSPARENT
+                }
+                _ => false,
+            })
+            .count();
+        assert!(
+            material_swatches >= 2,
+            "both assignments need visible swatches"
+        );
+        h.click("Apply type");
+        let ty = h
+            .app
+            .editor
+            .document
+            .model()
+            .opening_types
+            .values()
+            .next()
+            .unwrap();
+        assert_eq!(ty.parameters.family.panel_material, Some(panel_id));
+        assert_eq!(ty.parameters.family.frame_material, Some(frame_id));
+        assert_eq!(h.ctx.pixels_per_point(), scale);
+    }
+}
+
+#[test]
 fn opening_family_profile_pointer_editor_apply_cancel_invalid_and_history_at_both_dpis() {
     for (size, scale) in [
         (egui::vec2(1280., 800.), 1.),
@@ -247,6 +359,9 @@ fn window_type_pane_position_edit_cancel_stale_and_history_at_both_dpis() {
             os_model::Opening::new(
                 "core.opening",
                 os_model::OpeningParams {
+                    width_override: None,
+                    height_override: None,
+                    sill_override: None,
                     name: "Window instance".into(),
                     host,
                     offset,

@@ -4,6 +4,93 @@ This is the required evidence ledger for BUILD_PROMPT and [the production specif
 
 ## Profile and current gate
 
+2026-09-27 per-plan phase display: schema 45/native API 26 persists target phase
+and filter in strict version-3 plan settings. Native geometry, cutouts, snaps,
+picks and referenced annotations respect the phase filter; shared line appearances
+reach canvas, sheets and vector PDF. Real egui coverage runs at both desktop DPI
+profiles. Generic API 2/container 2 remain unchanged. Room topology, schedules,
+3D phase display and linked phase mapping remain deferred; see
+[native phase evidence](native-phases.md#per-plan-phase-display-schema-45).
+
+2026-09-27 native phase/lifecycle foundation: schema 44/API 25 adds stable
+ordered Existing/New Construction phases, persisted creation/demolition
+lifecycle for native architectural elements, derived phase statuses, atomic
+commands/history, deterministic strict schema-43 migration and explicit IFC loss reporting.
+Model, document and migration tests pass. Phase management and per-plan display
+are implemented in subsequent slices. Phase-dependent room topology, schedules,
+linked phase mapping and design options remain unimplemented; see [native phases](native-phases.md).
+
+2026-09-27 associative opening-jamb dimensions: schema 43/native API 24 adds
+live `OpeningJamb` references alongside wall endpoints. Typed/legacy width,
+override, host reversal/rehost, live plan labels, real-egui door/window creation,
+history, strict schema-42 migration and `.osb` roundtrip have focused evidence.
+Face/material references, native-window/print acceptance and broader dimension
+styles remain open. See [native dimensions](native-dimensions.md).
+
+2026-09-27 persisted opening schedule filters: schema 42/native API 23 adds
+bounded typed AND rules to saved Door/Window/All definitions. Live unrounded
+text/dimension values drive the schedule window, sheet preview and searchable
+vector PDF. Frozen schema-41 migration, strict validation/serde, draft controls,
+source edits/history and persistence have focused coverage. RoomFinish filters,
+groups, totals and styles remain unsupported; S01 stays partial. See
+[native hosted openings](native-hosted-openings.md#persisted-opening-schedule-filters-schema-42).
+
+2026-09-27 opening-tag label preset increment: schema 41/native API 22 adds
+four closed live-data label choices without arbitrary templates. Schema 40 tags
+migrate atomically to `Full`; Properties editing, move preservation, undo/redo,
+plan/sheet/vector-PDF output and a two-DPI desktop path are covered. Automated
+focused evidence is recorded in [native opening tags](native-opening-tags.md).
+Native visual and physical-print qualification remain open.
+
+2026-09-27 live room-bound ceiling association: schema 40/native API 21 adds an
+optional source-room identity while retaining the saved boundary for recovery.
+Room topology updates propagate to reflected plans, sections and 3D; unresolved
+associations are omitted safely, edited openings validate against the live
+boundary, and detach freezes the current outline when resolvable. The full
+workspace suite, warning-denied Clippy and formatting checks pass. See
+[native ceilings](native-ceilings.md).
+
+2026-09-26 room material assignment increment: schema 35/native API 16 adds
+independent floor/wall/ceiling material UUIDs alongside finish codes. Focused
+checks cover atomic validation/removal/history, frozen schema-34 migration and
+save/reopen, local property drafts/cancel/stale guards, live composite schedule
+and sheet/PDF text, and subdued floor RGB fills with crop/selection/unresolved
+checks at 1280×800/100% and 1000×650/150%. See [native rooms](native-rooms.md).
+This increment adds no quantities, finish-face/net areas, wall/ceiling takeoffs,
+legends, IFC associations, room solids or floor construction. Native-window and
+physical-print qualification remain open. Full workspace checks are left to the
+coordinator; earlier test totals below describe historical checkpoints.
+
+2026-09-26 shared material color increment: schema 34/native API 15 adds editable
+RGB for shared project materials. S01.02 and M01.10 record automated migration,
+native render/family preview, geometry/quantity stability and history coverage;
+see [shared material colors](native-material-colors.md). Earlier test counts below
+describe their named historical checkpoints. No native-window or production
+visual qualification is claimed for this increment.
+
+2026-09-26 Room Finish acceptance: model schema 33/native API 14 adds validated
+optional room finish codes and saved RoomFinish schedules with live topology
+area, blank unresolved area/status, room selection, and the existing sheet/PDF
+table route. P01.06, P01.07, S01.02 and S02.14 record the bounded scope below.
+Focused Room Finish UI tests pass at 1280×800/100% and 1000×650/150%; model,
+document and frozen migration/save-reopen tests are recorded in
+[native rooms](native-rooms.md). Workspace all-feature tests: 597 passed,
+0 failed, 3 ignored. Warnings-denied workspace Clippy passes. No native-window
+or physical-print qualification is claimed.
+
+2026-09-26 native door/window material acceptance: schema 32/API 13 adds
+separate project-material assignment for panel/pane and frame geometry, with
+explicit schema and family-format migration. Schema 31/API 12 introduced the
+associative opening tags documented in [native-opening-tags.md](native-opening-tags.md);
+material-assignment scope and current validation evidence are in
+[native-opening-materials.md](native-opening-materials.md).
+The full all-features workspace test suite and warnings-denied workspace Clippy
+pass at this checkpoint; the material page has desktop input coverage at 100%
+and 150% display scaling.
+Native visual qualification, physical print acceptance and independent hosted
+IFC viewer acceptance remain open; this does not change the broader production
+limitations below.
+
 D is now in progress after the [bounded B/C baseline audit](bc-baseline-audit.md).
 The [callable plan-graphics foundation](callable-plan-graphics.md) adds optional
 service-1 DTOs, a scoped validated host call and bounded Wasm worker dispatch.
@@ -34,7 +121,8 @@ derivation, verified against edits/reload during work and the installed guest.
 The [plan geometry foundation](plan-geometry-foundation.md) adds actual checked
 horizontal cuts/projections, cropped semantic polygons, 2D coordinate/navigation
 math and revision-bound native-wall controller derivation. [Named plan settings](persisted-plan-settings.md)
-were introduced in model schema 4 (current model schema 28) with transactional commands and frozen migration
+were introduced in model schema 4 and migrated through current model schema 43
+with transactional commands and frozen migration
 tests. The [native plan workspace](native-plan-workspace.md) adds actual plan
 creation/selection, equal split, background derivation, navigation and shared
 wall selection with native edit/undo/save/reopen evidence. [Plan-settings forms](plan-settings-form.md)
@@ -69,7 +157,12 @@ and exact-input create/edit/delete forms. Schema 10 adds per-door Start/End hing
 and Left/Right swing, matching 90° leaves and pickable 16-segment quarter-circle
 arcs. Start/Left preserves existing geometry during schema-9 migration and remains
 the new-door default. Headless tests cover both wall directions, all combinations,
-crop/picking, preview/apply/cancel/stale drafts and undo/redo. Family libraries, curved/plugin hosts,
+crop/picking, preview/apply/cancel/stale drafts and undo/redo. Selected visible
+straight-wall doors also have separate Hinge and Swing plan buttons; M01.22
+records `direct_plan_door_*` headless evidence for independent updates, grip/tool
+precedence, cancellation, field preservation and plan/3D history at both DPI
+profiles. This adds no schema/protocol or native visual/physical-print qualification.
+Family libraries, curved/plugin hosts,
 and native visual inspection remain open; this does not close D.
 
 [Synthetic snap-stage timings](plan-snap-stage-timings.md) now separate query
@@ -146,14 +239,14 @@ Each row inherits its dependency from the milestone column: D requires B/C, E1 r
 | ID | Requirement / reference workflow | Milestone | Status | Current behavior and limits | Source/test/review evidence |
 | --- | --- | --- | --- | --- | --- |
 | V01.01 | Named floor plans | D/E1 | partial | Desktop create/picker/browser, settings forms and persistence verified; complete plan authoring remains | native-plan-workspace.md; plan-settings-form.md; os-storage/tests/plan_settings.rs |
-| V01.02 | Roof plans | D/E1 | not started | Not implemented | — |
-| V01.03 | Reflected ceiling projection | D/E1 | not started | Not implemented | — |
+| V01.02 | Roof plans | D/E1 | partial | Native single-plane sloped-roof geometry, openings, plan-range/crop projection and section/sheet/vector-PDF integration; no dedicated roof-plan view, multi-slope/hip/valley system, roof-specific tags or visual/physical-print qualification | native-roofs.md; crates/os-geometry/src/roofs.rs; crates/os-ui/src/plan.rs; crates/os-render/tests/plan.rs; crates/os-ui/src/plan_workspace/roof_tests.rs |
+| V01.03 | Reflected ceiling projection | D/E1 | partial | Saved upward-looking reflected plan type, persisted range/visibility, crop-aware native ceiling projection including live room-bound sources and sheet/vector-PDF rendering; preview/apply and source-boundary update acceptance at 1280×800/100% and 1000×650/150%; no grids, lights/MEP coordination, native-window/print qualification, or full visual acceptance | native-ceilings.md; crates/os-ui/src/plan.rs; crates/os-ui/src/plan_workspace/ceiling_tests.rs; crates/os-render/src/sheet.rs; crates/os-storage/src/tests/ceilings.rs |
 | V01.04 | Site plans | D/E1 | not started | Not implemented | — |
 | V01.05 | Area plans | D/E1 | not started | Not implemented | — |
 | V01.06 | Architectural coordination plans | D/E1 | not started | Not implemented | — |
 | V01.07 | Interior elevations | D/E1 | not started | Not implemented | — |
 | V01.08 | Exterior elevations | D/E1 | not started | Not implemented | — |
-| V01.09 | Building sections | D/E1 | partial | Versioned section plane/extents and migration; two-click snap-aware plan marker, linked native wall/door/window/floor contours, section canvas, source selection, one-view A3 sheet and vector PDF verified; multi-view sheets, cut fills/poché, depth, and settings editor remain | native-sections.md; native-sheet-preview.md; os-ui/src/plan_workspace/section_tests.rs; os-ui/src/plan_workspace/sheet_tests.rs; os-ui/tests/sections.rs; os-geometry/src/section.rs; os-storage/tests/sections.rs |
+| V01.09 | Building sections | D/E1 | partial | Versioned section plane/extents and migration; two-click snap-aware plan marker, linked native wall/door/window/floor contours, section canvas, source selection, standalone or paired Plan/Section A3 sheet and vector PDF verified; cut fills/poché, depth, and settings editor remain | native-sections.md; native-sheet-preview.md; os-ui/src/plan_workspace/section_tests.rs; os-ui/src/plan_workspace/sheet_tests/combined.rs; os-ui/tests/sections.rs; os-geometry/src/section.rs; os-storage/tests/sections.rs |
 | V01.10 | Wall sections | D/E1 | not started | Not implemented | — |
 | V01.11 | Enlarged plans | D/E1 | not started | Not implemented | — |
 | V01.12 | Detail views | D/E1 | not started | Not implemented | — |
@@ -180,7 +273,7 @@ Each row inherits its dependency from the milestone column: D requires B/C, E1 r
 | V01.33 | Split linked 2D/3D | D/E1 | partial | Equal-width native plan/3D panes, linked numeric wall edit/undo; exact pointer authoring remains | native-plan-workspace.md; os-ui desktop_tests::named_plan_split_selects_the_same_wall_and_preserves_navigation_history |
 | V01.34 | Saved navigation | D/E1 | not started | Not implemented | — |
 | V01.35 | Shared cross-view selection | D/E1 | partial | Native walls/openings/rooms share plan/browser selection; room graphics are plan-only, extension plan providers and broader categories remain | native-plan-workspace.md; native-rooms.md; os-ui desktop input tests |
-| V01.36 | Navigation from markers/annotations/schedules/sheets | D/E1 | not started | Not implemented | — |
+| V01.36 | Navigation from markers/annotations/schedules/sheets | D/E1 | partial | Linked Plan/Section source actions and sheet-picker return tested; broader annotation/schedule/reference navigation remains | native-sheet-preview.md; os-ui/src/plan_workspace/sheet_tests/combined.rs |
 | V02.01 | Category/subcategory styles | E1 | not started | Not implemented | — |
 | V02.02 | Per-element overrides | E1 | not started | Not implemented | — |
 | V02.03 | Rule-based overrides | E1 | not started | Not implemented | — |
@@ -211,34 +304,34 @@ Each row inherits its dependency from the milestone column: D requires B/C, E1 r
 | M01.01 | Straight rectangular walls | E1 | automated-tested | Numeric straight-wall authoring, rectangular prism only; no plan graphics | os-model WallParams; plugins/walls; os-ui/tests/vertical_slice.rs; baseline tests |
 | M01.02 | Layered walls | E1 | partial | Straight native walls support reusable ordered compound types, stable layer IDs, per-wall assignment/flip, layer-aware geometry, openings, plan/section identity, quantities, history, and schema-21→22 migration; no curved walls, advanced layer junctions, or production visual qualification | native-wall-types.md; crates/os-ui/tests/wall_types.rs; crates/os-ui/src/desktop_tests/wall_type_tests.rs; crates/os-storage/tests/wall_types.rs |
 | M01.03 | Curved walls | E1 | not started | Not implemented | — |
-| M01.04 | Wall joins | E1 | partial | Explicit compatible-profile butt/corner/tee joins for straight walls, including compound types; schema-20→21 migration, graph validation, shared mesh/plan/section derivation, openings/quantities, persistence, history and provider/API compatibility evidence; no arbitrary-angle/layer termination/curved junctions, connected-node drag handles, joined IFC, or native visual qualification | native-wall-joins.md; native-wall-types.md; crates/os-ui/tests/wall_joins.rs; crates/os-ui/tests/perpendicular_joins.rs; crates/os-ui/tests/wall_types.rs; crates/os-ui/src/desktop_tests/wall_join_tests.rs; crates/os-storage/tests/wall_joins.rs; crates/os-plugin-host/tests/wasm_transport.rs; plugins/walls/src/lib.rs |
+| M01.04 | Wall joins | E1 | partial | Explicit compatible-profile Butt/Corner/Tee joins for straight walls, including compound types; schema-20→21 migration, graph validation, shared mesh/plan/section derivation, openings/quantities, persistence, history and provider/API compatibility evidence. Native diamond-grip drag freezes the reachable graph and solves endpoint displacements atomically with deterministic minimum motion. Two-DPI headless egui evidence covers isolated regressions, Butt chains with resized-start opening compensation and hosted Tee stations, Corner/Tee propagation, a four-Corner loop, a Tee path reconnecting to its host, reversed directions/owners, exact contacts, preview/identity/history, invalid loop rejection, cancellation, visibility and pan precedence. Snap acquisition excludes all graph walls and filters legal axis candidates before ranking; checked identity and inconsistent-equation tests pass. Dense interactive solving is capped at 64 walls per connected component; performance at the cap and native visual qualification remain unqualified. Missing-provider guard is covered; installed-provider no-job test remains opt-in and unrun without its guest fixture. Installed-provider junction edits, arbitrary-angle/layer termination/curved junctions and joined IFC remain open | native-wall-joins.md; native-wall-types.md; crates/os-ui/src/plan_workspace/junction_tests.rs; crates/os-ui/tests/wall_joins.rs; crates/os-ui/tests/perpendicular_joins.rs; crates/os-ui/tests/wall_types.rs; crates/os-ui/src/desktop_tests/wall_join_tests.rs; crates/os-storage/tests/wall_joins.rs; crates/os-plugin-host/tests/wasm_transport.rs; plugins/walls/src/lib.rs |
 | M01.05 | Curtain systems | E1 | not started | Not implemented | — |
-| M01.06 | Floors/slabs | E1 | partial | Native straight-edged, horizontal concave slabs with metre thickness/offset, transactional sketching, plan fill/pick and regenerated 3D mesh; no holes, slopes, assemblies, joins, inspector editing or IFC slab exchange | native-floor-slabs.md; crates/os-ui/src/plan_workspace/floor_tests.rs; crates/os-document/src/tests/floors.rs; crates/os-storage/src/tests/floors.rs; crates/os-render/tests/plan.rs |
-| M01.07 | Roofs | E1 | not started | Not implemented | — |
-| M01.08 | Ceilings | E1 | not started | Not implemented | — |
+| M01.06 | Floors/slabs | E1 | partial | Native horizontal concave slabs with metre thickness/offset, preview-only boundary and inner-opening loop sketch/vertex edits, one-step UpdateFloor/undo, net area, hole-aware plan fill/pick, closed regenerated 3D mesh, sections, sheet/vector-PDF output and schema-35→36 migration; slopes, assemblies, joins, numeric inspector editing and IFC slab exchange remain | native-floor-slabs.md; crates/os-ui/src/plan_workspace/floor_tests.rs; crates/os-document/src/tests/floors.rs; crates/os-storage/src/tests/floors.rs; crates/os-render/tests/plan.rs; crates/os-geometry/src/floor_holes.rs |
+| M01.07 | Roofs | E1 | partial | Native editable single-plane roofs with sketched outer/opening loops, snap-aware preview, numeric slope/dimension properties, atomic edit/history, closed sloped mesh, plan/section/sheet/PDF derivation, schema-37→38 migration and fail-closed IFC; no hips/valleys/multiple planes, layers/joins/hosted skylights, roof schedules/quantities, dedicated roof-plan view, or production visual/print qualification | native-roofs.md; crates/os-model/src/roofs.rs; crates/os-geometry/src/roofs.rs; crates/os-document/src/lib.rs; crates/os-ui/src/plan_workspace/roofs.rs; crates/os-ui/src/plan_workspace/roof_tests.rs; crates/os-storage/src/tests/roofs.rs; crates/os-ifc/tests/exchange.rs |
+| M01.08 | Ceilings | E1 | partial | Level-relative horizontal ceiling shells with openings/material, transient snap-aware plan sketch and numeric edit, one-step history, scene/section/RCP/sheet derivation, schema-38→39 ceiling addition and schema-39→40 room-source migrations. Room-created ceilings follow the accepted same-level room topology in plan, section and 3D; unresolved sources are omitted without blocking room/wall edits and detach freezes the current room outline when resolvable, otherwise the retained outline. Edited openings validate against the live boundary. Preview/apply acceptance covers 1280×800/100% and 1000×650/150%. Slopes/assemblies, grids/fixtures, quantities/schedules, IFC and production visual/print qualification remain open | native-ceilings.md; crates/os-model/src/ceilings.rs; crates/os-geometry/src/ceilings.rs; crates/os-document/src/tests/ceilings.rs; crates/os-ui/src/plan_workspace/ceiling_tests.rs; crates/os-storage/src/tests/ceilings.rs; crates/os-ifc/tests/exchange.rs |
 | M01.09 | Hosted openings | E1 | automated-tested | Checked openings on straight rectangular native walls, including typed compound layers and wall members with butt/corner/tee trims; bounded IFC4 import/export uses full-depth rectangular void relationships; no curved or extension-element hosts, custom IFC profiles, or joined IFC | native-hosted-openings.md; ifc-roadmap.md; crates/os-ifc/tests/exchange.rs; crates/os-ifc/tests/validate_hosted.py; native-wall-joins.md; native-wall-types.md; crates/os-ui/tests/openings.rs; crates/os-ui/tests/wall_joins.rs; crates/os-ui/tests/wall_types.rs |
-| M01.10 | Doors/windows | E1 | automated-tested | Reusable typed doors/windows with editable profile-extruded panel/pane and optional 3-side door/4-side window frame, per-door hinge/swing, clipped arcs, repeatable placement, configurable window pane alignment, and selected-opening same-host grip drag with transient symbol/aperture preview, validated one-command release and residue-free cancellation (doors/windows, forward/reversed hosts, both DPI profiles); bounded IFC4 exchange preserves semantic fills/types but omits filling Body geometry; rectangular wall voids only, no family libraries or plugin hosts | native-hosted-openings.md; ifc-roadmap.md; crates/os-ui/tests/openings.rs; crates/os-ui/src/desktop_tests/opening_family_tests.rs; crates/os-ui/src/plan_workspace/opening_tests.rs; crates/os-storage/src/tests/openings.rs; crates/os-ifc/tests/exchange.rs; crates/os-ifc/tests/validate_hosted.py |
-| M01.11 | Stairs | E1 | not started | Not implemented | — |
+| M01.10 | Doors/windows | E1 | automated-tested | Typed hosted doors/windows with editable profiles/frames, hinge/swing and pane alignment; repeatable placement, center move, anchored jamb resize, Rehost, overrides, schedules and regeneration. Schema 30→31 adds associative tags; schema 40→41 adds four persisted live-data label presets (`Full`, instance, type+dimensions, dimensions only), defaults old tags to `Full`, and rejects ambiguity atomically. Tag identity/orphans, straight derived leaders, crop/clipping, plan/sheet/vector-PDF, label preset UI and one-step history/move preservation are covered. Schema 31→32 adds panel/pane and frame materials; schema 34/API 15 adds shared editable RGB with migration and rendering evidence. Single-type `.osot` exchange and a searchable non-recursive local package folder now support reuse; office/cloud libraries, arbitrary templates, curved hosts, IFC material associations, textures/transparency/PBR, and native visual/physical-print qualification remain open | native-material-colors.md; native-opening-materials.md; native-opening-tags.md; native-opening-type-packages.md; crates/os-ui/src/desktop_tests/opening_tag_tests.rs; crates/os-ui/src/desktop_tests/opening_type_library_tests.rs; crates/os-render/src/plan/opening_tags.rs; crates/os-render/src/sheet.rs; crates/os-ui/src/opening_profile_tests.rs; crates/os-ui/src/desktop_tests/opening_family_tests.rs; crates/os-geometry/src/openings.rs; crates/os-document/src/tests/openings.rs; crates/os-storage/tests/opening_materials.rs; native-hosted-openings.md; ifc-roadmap.md; crates/os-ui/tests/openings.rs; crates/os-ui/src/plan_workspace/opening_tests.rs; crates/os-storage/src/tests/openings.rs; crates/os-ifc/tests/exchange.rs; crates/os-ifc/tests/validate_hosted.py |
+| M01.11 | Stairs | E1 | partial | Native straight flights between same-building levels with preview-only repeatable two-click placement, snapping, Properties edit/delete and one-step undo/redo; generated bounded closed 3D mesh, plan tread/arrow graphics, section contours, sheet/vector-PDF projection, save/reopen and fail-closed IFC export. Landings/turns, railings, slab joins/openings, quantities, code checks, exact-riser section cuts and native visual/print qualification remain unsupported | native-stairs.md; crates/os-model/src/stairs.rs; crates/os-geometry/src/stairs.rs; crates/os-document/src/tests/stairs.rs; crates/os-render/src/plan/stairs.rs; crates/os-ui/src/plan_workspace/stair_tests.rs; crates/os-ui/src/desktop_tests/stair_tests.rs; crates/os-storage/src/tests/stairs.rs; crates/os-ifc/tests/exchange.rs |
 | M01.12 | Ramps | E1 | not started | Not implemented | — |
 | M01.13 | Railings | E1 | not started | Not implemented | — |
 | M01.14 | Architectural columns | E1 | partial | First-class vertical rectangular columns with stable native identity, level/base offset, dimensions and optional material; snapped plan placement preview, cut/projected plan footprint and pick, generated 3D prism, numeric Properties edit/delete, one-step history and schema-26→27 migration. Circular/slanted columns, reusable types, wall/slab joins, section graphics, schedules, IFC and visual/production qualification remain | native-columns.md; crates/os-model/src/columns.rs; crates/os-geometry/src/columns.rs; crates/os-document/src/tests/columns.rs; crates/os-render/tests/columns.rs; crates/os-storage/src/tests/columns.rs; crates/os-ui/src/plan_workspace/column_tests.rs |
 | M01.15 | Furniture/casework/fixtures | E1 | not started | Not implemented | — |
 | M01.16 | Site coordinates | E1 | not started | Not implemented | — |
 | M01.17 | Terrain/survey references | E1 | not started | Not implemented | — |
-| M01.18 | Type/instance parameters | E1 | partial | Opening types share kind/dimensions, normalized component profile, extrusion depth and optional frame width/depth; instances retain name/host/offset/hinge/swing, with atomic type edits and explicit legacy conversion; no formulas, nested families or per-instance dimension overrides | native-hosted-openings.md; crates/os-document/src/tests/openings.rs; crates/os-ui/src/opening_type_tools.rs |
+| M01.18 | Type/instance parameters | E1 | partial | Opening types share kind/dimensions, normalized component profile, extrusion depth, frame dimensions and separate nullable panel/pane and frame material references; instances retain name/host/offset/hinge/swing and can independently inherit/pin/reset sill, width and height. Shared type changes preflight all instances, preserve instance pins, regenerate in one undoable transaction and retain stable material IDs; no formulas or nested families | native-opening-materials.md; native-hosted-openings.md; crates/os-document/src/tests/openings.rs; crates/os-ui/src/opening_type_tools.rs; crates/os-ui/src/opening_profile_tests.rs; crates/os-ui/src/opening_sill_tests.rs; crates/os-storage/tests/opening_materials.rs; crates/os-storage/tests/window_sills.rs |
 | M01.19 | Level relationships | E1 | partial | Straight walls only; no full architectural drawings or schedules | plugins/walls wall_solid; vertical_slice.rs; baseline tests |
 | M01.20 | Host relationships | E1 | partial | Openings retain a native wall host and reject host deletion/shortening that invalidates them; no general host graph | native-hosted-openings.md; crates/os-ui/tests/openings.rs |
 | M01.21 | Placement | E1 | partial | Straight walls and repeatable click-to-place native doors/windows with transient host preview; no curved/plugin hosts or full architectural drawings | native-hosted-openings.md; crates/os-ui/src/plan_workspace.rs; crates/os-ui/src/plan_workspace/opening_tests.rs |
-| M01.22 | Flip/mirror | E1 | partial | Bounded native straight-wall door hinge/swing flip slice only: per-instance Start/End hinge and Left/Right swing; general flip/mirror tools remain unimplemented | native-hosted-openings.md; crates/os-ui/tests/openings.rs; crates/os-ui/src/plan_workspace/opening_tests.rs |
-| M01.23 | Material layers | E1 | partial | Wall layers retain stable material references and density; per-layer quantities and material identity flow through plan/section/mesh. No material appearance, hatch standards, or full material library workflow | native-wall-types.md; crates/os-ui/tests/wall_types.rs |
+| M01.22 | Flip/mirror | E1 | partial | Selected visible native straight-wall doors have independent direct plan controls for Start/End hinge and Left/Right swing relative to stored host direction; validated one-step updates preserve the other instance fields and regenerate plan/3D. Headless egui acceptance covers both DPI profiles and reversed hosts at 35 px/m; manual native visual QA remains open. General flip/mirror tools remain unimplemented | native-hosted-openings.md; `direct_plan_door_*` in crates/os-ui/src/plan_workspace/opening_tests.rs |
+| M01.23 | Material layers | E1 | partial | Wall layers retain stable material references and density; per-layer quantities and identity flow through plan/section/mesh. Shared editable RGB now colors plan/sheet cut fills and 3D surfaces without changing geometry or quantities. Textures, transparency, PBR, hatch standards, and a full material library remain | native-wall-types.md; native-material-colors.md; crates/os-ui/tests/wall_types.rs |
 | M01.24 | Geometry and symbolic representations | E1 | partial | Straight-wall host cuts support rectangular or authored simple polygon elevation profiles; 3D meshes, plan cut/projection footprints, sections, and layer quantities use the same partition. Profile cuts reject rectangle-only Solid exports. No curved/profiled hosts or full detail-level system | native-hosted-openings.md; crates/os-geometry/src/walls/profiles.rs; crates/os-geometry/tests/host_cut_profiles.rs; crates/os-ui/src/plan.rs |
 | M01.25 | View/detail visibility | E1 | not started | Not implemented | — |
 | M01.26 | Consistent quantities | E1 | partial | Straight native walls report net wall and per-layer volume; density-backed per-layer mass reconciles with compound openings. No full architectural quantity schedules or broader element takeoff | native-wall-types.md; crates/os-ui/tests/wall_types.rs; vertical_slice.rs |
 | M01.27 | Model group membership | E1 | not started | Not implemented | — |
 | M01.28 | Reusable assemblies | E1 | not started | Not implemented | — |
 | M01.29 | Architectural part/layer identity | E1 | partial | Compound wall layers have stable identities carried by geometry, plan and section while wall UUID remains selection owner; no independently editable/hosted part entities or part schedules | native-wall-types.md; crates/os-ui/tests/wall_types.rs |
-| M01.30 | Host/type/level regeneration across drawings and information | E1 | partial | Host edits, shared opening-type changes, and shared wall-type changes invalidate affected native 3D, plan, section and layer quantities; level elevation follows host; no complete schedules/tags | native-hosted-openings.md; native-wall-types.md; crates/os-document/src/tests/openings.rs; crates/os-ui/tests/openings.rs; crates/os-ui/tests/wall_types.rs |
-| M02.01 | Parametric opening family authoring | E1 | partial | Versioned editor provides separate normalized component and host-cut profiles; shared-type edits preflight all instances and commit atomically. Host cuts are bounded to simple 3–32 vertex rings; generated frame rails require rectangular cuts. No constrained sketches, arbitrary multiple/nested forms, arcs, formulas, material assignment, content packages or cross-project libraries | native-hosted-openings.md; crates/os-model/src/opening_family.rs; crates/os-geometry/src/walls/profiles.rs; crates/os-ui/src/opening_family_editor.rs; crates/os-ui/src/opening_profile_tests.rs; crates/os-storage/src/tests/openings.rs |
+| M01.30 | Host/type/level regeneration across drawings and information | E1 | partial | Host and shared-type edits regenerate affected 3D/plan/section geometry; opening schedules and associative tags resolve live dimensions/names and preserve orphan diagnostics; layer quantities follow wall-type edits. Generalized schedule/tag fields, filters and styles remain | native-hosted-openings.md; native-opening-tags.md; native-opening-materials.md; native-wall-types.md; crates/os-document/src/tests/openings.rs; crates/os-ui/src/opening_schedule.rs; crates/os-ui/src/desktop_tests/opening_tag_tests.rs; crates/os-ui/tests/wall_types.rs |
+| M02.01 | Parametric opening family authoring | E1 | partial | Versioned editor provides separate normalized component and host-cut profiles, draft-only preview, and type-shared atomic regeneration. Project materials independently assign to the door leaf/window pane and generated frame rails; material references are checked, rendered as distinct surfaces with shared editable RGB, and migrate from family v3/schema31 to family v4/schema32. Native door/window type packages now export/import definitions and exact referenced material snapshots through bounded, versioned `.osot` files, with explicit conflict resolution, host/instance preflight and one-step undo. Host cuts are bounded to simple 3–32 vertex rings; generated frame rails require rectangular cuts. Constrained sketches, arbitrary multiple/nested forms, arcs, formulas, textures, transparency, PBR, IFC material export, searchable catalogs and office libraries remain | native-opening-type-packages.md; native-opening-materials.md; native-material-colors.md; native-hosted-openings.md; crates/os-model/src/opening_family.rs; crates/os-geometry/src/openings.rs; crates/os-ui/src/opening_family_editor.rs; crates/os-ui/src/opening_profile_tests.rs; crates/os-ui/src/desktop_tests/opening_family_tests.rs; crates/os-ui/src/desktop_tests/opening_type_package_tests.rs; crates/os-storage/tests/opening_type_package.rs |
 | E01.01 | Lines | D/E2 | not started | Not implemented | — |
 | E01.02 | Polylines | D/E2 | not started | Not implemented | — |
 | E01.03 | Arcs | D/E2 | not started | Not implemented | — |
@@ -249,17 +342,17 @@ Each row inherits its dependency from the milestone column: D requires B/C, E1 r
 | E01.08 | Polygons | D/E2 | not started | Not implemented | — |
 | E01.09 | Reference lines/planes | D/E2 | not started | Not implemented | — |
 | E01.10 | Closed sketch/region validation | D/E2 | not started | Not implemented | — |
-| E01.11 | Select/window/crossing selection | D/E2 | not started | Not implemented | — |
-| E01.12 | Overlap cycling | D/E2 | not started | Not implemented | — |
-| E01.13 | Selection category filters | D/E2 | not started | Not implemented | — |
-| E01.14 | Move/copy | D/E2 | partial | Bundled wall base/destination move preserves UUID and level, with native move/undo/redo evidence; copy and other entities remain | native-wall-edits.md; plan-wall-edit-gestures.md; os-ui/tests/plan_gesture.rs; desktop pointer edit test |
-| E01.15 | Rotate/mirror | D/E2 | not started | Not implemented | — |
-| E01.16 | Align | D/E2 | not started | Not implemented | — |
+| E01.11 | Select/window/crossing selection | D/E2 | partial | Shift-drag supports left-to-right containment and right-to-left crossing for visible native walls/openings, columns, floors/ceilings and valid rooms; selected groups highlight in plan while Properties remains single-target. Generic provider graphics, annotation marquee selection and group edits remain | native-plan-workspace.md; os-ui/src/plan_workspace/selection.rs; os-ui/src/plan_workspace/selection_tests.rs |
+| E01.12 | Overlap cycling | D/E2 | partial | Click the plan to focus it, hover an overlap, Tab/Shift+Tab previews candidates in deterministic existing-pick order, click revalidates/commits; Escape/movement/stale context cancel without model/history mutation. Native doors/windows cycle separately from host walls; all current pick layers and UI fallbacks are enumerated. Candidate graphics are highlighted in-canvas. Native-window visual QA and broader category/tie-policy validation remain | native-plan-workspace.md; os-render/src/plan/overlap.rs; os-render/src/plan.rs (dimension_hits); os-ui/src/plan_workspace/overlap_selection.rs; os-ui/src/plan_workspace/selection_tests.rs |
+| E01.13 | Selection category filters | D/E2 | partial | Session-only category toggles for walls, doors, windows, floors, ceilings, columns, roofs, stairs, rooms, grids, annotations and Other, exposed under Snaps → Selection filters. Filters affect ordinary click-through, overlap cycling and the existing crop-clipped native marquee set; previews/drafts cancel on change without pruning selection. Defaults reset on document-session change and persist across plan views. Does not hide geometry or affect snapping/editing/3D. Marquee still omits annotations and generic provider graphics; native-window visual QA remains | native-plan-workspace.md; crates/os-ui/src/plan_workspace/selection_filters.rs; crates/os-ui/src/plan_workspace/selection_tests.rs |
+| E01.14 | Move/copy | D/E2 | partial | Bundled wall move preserves UUID and level; native door/window center grips move along the current straight host with enabled semantic snaps at the corrected opening center. Preview is disposable; final release validates and changes only offset in one undo step. Native plan can copy a visible hosted door/window to another wall, preserving type and instance parameters. General copy and other entities remain | native-wall-edits.md; native-hosted-openings.md; crates/os-ui/src/plan_workspace/opening_tests.rs (`opening_center_snap_*`, `opening_drag_*`, `opening_copy_preserves_instance_and_type_on_another_wall`); plan-wall-edit-gestures.md; os-ui/tests/plan_gesture.rs |
+| E01.15 | Rotate/mirror | D/E2 | partial | One visible selected native straight wall; midpoint pointer/exact-degree rotation and two-click-axis mirror, disposable preview, atomic commit/undo, hosted door/window updates, typed layer-side flip, stale/cancel checks, and split 2D/3D regeneration. Joined/annotated walls, off-center typed window panes, multi-select, and incompatible installed-provider mirrors remain unsupported; native visual acceptance remains open | plan-wall-edit-gestures.md; native-wall-edits.md; crates/os-ui/src/plan_workspace/transforms.rs; crates/os-ui/src/plan_workspace/endpoint_tests.rs |
+| E01.16 | Align | D/E2 | partial | One-shot parallel/antiparallel native wall centerline alignment; visible same-level target, isolated preview, hosted-opening/property preservation, atomic undo, stale cancellation and split regeneration tested at both DPI profiles. Persistent locked alignment/solver, native visual acceptance and Revit parity are not implemented; installed Align test added but not run in this pass | plan-wall-edit-gestures.md; native-wall-edits.md; crates/os-ui/src/plan_workspace/transforms.rs; crates/os-ui/src/plan_workspace/endpoint_tests.rs |
 | E01.17 | Offset | D/E2 | partial | Signed centreline parallel wall copies with preview/cancel and one-step undo; curves, general entities and independent tools remain | plan-wall-offset.md; os-ui/tests/plan_gesture.rs; desktop pointer offset test |
-| E01.18 | Trim/extend | D/E2 | not started | Not implemented | — |
-| E01.19 | Split | D/E2 | not started | Not implemented | — |
+| E01.18 | Trim/extend | D/E2 | partial | One selected unjoined straight wall start/end trims or extends to the picked intersection with a visible finite same-level straight wall. Preview is transient; one atomic commit/undo. Moving the start adjusts hosted door/window offsets to preserve world location; invalid opening fit is rejected. Installed Wall End edits use the bounded worker; Start edits with hosted openings and joined walls remain unsupported. No multi-wall trim, chaining or auto-join; native visual QA remains open | native-wall-edits.md; plan-wall-edit-gestures.md; crates/os-ui/src/plan_gesture.rs; crates/os-ui/src/plan_workspace/endpoint_tests.rs (`trim_extend_*`) |
+| E01.19 | Split | D/E2 | partial | One selected visible native straight wall; picked interior station, isolated preview and atomic split. Preserves metadata/types, rehosts openings, remaps dimension endpoints and room signatures with explicit geometry checks. Both DPI profiles, tags, cancellation/staleness, undo/redo, save/reopen and split 2D/3D tested. Joined walls and installed providers rejected; multi-wall/general entity splits and native visual acceptance remain open | plan-wall-edit-gestures.md; native-wall-edits.md; crates/os-ui/src/plan_workspace/transforms/split.rs; crates/os-ui/src/plan_workspace/split_tests.rs |
 | E01.20 | Fillet | D/E2 | not started | Not implemented | — |
-| E01.21 | Arrays | D/E2 | not started | Not implemented | — |
+| E01.21 | Arrays | D/E2 | partial | Array along wall copies one selected visible native door/window on its straight host: count 2–256 including source, positive centre spacing in metres, stored Start/End direction, transient preview and clear gap. Apply validates the entire batch and creates independent instances in one undo step; optional tags copy only from the active plan. Six focused headless egui/unit tests cover both DPI profiles, typed/legacy doors/windows, reversed/rotated hosts, property/tag preservation, collisions/limits, cancellation, save/reopen and split regeneration. Persistent array constraints, other entities/hosts, radial arrays and native-window visual QA remain | native-hosted-openings.md; crates/os-ui/src/plan_workspace/opening_array.rs; crates/os-ui/src/plan_workspace/opening_array_tests.rs |
 | E01.22 | Group/ungroup | D/E2 | not started | Not implemented | — |
 | E01.23 | Pin/unpin | D/E2 | not started | Not implemented | — |
 | E01.24 | Copy/paste aligned with identity remapping | D/E2 | not started | Not implemented | — |
@@ -291,8 +384,8 @@ Each row inherits its dependency from the milestone column: D requires B/C, E1 r
 | E01.50 | Equality constraints | D/E2 | not started | Not implemented | — |
 | E01.51 | Locked alignment | D/E2 | not started | Not implemented | — |
 | E01.52 | Transactional conflict explanations | D/E2 | not started | Not implemented | — |
-| A01.01 | Aligned/linear dimensions | E2 | partial | Native three-click endpoint dimensions, live metric value, selectable annotation and editable signed offset; wall-face references and print-faithful sizing remain | native-dimensions.md; os-render/tests/plan.rs; os-ui/src/plan_workspace/endpoint_tests.rs |
-| A01.02 | Chained/baseline dimensions | E2 | partial | Native straight-wall endpoint chains and cumulative baselines; ordered collinear anchors, one semantic entity, and one-step history; paper-scale formatting and broader references remain | native-dimensions.md; os-model/src/dimensions.rs; os-ui/src/plan_workspace/endpoint_tests.rs; os-storage/tests/dimensions.rs |
+| A01.01 | Aligned/linear dimensions | E2 | partial | Native three-click dimensions from wall endpoints or live native opening jambs; typed/legacy effective width, visible/cropped jamb acquisition, live metric value and editable offset. Wall-face references and print-faithful sizing remain | native-dimensions.md; os-model/tests/dimension_openings.rs; os-render/tests/plan.rs; os-ui/src/plan_workspace/endpoint_tests.rs |
+| A01.02 | Chained/baseline dimensions | E2 | partial | Native straight-wall endpoint/opening-jamb chains and cumulative baselines; ordered collinear anchors, one semantic entity, one-step history; paper-scale formatting and broader references remain | native-dimensions.md; os-model/src/dimensions.rs; os-ui/src/plan_workspace/endpoint_tests.rs; os-storage/tests/dimensions.rs |
 | A01.03 | Angular dimensions | E2 | partial | Native straight-wall axes, four non-reflex sectors, live degree reporting and orphan recovery; cropped arc/label picking. Headless authoring at both DPI profiles, single transaction and undo/redo; frozen schema-11 migration and Angular roundtrip. No native-window or print qualification | native-dimensions.md; dimensions model/storage tests; plan renderer tests; endpoint_tests.rs |
 | A01.04 | Radial/diameter dimensions | E2 | not started | Not implemented | — |
 | A01.05 | Arc-length dimensions | E2 | not started | Not implemented | — |
@@ -300,12 +393,12 @@ Each row inherits its dependency from the milestone column: D requires B/C, E1 r
 | A01.07 | Witness editing | E2 | not started | Not implemented | — |
 | A01.08 | Prefixes/suffixes/tolerances | E2 | not started | Not implemented | — |
 | A01.09 | Unit/rounding styles | E2 | not started | Not implemented | — |
-| A01.10 | Semantic feature/material references | E2 | not started | Not implemented | — |
+| A01.10 | Semantic feature/material references | E2 | partial | Native opening jambs are stable semantic references resolved from current host, offset and effective width. Material and linked-object references are not implemented | native-dimensions.md; os-model/tests/dimension_openings.rs; os-storage/tests/dimension_anchors.rs |
 | A01.11 | Linked-object references | E2 | not started | Not implemented | — |
 | A01.12 | Reference remapping | E2 | not started | Not implemented | — |
-| A01.13 | Visible orphan warnings | E2 | partial | Missing/releveled/coincident references persist and show an on-plan marker, Properties reason and Browser endpoint names; deliberate reference repair remains | native-dimensions.md; os-ui/src/plan_workspace/endpoint_tests.rs |
-| A01.14 | Deliberate reference repair | E2 | not started | Not implemented | — |
-| A01.15 | Reporting versus driving dimensions | E2 | partial | Values derive from current wall endpoints and never drive geometry; no constraints or value overrides | native-dimensions.md; os-document/tests/dimensions.rs; os-ui/src/plan_workspace/endpoint_tests.rs |
+| A01.13 | Visible orphan warnings | E2 | partial | Missing/releveled/coincident wall or opening references persist and show an on-plan marker, Properties reason and Browser identity; deliberate reference repair remains | native-dimensions.md; os-ui/src/plan_workspace/endpoint_tests.rs |
+| A01.14 | Deliberate reference repair | E2 | automated-tested | Properties selects an anchor; same-level visible wall endpoint/body replacement commits one UpdateDimension, preserving UUID and all other data. Multiple missing/wrong-level references repair sequentially with independent undo/redo. Aligned/Chain/Baseline/Angular, invalid/cancel/stale and rotated-plan checks at both DPI profiles. Opening jamb anchors are available through the same visible-anchor picker; native-window/installed-provider qualification remains open | native-dimensions.md#deliberate-reference-replacement-2026-09-27; crates/os-ui/src/plan_workspace/endpoint_tests.rs: dimension_repair_*; focused all-feature endpoint suite |
+| A01.15 | Reporting versus driving dimensions | E2 | partial | Values derive from live wall endpoints or opening jambs and never drive geometry; no constraints or value overrides | native-dimensions.md; os-document/tests/dimensions.rs; os-ui/src/plan_workspace/endpoint_tests.rs |
 | A01.16 | Identifiable value overrides | E2 | not started | Not implemented | — |
 | A01.17 | Rich text | E2 | not started | Not implemented | — |
 | A01.18 | Wrapping/lists | E2 | not started | Not implemented | — |
@@ -315,12 +408,12 @@ Each row inherits its dependency from the milestone column: D requires B/C, E1 r
 | A01.22 | Find/replace | E2 | not started | Not implemented | — |
 | A01.23 | Language-qualified Unicode shaping | E2 | not started | Not implemented | — |
 | A01.24 | Explicit font substitution | E2 | not started | Not implemented | — |
-| A01.25 | Element/material/room/area tags | E2 | partial | Native view-owned room-number/name badges use stable room/view UUIDs, live label resolution and orphan diagnostics; move by drag or Properties. Area remains at the room seed. Six headless egui tests cover preview non-mutation, place/select/move, crop, cancel/stale release, Browser/Properties, pan and overlapping-wall-handle precedence, and one-step undo/redo at 1280×800/1.0 and 1000×650/1.5; frozen 12→13 migration and live/orphan save/reopen are covered. Generic element/material/area tags, leaders, tag styles/schedules, native visual inspection and print acceptance remain | native-rooms.md; os-model/tests/room_tags.rs; os-document/tests/room_tags.rs; os-storage/tests/room_tags.rs; os-render/tests/plan.rs; os-ui/src/desktop_tests/room_tag_tests.rs |
+| A01.25 | Element/material/room/area tags | E2 | partial | Native view-owned room badges and door/window opening tags use stable target/view UUIDs, live label resolution and orphan diagnostics. Opening tags have four persisted live-data label presets, schema 40→41 default migration, plan/sheet/vector-PDF output, derived straight leaders and orphan badges without leaders; desktop tests cover preset selection and undo/redo at both profiles. Room tags retain room number/name and area at room seed. Generic arbitrary-element/material/area tags, leaders for non-opening tags, configurable leader/tag styles, annotation schedules and visual/physical print qualification remain | native-rooms.md; native-opening-tags.md; os-model/tests/room_tags.rs; os-document/tests/room_tags.rs; os-storage/tests/room_tags.rs; os-ui/src/desktop_tests/room_tag_tests.rs; crates/os-ui/src/desktop_tests/opening_tag_tests.rs |
 | A01.26 | Multi-element leaders | E2 | not started | Not implemented | — |
 | A01.27 | Keynote catalogs/legends | E2 | not started | Not implemented | — |
 | A01.28 | General notes | E2 | not started | Not implemented | — |
 | A01.29 | Annotation schedules | E2 | not started | Not implemented | — |
-| A01.30 | Type/instance label binding | E2 | not started | Not implemented | — |
+| A01.30 | Type/instance label binding | E2 | partial | Opening tags resolve instance name, type name and effective width×height live from door/window data; four persisted presets select full, instance-only, type+dimensions or dimensions-only output. Edits update labels without replacing the tag. Arbitrary parameter selection/templates and other element categories remain | native-opening-tags.md; crates/os-model/tests/opening_tags.rs; crates/os-ui/src/desktop_tests/opening_tag_tests.rs |
 | A02.01 | Independent detail lines | E2 | partial | View-owned straight XY lines with stable UUIDs, validated plan reference/endpoints/identity, transactional create/edit/remove and history, crop/pick/snap, and 0.25 mm vector sheet/PDF strokes. Focused model, document, frozen 17→18 storage, render and headless egui tests at both DPI profiles cover these paths. No native visual or physical print QA; curves, line styles and standalone detail views remain open. PDF searchability applies to sheet text, not unlabeled line paths. | native-detail-lines.md; crates/os-model/tests/detail_lines.rs; crates/os-document/tests/detail_lines.rs; crates/os-storage/tests/detail_lines.rs; crates/os-render/tests/detail_lines.rs; crates/os-ui/src/plan_workspace/detail_line_tests.rs |
 | A02.02 | Filled/masking regions | E2 | not started | Not implemented | — |
 | A02.03 | Insulation and break lines | E2 | not started | Not implemented | — |
@@ -340,28 +433,28 @@ Each row inherits its dependency from the milestone column: D requires B/C, E1 r
 | A02.17 | Nested components | E2 | not started | Not implemented | — |
 | A02.18 | Visibility parameters | E2 | not started | Not implemented | — |
 | A02.19 | Scale/detail previews | E2 | not started | Not implemented | — |
-| A02.20 | Searchable local/office libraries | E2 | not started | Not implemented | — |
-| A02.21 | Versioned content packages | E2 | not started | Not implemented | — |
-| A02.22 | Loading/updating/conflicts | E2 | not started | Not implemented | — |
-| A02.23 | Cross-project content transfer | E2 | not started | Not implemented | — |
+| A02.20 | Searchable local/office libraries | E2 | partial | Manage exposes a session-local browser for one user-entered, non-recursive folder of `.osot` packages. A bounded background scan sorts valid packages deterministically, reports corrupt files without hiding valid entries, and searches type name/kind, file path and material names; selection re-reads the package and enters the existing conflict-aware preview. Persistent favorites/paths, recursion, office/cloud catalogs and shared indexing remain | native-opening-type-packages.md; crates/os-storage/src/opening_type_library.rs; crates/os-storage/tests/opening_type_library.rs; crates/os-ui/src/opening_type_package_ui.rs; crates/os-ui/src/desktop_tests/opening_type_library_tests.rs |
+| A02.21 | Versioned content packages | E2 | partial | Strict version-1 `.osot` JSON packages export/import one native door/window type plus only its referenced material snapshots; input/output is capped at 1 MiB, duplicate/unknown fields are rejected, and writes replace atomically. Searchable catalogs and package migration remain | native-opening-type-packages.md; crates/os-storage/src/opening_type_package.rs; crates/os-storage/tests/opening_type_package.rs |
+| A02.22 | Loading/updating/conflicts | E2 | partial | Import previews as a new type by default or an explicit update to the selected same-kind type. Identical materials are reused; differing same-name materials and type names receive visible unique names rather than overwriting project data. Update preserves target UUID and is blocked if any affected host/opening fails preflight. Multi-target conflict UI and selective field merge remain | native-opening-type-packages.md; crates/os-ui/src/opening_type_package_ui.rs; crates/os-ui/src/desktop_tests/opening_type_package_tests.rs |
+| A02.23 | Cross-project content transfer | E2 | partial | Explicit file export/import transfers one type between projects, remapping exact material dependencies and resolving destination collisions. Shared/office catalogs, bulk transfer and remote synchronization remain | native-opening-type-packages.md; crates/os-storage/tests/opening_type_package.rs; crates/os-ui/src/desktop_tests/opening_type_package_tests.rs |
 | A02.24 | Licensed original starter content | E2 | not started | Not implemented | — |
-| A02.25 | Affected-instance update previews | E2 | not started | Not implemented | — |
-| A02.26 | Preserve project edits on update | E2 | not started | Not implemented | — |
-| A02.27 | Content rollback | E2 | not started | Not implemented | — |
+| A02.25 | Affected-instance update previews | E2 | partial | Preview reports affected instance and pinned-dimension counts and validates every affected host/component before enabling commit; no graphical side-by-side preview yet | native-opening-type-packages.md; crates/os-ui/src/desktop_tests/opening_type_package_tests.rs |
+| A02.26 | Preserve project edits on update | E2 | partial | Explicit update keeps the destination type UUID and every instance parameter/pinned dimension; imported definition fields intentionally replace destination type fields. Selective merge of local type edits remains | native-opening-type-packages.md; crates/os-ui/src/desktop_tests/opening_type_package_tests.rs |
+| A02.27 | Content rollback | E2 | partial | One document transaction covers new materials and type add/update, so undo/redo is atomic; cancellation, stale contexts and invalid preflight do not mutate the model. Failed regeneration rolls back the transaction. Savepoint recovery across process failure and catalog revisions remain | native-opening-type-packages.md; crates/os-ui/src/desktop_tests/opening_type_package_tests.rs; crates/os-storage/tests/opening_type_package.rs |
 | A02.28 | No host-code expression execution | E2 | not started | Not implemented | — |
 | P01.01 | Room/area boundaries | E1 | partial | Native straight-wall centerlines and level-owned separator segments form faces with persistent mixed-ID topology signatures; holes and finish offsets remain | native-rooms.md; os-geometry/tests/rooms.rs; os-storage/tests/room_separation_lines.rs |
 | P01.02 | Separation lines | E1 | partial | Level-owned straight lines with snapped plan authoring, preview/commit, endpoint/body edits, crop-clipped graphics and selection; schema-18→19 migration and save/reopen covered. Native-window and print acceptance remain | native-rooms.md; os-storage/tests/room_separation_lines.rs; os-ui room separator pointer tests |
-| P01.03 | Room/area identifiers | E1 | partial | Native room UUID, level, seed, unique-per-level number and editable name; type catalogs/tags remain | native-rooms.md; os-model/src/rooms.rs; os-ui desktop room test |
+| P01.03 | Room/area identifiers | E1 | partial | Native room UUID, level, seed, unique-per-level number and editable name; type catalogs and general area entities remain | native-rooms.md; os-model/src/rooms.rs; os-ui desktop room test |
 | P01.04 | Placement/enclosure diagnostics | E1 | partial | Click-to-place in a unique enclosed face; broken topology reports without blocking wall edits; room repair workflow remains limited to delete/re-place | native-rooms.md; os-geometry/tests/rooms.rs; os-ui desktop room test |
 | P01.05 | Area computation rules | E1 | partial | Recomputed centerline polygon area in m², independent of crop; finish-face/net area conventions remain | native-rooms.md; os-geometry/tests/rooms.rs; os-ui desktop room test |
-| P01.06 | Finish parameters | E1 | not started | Not implemented | — |
-| P01.07 | Room/area tags | E1 | not started | Not implemented | — |
-| P01.08 | Color fills/legends | E1 | not started | Not implemented | — |
+| P01.06 | Finish parameters | E1 | partial | Independent floor/wall/ceiling material UUIDs and finish codes; local Properties drafts commit in one UpdateRoom transaction. Reference validation, atomic removal rejection, history and frozen 34→35 migration/save-reopen. Resolved active-plan floor RGB fills respect crop and selection; unresolved rooms retain intent with no fill. Finish quantities and finish-face/net areas remain | native-rooms.md; crates/os-model/tests/room_finishes.rs; crates/os-document/tests/rooms.rs; crates/os-storage/tests/room_materials.rs; crates/os-ui/src/plan_workspace/room_materials.rs |
+| P01.07 | Room/area tags | E1 | partial | Native view-owned room tags have stable UUID references, live number/name, placement/move, orphan diagnostics and history; derived area remains at room seed. General area tags, styles and print qualification remain | native-rooms.md; crates/os-ui/src/desktop_tests/room_tag_tests.rs; crates/os-model/tests/room_tags.rs; crates/os-storage/tests/room_tags.rs |
+| P01.08 | Color fills/legends | E1 | partial | Active native plan paints subdued floor-material RGB inside resolved room polygons, clipped to crop beneath walls, room outlines/text/tags and selection. Live color edits refresh the fill; unresolved rooms retain codes/refs with no stale polygon/fill. Headless checks at 1280×800/100% and 1000×650/150%, including concave rings. Legends, rule-based color schemes, wall/ceiling fills and physical-print qualification remain | native-rooms.md; crates/os-ui/src/plan_workspace/room_materials.rs (room_material_plan_fill_crop_selection_live_color_and_unresolved_at_both_dpis; room_material_concave_and_large_rings_have_exact_fill_area) |
 | P01.09 | Opening and linked-boundary treatment | E1 | partial | Hosted doors/windows remain boundaries through native host centerlines; linked/plugin boundary providers remain unavailable | native-rooms.md; os-ui/tests/openings.rs; os-ui desktop room test |
 | P01.10 | Phase-dependent enclosures | E1 | not started | Not implemented | — |
-| P01.11 | Existing/new/demolished/temporary states | E1 | not started | Not implemented | — |
-| P01.12 | Ordered phases | E1 | not started | Not implemented | — |
-| P01.13 | Phase view filters/graphics | E1 | not started | Not implemented | — |
+| P01.11 | Existing/new/demolished/temporary states | E1 | partial | Persisted lifecycles and derived states; single-selection Properties authoring with Apply/Cancel/Escape, stale-draft discard and one-command undo; real-egui wall/opening/room assignment, demolition clearing, Temporary and invalid-lifetime tests pass; plan graphics/visibility and phase-aware room/schedule behavior remain | native-phases.md; crates/os-model/src/phases.rs; crates/os-document/tests/phases.rs; crates/os-ui/src/desktop_tests/phase_tests.rs |
+| P01.12 | Ordered phases | E1 | partial | Manage modal adds/renames/moves/deletes phases in one Apply batch with stable UUIDs, pinned first phase, reference protection and atomic renumbering; 4 focused real-egui phase tests and 62 desktop tests pass, including save/reopen, undo/redo, invalid edits, stale sessions and shortcut precedence; phase view context remains | native-phases.md; crates/os-storage/tests/phases.rs; crates/os-document/tests/phases.rs; crates/os-ui/src/desktop_tests/phase_tests.rs |
+| P01.13 | Phase view filters/graphics | E1 | partial | Persisted per-plan phase/filter; native geometry/cutout/snap/pick and annotation exclusion; four status appearances shared by canvas/sheet/PDF. Full-model room enclosure, schedules and 3D remain unphased. | `plan/phase_tests.rs`, `desktop_tests/plan_phase_tests.rs`, `provider_plans.rs`, storage `plan_settings.rs`; [evidence](native-phases.md#per-plan-phase-display-schema-45) |
 | P01.14 | Phase schedules/tags | E1 | not started | Not implemented | — |
 | P01.15 | Linked-phase mapping | E1 | not started | Not implemented | — |
 | P01.16 | Isolated option sets | E1 | not started | Not implemented | — |
@@ -371,7 +464,7 @@ Each row inherits its dependency from the milestone column: D requires B/C, E1 r
 | P01.20 | Reject cross-option references | E1 | not started | Not implemented | — |
 | P01.21 | Configurable reporting conventions | E1 | not started | Not implemented | — |
 | S01.01 | Door/window schedules | E2 | partial | Saved model-owned Door/Window/All definitions, named picker, ordered configurable columns and ascending sort; live derived rows, transactional instance-name edits and live placed sheet tables; no custom fields, CSV or pagination | `os-model/tests/schedules.rs`; `os-document/tests/schedules.rs`; `os-storage/tests/schedules.rs`; `os-storage/tests/sheet_tables.rs`; `os-ui::opening_schedule`; `docs/native-hosted-openings.md`; `docs/native-sheet-preview.md` |
-| S01.02 | Room/finish/material schedules | E2 | not started | Not implemented | — |
+| S01.02 | Room/finish/material schedules | E2 | partial | Saved RoomFinish definitions retain eight columns/default order, room sorts, live centerline area, blank unresolved area/status, selection/navigation and sheet/PDF output. Schema 35/API 16 adds independent material refs; each finish cell composes the live catalog name with its code. Rename/color changes, unassigned codes, shared sheet/PDF text and existing overflow checks have focused coverage. Material quantities, custom fields, CSV and pagination remain | native-material-colors.md; native-rooms.md; crates/os-ui/src/opening_schedule/rooms/tests.rs; crates/os-ui/src/opening_schedule/definitions/tests.rs; crates/os-ui/src/plan_workspace/sheet_tests.rs |
 | S01.03 | Key schedules | E2 | not started | Not implemented | — |
 | S01.04 | Annotation note blocks | E2 | not started | Not implemented | — |
 | S01.05 | Sheet/view indexes | E2 | not started | Not implemented | — |
@@ -380,7 +473,7 @@ Each row inherits its dependency from the milestone column: D requires B/C, E1 r
 | S01.08 | Reusable model illustrations | E2 | not started | Not implemented | — |
 | S01.09 | Typed shared/project fields | E2 | not started | Not implemented | — |
 | S01.10 | Unit-aware calculated fields | E2 | not started | Not implemented | — |
-| S01.11 | Filters | E2 | partial | Saved Door/Window/All category filter only; arbitrary predicates remain | `saved_definition_derives_category_columns_sort_and_live_edits` |
+| S01.11 | Filters | E2 | partial | Saved Door/Window/All category selection followed by up to 32 typed AND rules: Name/Type/Level/Host text and full-precision Width/Height/Sill metre comparisons. Rust lowercase matching without accent/Unicode normalization. Draft add/edit/remove/reorder, validation/history, persistence and live schedule-window/sheet/PDF propagation; RoomFinish filters and OR/nested predicates remain | `crates/os-model/tests/schedule_filters.rs`; `crates/os-storage/tests/schedule_filters.rs`; `crates/os-ui/src/opening_schedule/definitions/tests/filters.rs`; `crates/os-ui/src/plan_workspace/sheet_tests/filters.rs` |
 | S01.12 | Sort/group | E2 | partial | Configurable deterministic ascending sort with stable ID ties; no grouping or descending sort | `saved_definition_derives_category_columns_sort_and_live_edits` |
 | S01.13 | Totals | E2 | not started | Not implemented | — |
 | S01.14 | Conditional formatting | E2 | not started | Not implemented | — |
@@ -388,8 +481,8 @@ Each row inherits its dependency from the milestone column: D requires B/C, E1 r
 | S01.16 | Linked-model rows | E2 | not started | Not implemented | — |
 | S01.17 | Phase/option/view/sheet filters | E2 | not started | Not implemented | — |
 | S01.18 | Transactional editable cells | E2 | partial | Instance name edits submit one validated `UpdateOpening` transaction; other cells remain read-only | `os-ui::opening_schedule::tests::name_edit_is_draft_only_and_commits_one_undo_step` |
-| S01.19 | Read-only computed cells | E2 | partial | Type dimensions, host level/wall and stable ID are derived from the current model and cannot be edited in the schedule | `os-ui::opening_schedule::tests::resolved_rows_follow_type_history_and_archive_without_cached_data` |
-| S01.20 | Source selection/highlighting | E2 | partial | Native opening schedule cells select source and navigate to a host-level plan; missing-plan guidance retains selection; existing crop/visibility controls highlighting | `row_click_selects_and_navigates_without_model_or_history_changes` at 1280×800/100% and 1000×650/150% |
+| S01.19 | Read-only computed cells | E2 | partial | Room area/enclosure status, type dimensions, host level/wall and stable ID are derived from the current model and cannot be edited in the schedule | crates/os-ui/src/opening_schedule/rooms/tests.rs; `os-ui::opening_schedule::tests::resolved_rows_follow_type_history_and_archive_without_cached_data` |
+| S01.20 | Source selection/highlighting | E2 | partial | Native opening and room schedule cells select source and navigate to a source-level plan; missing-plan guidance retains selection; existing crop/visibility controls highlighting | crates/os-ui/src/opening_schedule/rooms/tests.rs; `row_click_selects_and_navigates_without_model_or_history_changes` at 1280×800/100% and 1000×650/150% |
 | S01.21 | Schedule undo/validation | E2 | partial | Schedule definition create/configure/delete and instance-name edits use validated document transactions; invalid drafts retain values without partial changes; Escape/Cancel and stale session/revision discard drafts | `os-document/tests/schedules.rs`; `os-ui::opening_schedule::definitions::tests`; `os-ui::opening_schedule::tests` |
 | S01.22 | Column/header/border styling | E2 | not started | Not implemented | — |
 | S01.23 | Repeated headings | E2 | not started | Not implemented | — |
@@ -404,16 +497,16 @@ Each row inherits its dependency from the milestone column: D requires B/C, E1 r
 | S02.06 | Sheet browser organization | E3 | partial | Basic flat sheet picker; folders, sorting, filtering and index views remain | native-sheet-preview.md; os-ui/src/plan_workspace.rs |
 | S02.07 | Sheet indexes | E3 | not started | Not implemented | — |
 | S02.08 | Batch sheet edits | E3 | not started | Not implemented | — |
-| S02.09 | Place/align/rotate scaled viewports | E3 | partial | One linked Plan viewport can be positioned numerically and assigned a scale; rotation, multiple viewports and graphical placement remain | native-sheet-preview.md; os-ui/src/plan_workspace/sheet_tests.rs; os-render/src/sheet.rs |
-| S02.10 | Viewport cropping | E3 | partial | Source plan crop and viewport rectangle clipping are honored; independent viewport crop editing remains | native-sheet-preview.md; os-render/src/sheet.rs |
+| S02.09 | Place/align/rotate scaled viewports | E3 | partial | One linked Plan plus one Section on A3 with independent numeric scale/center, overlap rejection, undo/redo and save/reopen; single-source sheets retained; rotation and graphical placement remain | native-sheet-preview.md; os-ui/src/plan_workspace/sheet_tests/combined.rs; os-render/src/sheet.rs |
+| S02.10 | Viewport cropping | E3 | partial | Source Plan/Section bounds and each independent viewport rectangle are clipped in the shared preview/PDF page; independent crop editing remains | native-sheet-preview.md; os-render/src/sheet.rs |
 | S02.11 | Viewport titles | E3 | partial | Source view name or persisted title override appears with the scale; title editing controls and full annotation styles remain | native-sheet-preview.md; os-model/src/sheets.rs; os-render/src/sheet.rs |
 | S02.12 | Guide grids | E3 | not started | Not implemented | — |
-| S02.13 | Mixed scales | E3 | not started | Not implemented | — |
-| S02.14 | Sheet schedules/legends | E3 | partial | One saved door/window schedule table with explicit combined layout, live rows, searchable preview/PDF marks, fit diagnostics and undoable Add/Remove; no numeric draft editor, legends, multiple-table UI or pagination | `os-ui::plan_workspace::sheet_tests::saved_schedule_sheet_live_preview_pdf_history_overflow_and_stale_export`; `os-render::sheet::tables::tests`; `os-storage/tests/sheet_tables.rs`; `docs/native-sheet-preview.md` |
+| S02.13 | Mixed scales | E3 | partial | Two linked viewports with independent 1:50/1:100 paper mapping and clipping tested; shared preview/vector-PDF page; external viewer and physical plot qualification remain | native-sheet-preview.md; os-render/src/sheet.rs; os-ui/src/plan_workspace/sheet_tests/combined.rs |
+| S02.14 | Sheet schedules/legends | E3 | partial | One saved door/window or Room Finish schedule table with explicit combined layout, live rows, searchable preview/PDF marks, fit diagnostics and undoable Add/Remove; no numeric draft editor, legends, multiple-table UI or pagination | crates/os-ui/src/plan_workspace/sheet_tests.rs (room_finish_sheet_live_area_preview_pdf_and_explicit_overflow_at_both_dpis); `os-ui::plan_workspace::sheet_tests::saved_schedule_sheet_live_preview_pdf_history_overflow_and_stale_export`; `os-render::sheet::tables::tests`; `os-storage/tests/sheet_tables.rs`; `docs/native-sheet-preview.md` |
 | S02.15 | Sheet duplication/view-copy rules | E3 | not started | Not implemented | — |
 | S02.16 | Automatic cross-references | E3 | not started | Not implemented | — |
 | S02.17 | Placed/unplaced status | E3 | not started | Not implemented | — |
-| S02.18 | Sheet/source navigation | E3 | partial | Flat sheet picker opens the linked Plan and an Edit source plan action returns to it; cross-reference navigation remains | native-sheet-preview.md; os-ui/src/plan_workspace.rs |
+| S02.18 | Sheet/source navigation | E3 | partial | Flat sheet picker and separate linked Plan/Section source actions; combined-sheet return activates checked Plan and background Section; cross-reference navigation remains | native-sheet-preview.md; os-ui/src/plan_workspace/sheet_tests/combined.rs |
 | S02.19 | Atomic renumbering | E3 | not started | Not implemented | — |
 | S02.20 | Ordered sheet sets | E3 | not started | Not implemented | — |
 | S02.21 | Package grouping | E3 | not started | Not implemented | — |

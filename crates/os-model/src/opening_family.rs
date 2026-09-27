@@ -1,5 +1,5 @@
 //! Versioned, bounded opening components and independent wall-cut profiles.
-use os_core::{Point2, Result, ensure};
+use os_core::{Id, Point2, Result, ensure};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -29,12 +29,24 @@ pub struct OpeningFamily {
     pub frame_width: f64,
     /// Frame extrusion depth in metres, capped by the host wall thickness.
     pub frame_depth: f64,
+    /// Project material for the door leaf or window pane; null keeps the default swatch.
+    #[serde(deserialize_with = "required_material")]
+    pub panel_material: Option<Id>,
+    /// Project material for generated frame rails, including when the frame is disabled.
+    #[serde(deserialize_with = "required_material")]
+    pub frame_material: Option<Id>,
+}
+
+fn required_material<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<Id>, D::Error> {
+    Option::<Id>::deserialize(deserializer)
 }
 
 impl Default for OpeningFamily {
     fn default() -> Self {
         Self {
-            version: 3,
+            version: 4,
             host_cut: OpeningHostCut::Rectangular,
             operation: OpeningComponentOperation::ProfileExtrusion,
             profile: vec![
@@ -47,6 +59,8 @@ impl Default for OpeningFamily {
             cut_profile: Self::rectangle(),
             frame_width: 0.0,
             frame_depth: 0.05,
+            panel_material: None,
+            frame_material: None,
         }
     }
 }
@@ -79,7 +93,7 @@ impl OpeningFamily {
     }
 
     pub fn validate(&self) -> Result<()> {
-        ensure(self.version == 3, "unsupported opening family version")?;
+        ensure(self.version == 4, "unsupported opening family version")?;
         ensure(
             self.depth.is_finite() && (0.001..=0.2).contains(&self.depth),
             "component depth must be 1-200 mm",
@@ -377,6 +391,8 @@ mod tests {
             "cut_profile",
             "frame_width",
             "frame_depth",
+            "panel_material",
+            "frame_material",
         ] {
             let mut value = serde_json::to_value(&family).unwrap();
             value.as_object_mut().unwrap().remove(key);
@@ -385,9 +401,9 @@ mod tests {
         let mut future = serde_json::to_value(&family).unwrap();
         future["operation"] = serde_json::json!("Sweep");
         assert!(serde_json::from_value::<OpeningFamily>(future).is_err());
-        family.version = 4;
+        family.version = 5;
         assert!(family.validate().is_err());
-        family.version = 3;
+        family.version = 4;
         family.frame_width = 0.3;
         assert!(
             family

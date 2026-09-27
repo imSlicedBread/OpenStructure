@@ -1,3 +1,5 @@
+mod common;
+
 use os_core::Point2;
 use os_document::{Command, Document};
 use os_model::{Model, SCHEMA_VERSION, SectionViewSettings, View, ViewKind, ViewParams};
@@ -7,7 +9,11 @@ use serde_json::{Value, json};
 fn frozen_fourteen() -> Value {
     let model = Model::new("section migration");
     let mut value = serde_json::to_value(model).unwrap();
+    common::remove_phase_fields(&mut value);
     value["schema_version"] = json!(14);
+    value.as_object_mut().unwrap().remove("stairs");
+    value.as_object_mut().unwrap().remove("roofs");
+    value.as_object_mut().unwrap().remove("opening_tags");
     value.as_object_mut().unwrap().remove("schedules");
     value.as_object_mut().unwrap().remove("detail_lines");
     value
@@ -76,7 +82,13 @@ fn schema_fourteen_migrates_to_fifteen_and_preserves_unconfigured_views() {
     expected["columns"] = json!({});
     expected["plan_graphics_templates"] = json!({});
     expected["plan_graphics"] = json!({});
+    expected["stairs"] = json!({});
+    expected["roofs"] = json!({});
     expected["schema_version"] = json!(SCHEMA_VERSION);
+    expected["opening_tags"] = json!({});
+    expected["phases"] = migrated["phases"].clone();
+    expected["element_lifecycles"] = migrated["element_lifecycles"].clone();
+    common::apply_schema_38_defaults(&mut expected);
     expected["project"]["header"]["schema_version"] = json!(SCHEMA_VERSION);
     for collection in [
         "sites",

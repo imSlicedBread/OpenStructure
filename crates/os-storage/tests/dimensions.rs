@@ -1,3 +1,5 @@
+mod common;
+
 use os_core::Point2;
 use os_document::{Command, Document};
 use os_model::*;
@@ -32,6 +34,7 @@ fn schema_eleven_migration_preserves_dimension_and_all_headers() {
     assert_eq!(value["schema_version"], SCHEMA_VERSION);
     let mut expected = original.clone();
     set_version(&mut expected, SCHEMA_VERSION);
+    expected["opening_tags"] = json!({});
     expected["room_tags"] = json!({});
     expected["sheets"] = json!({});
     expected["schedules"] = json!({});
@@ -43,6 +46,17 @@ fn schema_eleven_migration_preserves_dimension_and_all_headers() {
     expected["columns"] = json!({});
     expected["plan_graphics_templates"] = json!({});
     expected["plan_graphics"] = json!({});
+    expected["stairs"] = json!({});
+    expected["roofs"] = json!({});
+    expected["phases"] = value["phases"].clone();
+    expected["element_lifecycles"] = value["element_lifecycles"].clone();
+    common::apply_schema_38_defaults(&mut expected);
+    for dimension in expected["dimensions"].as_object_mut().unwrap().values_mut() {
+        for key in ["first", "second"] {
+            dimension["parameters"][key] =
+                json!({"WallEndpoint": dimension["parameters"][key].clone()});
+        }
+    }
     assert_eq!(
         value, expected,
         "only schema versions and documented empty native maps may change; preserve every ID, header and prior dimension parameter"
@@ -59,7 +73,10 @@ fn schema_eleven_migration_preserves_dimension_and_all_headers() {
     model.walls.insert(second_id, second);
     let mut parameters = prior.parameters.clone();
     parameters.layout = DimensionLayout::Angular;
-    parameters.second.wall = second_id;
+    parameters.second = DimensionReference::WallEndpoint {
+        wall: second_id,
+        endpoint: parameters.second.wall_endpoint().unwrap().1,
+    };
     parameters
         .place_angular(&model, Point2::new(1.0, 1.0))
         .unwrap();
@@ -126,6 +143,7 @@ fn six_to_current_adds_native_maps_and_versions_atomically() {
     assert_eq!(value["detail_lines"], json!({}));
     assert_eq!(value["room_separation_lines"], json!({}));
     assert_eq!(value["columns"], json!({}));
+    assert_eq!(value["opening_tags"], json!({}));
     assert_eq!(value["plan_graphics_templates"], json!({}));
     assert_eq!(value["plan_graphics"], json!({}));
     serde_json::from_value::<Model>(value.clone())
@@ -150,11 +168,18 @@ fn six_to_current_adds_native_maps_and_versions_atomically() {
         .unwrap()
         .remove("wall_type_assignments");
     value.as_object_mut().unwrap().remove("columns");
+    value.as_object_mut().unwrap().remove("opening_tags");
     value
         .as_object_mut()
         .unwrap()
         .remove("plan_graphics_templates");
     value.as_object_mut().unwrap().remove("plan_graphics");
+    value.as_object_mut().unwrap().remove("stairs");
+    value.as_object_mut().unwrap().remove("roofs");
+    value.as_object_mut().unwrap().remove("ceilings");
+    value.as_object_mut().unwrap().remove("phases");
+    value.as_object_mut().unwrap().remove("element_lifecycles");
+    common::reverse_schema_38_migration(&mut value, &original);
     set_version(&mut value, 6);
     assert_eq!(value, original);
     for case in 0..5 {
@@ -264,11 +289,11 @@ fn schema_six_archive_migrates_then_dimensions_and_orphans_roundtrip_with_identi
             additional: Vec::new(),
             baseline_spacing_m: 0.25,
             view: view.id(),
-            first: DimensionReference {
+            first: DimensionReference::WallEndpoint {
                 wall: wall.id(),
                 endpoint: DimensionEndpoint::Start,
             },
-            second: DimensionReference {
+            second: DimensionReference::WallEndpoint {
                 wall: wall.id(),
                 endpoint: DimensionEndpoint::End,
             },

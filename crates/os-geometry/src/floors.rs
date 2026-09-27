@@ -22,12 +22,29 @@ pub fn signed_area(boundary: &[Point2]) -> f64 {
 /// Return CCW triangles indexing the unmodified authored ring. Both input windings
 /// and collinear forward vertices are accepted. Ear order is stable by ring order.
 pub fn triangulate_floor(boundary: &[Point2]) -> Result<Vec<[u32; 3]>> {
-    let p = boundary;
-    ensure((3..=256).contains(&p.len()), "floor needs 3-256 vertices")?;
     ensure(
-        p.iter()
+        (3..=256).contains(&boundary.len()),
+        "floor needs 3-256 vertices",
+    )?;
+    ensure(
+        boundary
+            .iter()
             .all(|p| p.is_finite() && p.x.abs() <= 1e6 && p.y.abs() <= 1e6),
         "invalid floor coordinates",
+    )?;
+    triangulate_plan_polygon(boundary)
+}
+
+/// Triangulate a simple plan ring, including concave resolved room polygons.
+/// This generates only 2D indices; it does not create a floor or a room solid.
+pub fn triangulate_plan_polygon(p: &[Point2]) -> Result<Vec<[u32; 3]>> {
+    ensure(
+        (3..=1024).contains(&p.len()),
+        "plan polygon needs 3-1024 vertices",
+    )?;
+    ensure(
+        p.iter().all(|p| p.is_finite()),
+        "invalid plan polygon coordinates",
     )?;
     for i in 0..p.len() {
         for j in i + 1..p.len() {

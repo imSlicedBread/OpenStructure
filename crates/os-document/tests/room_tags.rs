@@ -9,6 +9,12 @@ fn setup() -> (Document, RoomTag) {
     let room = Room::new(
         "core.room",
         RoomParams {
+            floor_material: None,
+            wall_material: None,
+            ceiling_material: None,
+            floor_finish: None,
+            wall_finish: None,
+            ceiling_finish: None,
             number: "101".into(),
             name: "Office".into(),
             level,

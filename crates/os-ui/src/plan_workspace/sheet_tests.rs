@@ -1,11 +1,160 @@
 //! First persisted sheet, paper preview, and vector-PDF acceptance.
 use super::*;
 use std::time::{Duration, Instant};
+mod combined;
+mod filters;
 
 const PROFILES: [(egui::Vec2, f32); 2] = [
     (egui::vec2(1280.0, 800.0), 1.0),
     (egui::vec2(1000.0, 650.0), 1.5),
 ];
+
+#[test]
+fn room_finish_sheet_live_area_preview_pdf_and_explicit_overflow_at_both_dpis() {
+    use crate::opening_schedule::rooms::tests::{add_material, fixture, move_partition};
+    fn settle(app: &mut DesktopApp) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            app.plans.poll(&app.editor);
+            if app.plans.ready() {
+                return;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+    }
+    fn contains_pdf(page: &SheetPage, text: &str) -> bool {
+        let hex: String = text.chars().map(|c| format!("{:02X}", c as u32)).collect();
+        String::from_utf8(page.to_pdf().unwrap())
+            .unwrap()
+            .contains(&format!("<{hex}> Tj"))
+    }
+    for (size, scale) in PROFILES {
+        let (mut app, room, schedule, view, partition) = fixture();
+        let material = add_material(&mut app);
+        app.plans.poll(&app.editor);
+        app.focus_plan(Some(view));
+        app.select(Some(room));
+        app.room_finish_draft = ["F-01".into(), "W-01".into(), "C-01".into()];
+        app.room_material_draft = [Some(material); 3];
+        app.apply_room_properties();
+        app.create_sheet_from_active_view();
+        settle(&mut app);
+        let sheet = app.plans.active_sheet.unwrap();
+        app.place_sheet_schedule(sheet, Some(schedule));
+        assert!(!app.status_error, "{}", app.status);
+        settle(&mut app);
+        let page = app.sheet_page().unwrap();
+        for text in [
+            "Room Finishes",
+            "Floor Finish",
+            "Oak · F-01",
+            "Oak · W-01",
+            "Oak · C-01",
+            "12.00",
+            "Enclosed",
+        ] {
+            assert!(contains_pdf(&page, text), "{text}");
+        }
+        let ctx = egui::Context::default();
+        theme::apply(&ctx);
+        let _ = ctx.run(raw_input(size, scale, 0., vec![]), |ctx| {
+            app.plan_workspace(ctx)
+        });
+        let output = ctx.run(raw_input(size, scale, 1., vec![]), |ctx| {
+            app.plan_workspace(ctx)
+        });
+        assert!(output.shapes.iter().any(
+            |s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.job.text == "Oak · F-01")
+        ));
+        let intent = app.editor.document.model().rooms[&room].clone();
+        let mut parameters = app.editor.document.model().materials[&material]
+            .parameters
+            .clone();
+        parameters.name = "Ash".into();
+        parameters.color = [30, 90, 150];
+        app.editor
+            .command(
+                "Rename and recolor",
+                Command::UpdateMaterial {
+                    id: material,
+                    parameters,
+                },
+            )
+            .unwrap();
+        settle(&mut app);
+        let page = app.sheet_page().unwrap();
+        for text in ["Ash · F-01", "Ash · W-01", "Ash · C-01"] {
+            assert!(contains_pdf(&page, text));
+        }
+        assert!(!contains_pdf(&page, "Oak · F-01"));
+        assert_eq!(app.editor.document.model().rooms[&room], intent);
+        move_partition(&mut app, partition);
+        settle(&mut app);
+        let context = app.editor.native_plan_context(view).unwrap();
+        let plan_room = app
+            .plans
+            .drawing
+            .as_ref()
+            .unwrap()
+            .rooms(context)
+            .unwrap()
+            .iter()
+            .find(|r| r.entity == room)
+            .unwrap();
+        assert_eq!(plan_room.area_m2, 15.);
+        let page = app.sheet_page().unwrap();
+        assert!(contains_pdf(&page, "15.00"));
+        assert!(!contains_pdf(&page, "12.00"));
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("room-sheet.osb");
+        let saved = app.editor.document.model().clone();
+        app.editor.save(&path).unwrap();
+        app.editor.open(&path).unwrap();
+        assert_eq!(app.editor.document.model(), &saved);
+        app.plans.poll(&app.editor);
+        app.plans.active = Some(view);
+        app.plans.active_sheet = Some(sheet);
+        settle(&mut app);
+        assert!(contains_pdf(&app.sheet_page().unwrap(), "15.00"));
+        app.editor
+            .command(
+                "Break enclosure",
+                Command::RemoveRoomSeparationLine(partition),
+            )
+            .unwrap();
+        settle(&mut app);
+        let table =
+            crate::opening_schedule::paper_table(app.editor.document.model(), schedule).unwrap();
+        assert!(table.rows.iter().all(|r| r[6].is_empty()));
+        assert!(table.rows[0][7].contains("enclosure changed"));
+        let page = app.sheet_page().unwrap();
+        assert!(contains_pdf(&page, "Room enclosure changed; reassign room"));
+        assert!(!contains_pdf(&page, "0.00"));
+        assert!(contains_pdf(&page, "Ash · F-01"));
+        app.editor.undo().unwrap();
+        settle(&mut app);
+        app.select(Some(room));
+        app.room_finish_draft[0] = "W".repeat(128);
+        app.apply_room_properties();
+        settle(&mut app);
+        assert!(
+            app.sheet_page()
+                .unwrap_err()
+                .to_string()
+                .contains("overflow")
+        );
+        app.place_sheet_schedule(sheet, None);
+        settle(&mut app);
+        let before = app.editor.document.model().clone();
+        let history = app.editor.document.history_stats();
+        app.place_sheet_schedule(sheet, Some(schedule));
+        assert!(app.status_error);
+        assert!(app.status.contains("overflow"));
+        assert_eq!(app.editor.document.model(), &before);
+        assert_eq!(app.editor.document.history_stats(), history);
+    }
+}
 
 #[test]
 fn saved_schedule_sheet_live_preview_pdf_history_overflow_and_stale_export() {
@@ -26,6 +175,9 @@ fn saved_schedule_sheet_live_preview_pdf_history_overflow_and_stale_export() {
         let opening = Opening::new(
             "core.opening",
             OpeningParams {
+                width_override: None,
+                height_override: None,
+                sill_override: None,
                 name: "D01".into(),
                 host: wall.id(),
                 offset: 1.0,
@@ -516,7 +668,7 @@ fn section_sheets_export_linked_cut_lines_and_reopen_in_source_view_space() {
         app.sheet_page()
             .unwrap_err()
             .to_string()
-            .contains("multiple viewports are not rendered yet")
+            .contains("combined sheet requires one Plan and one Section")
     );
 }
 

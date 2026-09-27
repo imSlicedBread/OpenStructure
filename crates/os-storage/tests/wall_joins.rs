@@ -1,3 +1,5 @@
+mod common;
+
 use os_model::{Model, SCHEMA_VERSION};
 use os_storage::migrate;
 use serde_json::{Value, json};
@@ -53,6 +55,7 @@ fn frozen_nineteen_migrates_without_inventing_joins_and_rejects_ambiguity() {
     assert_eq!(model.walls.len(), 2);
     let mut expected = old.clone();
     expected["schema_version"] = json!(SCHEMA_VERSION);
+    expected["opening_tags"] = json!({});
     expected["project"]["header"]["schema_version"] = json!(SCHEMA_VERSION);
     for map in ["sites", "buildings", "levels", "walls", "views"] {
         for entity in expected[map].as_object_mut().unwrap().values_mut() {
@@ -65,6 +68,11 @@ fn frozen_nineteen_migrates_without_inventing_joins_and_rejects_ambiguity() {
     expected["columns"] = json!({});
     expected["plan_graphics_templates"] = json!({});
     expected["plan_graphics"] = json!({});
+    expected["stairs"] = json!({});
+    expected["roofs"] = json!({});
+    expected["phases"] = value["phases"].clone();
+    expected["element_lifecycles"] = value["element_lifecycles"].clone();
+    common::apply_schema_38_defaults(&mut expected);
     assert_eq!(value, expected);
     for case in 0..5 {
         let mut bad = old.clone();

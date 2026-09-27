@@ -429,6 +429,51 @@ fn excluded_edit_target_is_not_acquired_and_exclusion_is_part_of_result_identity
             .is_none()
     );
 }
+
+#[test]
+fn multi_entity_exclusions_filter_features_and_are_part_of_result_identity() {
+    let context = context();
+    let first = segment();
+    let second = SnapSegment {
+        entity: Id::new(),
+        feature: 0,
+        start: Point2::new(0.0, 0.0),
+        end: Point2::new(0.0, 1.0),
+    };
+    let third = SnapSegment {
+        entity: Id::new(),
+        feature: 0,
+        start: Point2::new(-1.0, -1.0),
+        end: Point2::new(1.0, 1.0),
+    };
+    let scene = SnapScene::new(context, vec![first, second, third]).unwrap();
+    let mut q = query(Point2::default(), 100.0);
+    q.endpoints = false;
+    q.nearest = false;
+    q.midpoints = false;
+    q.intersections = true;
+    let excluded = [first.entity, second.entity].into_iter().collect();
+    let result = scene.query_excluding(context, q, &excluded).unwrap();
+    assert!(
+        result
+            .candidate_excluding(context, q, &excluded)
+            .unwrap()
+            .is_none()
+    );
+    assert!(result.candidate(context, q).is_err());
+    let changed = [first.entity].into_iter().collect();
+    assert!(result.candidate_excluding(context, q, &changed).is_err());
+
+    let one_left = scene
+        .query_excluding(context, q, &changed)
+        .unwrap()
+        .candidate_excluding(context, q, &changed)
+        .unwrap()
+        .unwrap();
+    assert_eq!(one_left.kind, SnapKind::Intersection);
+    assert!(one_left.other.is_some());
+}
+
 fn segment() -> SnapSegment {
     SnapSegment {
         entity: Id::new(),

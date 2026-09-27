@@ -18,6 +18,259 @@ fn concave() -> Vec<Point2> {
 }
 
 #[test]
+fn material_color_shared_wall_opening_render_preview_geometry_and_history() {
+    use os_model::{
+        LayerFunction, Material, MaterialParams, WallLayer, WallType, WallTypeAssignment,
+        WallTypeParams,
+    };
+    use os_render::{Camera, RasterFrame, RasterStyle, Scene};
+    let (mut e, host, view, types, ids) = fixture();
+    let materials = [[220, 30, 20], [20, 200, 30]].map(|color| {
+        Material::new(
+            "core.material",
+            MaterialParams {
+                name: "Shared".into(),
+                density_kg_m3: 650.,
+                color,
+            },
+        )
+    });
+    let mids = materials.each_ref().map(|m| m.id());
+    let wall_type = WallType::new(
+        "core.wall_type",
+        WallTypeParams {
+            name: "Colored layers".into(),
+            layers: mids
+                .map(|id| WallLayer {
+                    id: Id::new(),
+                    name: "Layer".into(),
+                    thickness: 0.1,
+                    function: LayerFunction::Finish,
+                    material: Some(id),
+                })
+                .to_vec(),
+        },
+    );
+    let wall_type_id = wall_type.id();
+    let mut commands: Vec<_> = materials.into_iter().map(Command::AddMaterial).collect();
+    commands.push(Command::AddWallType(wall_type));
+    commands.push(Command::AssignWallType {
+        wall: host,
+        assignment: Some(WallTypeAssignment {
+            type_id: wall_type_id,
+            flipped: false,
+        }),
+    });
+    e.document
+        .execute("Assign shared colors", commands)
+        .unwrap();
+    for ty in types {
+        let mut draft = OpeningTypeDraft::edit(&e, ty).unwrap();
+        draft.family.frame_width = 0.05;
+        draft.family.panel_material = Some(mids[0]);
+        draft.family.frame_material = Some(mids[1]);
+        draft.apply(&mut e).unwrap();
+    }
+    let scene = e.scene.clone();
+    let quantities = os_geometry::walls::NativeWall::from_model(e.document.model(), host)
+        .unwrap()
+        .layer_quantities()
+        .unwrap();
+    for mid in mids {
+        let before = e.document.model().clone();
+        let stats = e.document.history_stats();
+        let color = [15, 40, 235];
+        let mut p = before.materials[&mid].parameters.clone();
+        p.color = color;
+        e.command(
+            "Edit shared material color",
+            Command::UpdateMaterial {
+                id: mid,
+                parameters: p,
+            },
+        )
+        .unwrap();
+        let after = e.document.model().clone();
+        assert_eq!(e.scene, scene, "mesh and surface IDs must not change");
+        let mut restored = after.clone();
+        restored.materials = before.materials.clone();
+        assert_eq!(restored, before, "only the material changes");
+        assert_eq!(
+            os_geometry::walls::NativeWall::from_model(&after, host)
+                .unwrap()
+                .layer_quantities()
+                .unwrap(),
+            quantities
+        );
+        assert_eq!(
+            e.document.history_stats().undo_entries,
+            stats.undo_entries + 1
+        );
+        let colors = |model: &Model| {
+            model
+                .materials
+                .iter()
+                .map(|(id, m)| (*id, m.parameters.color))
+                .collect()
+        };
+        for id in std::iter::once(host).chain(ids) {
+            let isolated = Scene::from([(id, scene[&id].clone())]);
+            let mut camera = Camera::default();
+            camera.fit(&isolated, 320., 240.);
+            let mut triangles = os_render::project_scene(&isolated, &camera, 320., 240.);
+            for triangle in &mut triangles {
+                triangle.shade = 1.;
+            }
+            let render = |model: &Model, selected| {
+                RasterFrame::render_with_materials(
+                    &triangles,
+                    [320., 240.],
+                    1.,
+                    selected,
+                    RasterStyle::default(),
+                    &colors(model),
+                )
+                .unwrap()
+            };
+            let old = render(&before, None);
+            let new = render(&after, None);
+            assert_ne!(old.rgba, new.rgba, "assigned object {id} must recolor");
+            assert!(new.rgba.contains(&[15, 40, 235, 255]));
+            assert_eq!(
+                render(&before, Some(id)).rgba,
+                render(&after, Some(id)).rgba,
+                "selection tint wins over color"
+            );
+            for y in 0..new.height {
+                for x in 0..new.width {
+                    assert_eq!(old.depth_at(x, y), new.depth_at(x, y));
+                    assert_eq!(
+                        old.pick(x as f32 + 0.5, y as f32 + 0.5),
+                        new.pick(x as f32 + 0.5, y as f32 + 0.5)
+                    );
+                }
+            }
+        }
+        for ty in types {
+            let mut draft = OpeningTypeDraft::edit(&e, ty).unwrap();
+            let (preview, _) = draft.preview_geometry(&e, Some(view)).unwrap();
+            assert!(preview.surfaces.iter().any(|s| s.material == Some(mid)));
+            let ctx = egui::Context::default();
+            let output = ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default()
+                    .show(ctx, |ui| draft.profile_editor(ui, &e, Some(view)));
+            });
+            assert!(output.shapes.iter().any(|s| matches!(&s.shape,
+                egui::Shape::LineSegment { stroke, .. } if stroke.color == egui::Color32::from_rgb(15, 40, 235))),
+                "native family preview draws the material color");
+        }
+        e.undo().unwrap();
+        assert_eq!(e.document.model(), &before);
+        assert_eq!(e.scene, scene);
+        e.redo().unwrap();
+        assert_eq!(e.document.model(), &after);
+        assert_eq!(e.scene, scene);
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("shared-color.osb");
+    e.save(&path).unwrap();
+    let mut reopened = Editor::new().unwrap();
+    reopened.open(&path).unwrap();
+    assert_eq!(reopened.document.model(), e.document.model());
+    assert_eq!(reopened.scene, e.scene);
+}
+
+#[test]
+fn opening_materials_shared_types_preview_failure_history_and_reopen() {
+    let (mut e, host, view, types, ids) = fixture();
+    let materials = ["Panel", "Frame"].map(|name| {
+        os_model::Material::new(
+            "core.material",
+            os_model::MaterialParams {
+                name: name.into(),
+                density_kg_m3: 500.,
+                color: [180, 180, 180],
+            },
+        )
+    });
+    let [panel, frame] = materials.each_ref().map(|m| m.id());
+    e.document
+        .execute(
+            "Materials",
+            materials.into_iter().map(Command::AddMaterial).collect(),
+        )
+        .unwrap();
+    for id in ids {
+        let mut p = e.document.model().openings[&id].parameters.clone();
+        p.width_override = Some(0.95);
+        p.height_override = Some(1.1);
+        if e.document.model().resolve_opening(&p).unwrap().kind == OpeningKind::Window {
+            p.sill_override = Some(0.7);
+        }
+        e.command("Pin instance", Command::UpdateOpening { id, parameters: p })
+            .unwrap();
+    }
+    for type_id in types {
+        // Establish frames first so the material edit can prove unchanged geometry.
+        let mut draft = OpeningTypeDraft::edit(&e, type_id).unwrap();
+        draft.family.frame_width = 0.05;
+        draft.apply(&mut e).unwrap();
+        let before = e.document.model().clone();
+        let scene = e.scene.clone();
+        let history = e.document.history_stats();
+        let mut draft = OpeningTypeDraft::edit(&e, type_id).unwrap();
+        draft.family.panel_material = Some(panel);
+        draft.family.frame_material = Some(frame);
+        let preview = draft.preview_model(&e).unwrap();
+        let (mesh, _) = draft.preview_geometry(&e, Some(view)).unwrap();
+        assert!(mesh.surfaces.iter().any(|s| s.material == Some(panel)));
+        assert!(mesh.surfaces.iter().any(|s| s.material == Some(frame)));
+        assert_eq!(e.document.model(), &before);
+        assert_eq!(e.document.history_stats(), history);
+        assert_eq!(e.scene, scene);
+        draft.family.frame_material = Some(Id::new());
+        assert!(draft.preview_model(&e).is_err());
+        assert!(draft.apply(&mut e).is_err());
+        assert_eq!(e.document.model(), &before);
+        assert_eq!(e.document.history_stats(), history);
+        assert_eq!(e.scene, scene);
+        draft.family.frame_material = Some(frame);
+        draft.apply(&mut e).unwrap();
+        assert_eq!(e.document.model(), &preview);
+        assert_eq!(e.document.model().openings, before.openings);
+        assert_eq!(e.scene[&host], scene[&host]);
+        for id in ids {
+            let current = &e.scene[&id];
+            assert_eq!(current.vertices, scene[&id].vertices);
+            assert_eq!(current.triangles, scene[&id].triangles);
+            if before.openings[&id].parameters.type_id() == Some(type_id) {
+                assert!(current.surfaces.iter().any(|s| s.material == Some(panel)));
+                assert!(current.surfaces.iter().any(|s| s.material == Some(frame)));
+                assert_eq!(current.surfaces.len(), current.triangles.len());
+            }
+        }
+        let committed = e.scene.clone();
+        assert_eq!(
+            e.document.history_stats().undo_entries,
+            history.undo_entries + 1
+        );
+        e.undo().unwrap();
+        assert_eq!(e.document.model(), &before);
+        assert_eq!(e.scene, scene);
+        e.redo().unwrap();
+        assert_eq!(e.document.model(), &preview);
+        assert_eq!(e.scene, committed);
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("opening-materials.osb");
+    e.save(&path).unwrap();
+    let mut reopened = Editor::new().unwrap();
+    reopened.open(&path).unwrap();
+    assert_eq!(reopened.document.model(), e.document.model());
+    assert_eq!(reopened.scene, e.scene);
+}
+
+#[test]
 fn authored_host_cut_preview_atomic_rejection_history_stale_and_reopen() {
     let (mut e, host, view, types, _) = fixture();
     let original = e.document.model().clone();
@@ -117,6 +370,9 @@ fn fixture() -> (Editor, Id, Id, [Id; 2], [Id; 4]) {
         Opening::new(
             "core.opening",
             OpeningParams {
+                width_override: None,
+                height_override: None,
+                sill_override: None,
                 name: "Shared instance".into(),
                 host,
                 offset,
@@ -286,7 +542,7 @@ fn opening_family_invalid_profiles_are_atomic_in_preview_and_commands() {
                     .map(|(x, y)| Point2::new(x, y))
                     .to_vec()
             }
-            11 => draft.family.version = 4,
+            11 => draft.family.version = 5,
             12 => draft.family.depth = f64::NAN,
             13 => draft.family.frame_width = 0.0005,
             14 => draft.family.frame_depth = f64::NAN,

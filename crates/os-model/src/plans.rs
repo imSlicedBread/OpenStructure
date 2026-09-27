@@ -2,7 +2,14 @@
 use os_core::{Point2, Result, ensure};
 use serde::{Deserialize, Serialize};
 
-pub const PLAN_SETTINGS_VERSION: u32 = 1;
+pub const PLAN_SETTINGS_VERSION: u32 = 3;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PlanViewType {
+    #[default]
+    FloorPlan,
+    ReflectedCeilingPlan,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -48,6 +55,37 @@ impl PlanViewRange {
         absolute.validate()?;
         Ok(absolute)
     }
+
+    /// Convert saved floor/RCP range semantics to the geometry kernel's
+    /// bottom-to-top ordering, then make the range absolute to its level.
+    pub fn at_level_for_view(self, view_type: PlanViewType, elevation: f64) -> Result<Self> {
+        let ordered = match view_type {
+            PlanViewType::FloorPlan => {
+                self.validate()?;
+                self
+            }
+            PlanViewType::ReflectedCeilingPlan => {
+                ensure(
+                    [self.bottom, self.cut, self.top, self.depth]
+                        .iter()
+                        .all(|value| value.is_finite())
+                        && self.bottom <= self.cut
+                        && self.cut <= self.top
+                        && self.top <= self.depth
+                        && self.depth - self.bottom > 1e-9
+                        && (self.depth - self.bottom).is_finite(),
+                    "RCP range needs finite bottom <= cut <= top <= depth and positive span",
+                )?;
+                Self {
+                    top: self.depth,
+                    cut: self.top,
+                    bottom: self.cut,
+                    depth: self.bottom,
+                }
+            }
+        };
+        ordered.at_level(elevation)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -85,12 +123,14 @@ fn strict_point<'de, D: serde::Deserializer<'de>>(
 #[serde(deny_unknown_fields)]
 pub struct PlanVisibility {
     pub walls: bool,
+    pub ceilings: bool,
     pub extensions: bool,
 }
 impl Default for PlanVisibility {
     fn default() -> Self {
         Self {
             walls: true,
+            ceilings: true,
             extensions: true,
         }
     }
@@ -100,6 +140,11 @@ impl Default for PlanVisibility {
 #[serde(deny_unknown_fields)]
 pub struct PlanSettings {
     pub schema_version: u32,
+    /// None follows the latest project phase; Some pins a stable phase identity.
+    #[serde(deserialize_with = "required_phase")]
+    pub target_phase: Option<os_core::Id>,
+    pub phase_filter: crate::PhaseFilter,
+    pub view_type: PlanViewType,
     pub range: PlanViewRange,
     pub basis: PlanViewBasis,
     pub crop: Option<PlanViewCrop>,
@@ -111,6 +156,9 @@ impl Default for PlanSettings {
     fn default() -> Self {
         Self {
             schema_version: PLAN_SETTINGS_VERSION,
+            target_phase: None,
+            phase_filter: crate::PhaseFilter::ShowAll,
+            view_type: PlanViewType::FloorPlan,
             range: PlanViewRange::default(),
             basis: PlanViewBasis::default(),
             crop: None,
@@ -119,13 +167,50 @@ impl Default for PlanSettings {
         }
     }
 }
+
+fn required_phase<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<os_core::Id>, D::Error> {
+    Option::<os_core::Id>::deserialize(deserializer)
+}
 impl PlanSettings {
+    pub fn reflected_ceiling() -> Self {
+        Self {
+            view_type: PlanViewType::ReflectedCeilingPlan,
+            range: PlanViewRange {
+                bottom: 0.0,
+                cut: 1.2,
+                top: 3.0,
+                depth: 4.0,
+            },
+            ..Self::default()
+        }
+    }
+
     pub fn validate(self) -> Result<()> {
         ensure(
             self.schema_version == PLAN_SETTINGS_VERSION,
             "unsupported plan settings version",
         )?;
-        self.range.validate()?;
+        match self.view_type {
+            PlanViewType::FloorPlan => self.range.validate()?,
+            PlanViewType::ReflectedCeilingPlan => ensure(
+                [
+                    self.range.bottom,
+                    self.range.cut,
+                    self.range.top,
+                    self.range.depth,
+                ]
+                .iter()
+                .all(|n| n.is_finite())
+                    && self.range.bottom <= self.range.cut
+                    && self.range.cut <= self.range.top
+                    && self.range.top <= self.range.depth
+                    && self.range.depth - self.range.bottom > 1e-9
+                    && (self.range.depth - self.range.bottom).is_finite(),
+                "RCP range needs finite bottom <= cut <= top <= depth and positive span",
+            )?,
+        }
         ensure(
             self.basis.origin.is_finite() && self.basis.rotation.is_finite(),
             "invalid plan basis",
@@ -146,5 +231,29 @@ impl PlanSettings {
                 && (0.001..=1_000_000.0).contains(&self.scale_denominator),
             "plan scale denominator must be between 0.001 and 1000000",
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reflected_range_maps_upward_semantics_to_geometry_order() {
+        let settings = PlanSettings::reflected_ceiling();
+        settings.validate().unwrap();
+        assert_eq!(
+            settings
+                .range
+                .at_level_for_view(settings.view_type, 4.2)
+                .unwrap(),
+            PlanViewRange {
+                top: 8.2,
+                cut: 7.2,
+                bottom: 5.4,
+                depth: 4.2,
+            }
+        );
+        assert!(settings.range.at_level(4.2).is_err());
     }
 }

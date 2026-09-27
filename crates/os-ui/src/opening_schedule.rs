@@ -3,8 +3,10 @@ use crate::{DesktopApp, egui};
 use os_core::{Error, Id, Result};
 use os_model::{Model, OpeningKind, ViewKind};
 mod definitions;
+pub(crate) mod rooms;
 use definitions::DefinitionDraft;
 use os_model::{ScheduleCategory, ScheduleColumn, ScheduleParams, ScheduleSort};
+use os_model::{ScheduleFilter, ScheduleNumericField, ScheduleTextField};
 
 #[derive(Default)]
 pub(super) struct OpeningSchedule {
@@ -62,6 +64,9 @@ mod tests {
         let door = Opening::new(
             "core.opening",
             OpeningParams {
+                width_override: None,
+                height_override: None,
+                sill_override: None,
                 name: "Schedule door".into(),
                 host,
                 offset: 1.0,
@@ -74,6 +79,9 @@ mod tests {
         let window = Opening::new(
             "core.opening",
             OpeningParams {
+                width_override: None,
+                height_override: None,
+                sill_override: None,
                 name: "Schedule window".into(),
                 host,
                 offset: 5.0,
@@ -513,13 +521,22 @@ fn rows(model: &Model) -> Result<Vec<Row>> {
 }
 
 fn defined_rows(model: &Model, definition: Option<&ScheduleParams>) -> Result<Vec<Row>> {
+    if let Some(definition) = definition {
+        definition.validate()?;
+        os_core::ensure(
+            definition.category != ScheduleCategory::RoomFinish,
+            "room schedule requires room rows",
+        )?;
+    }
     let mut result = rows(model)?;
     if let Some(definition) = definition {
         result.retain(|r| match definition.category {
             ScheduleCategory::All => true,
             ScheduleCategory::Door => r.kind == OpeningKind::Door,
             ScheduleCategory::Window => r.kind == OpeningKind::Window,
+            ScheduleCategory::RoomFinish => false,
         });
+        result.retain(|row| definition.filters.iter().all(|filter| row.matches(filter)));
         result.sort_by(|a, b| {
             match definition.sort {
                 ScheduleSort::LevelKindName => (
@@ -533,6 +550,7 @@ fn defined_rows(model: &Model, definition: Option<&ScheduleParams>) -> Result<Ve
                 ScheduleSort::Width => a.width.total_cmp(&b.width),
                 ScheduleSort::Height => a.height.total_cmp(&b.height),
                 ScheduleSort::Sill => a.sill.total_cmp(&b.sill),
+                _ => unreachable!("validated opening sort"),
             }
             .then(a.id.cmp(&b.id))
         });
@@ -541,6 +559,36 @@ fn defined_rows(model: &Model, definition: Option<&ScheduleParams>) -> Result<Ve
 }
 
 impl Row {
+    fn matches(&self, filter: &ScheduleFilter) -> bool {
+        match filter {
+            ScheduleFilter::Text {
+                field,
+                operator,
+                value,
+            } => operator.matches(
+                match field {
+                    ScheduleTextField::Name => &self.name,
+                    ScheduleTextField::Type => &self.type_name,
+                    ScheduleTextField::Level => &self.level_name,
+                    ScheduleTextField::Host => &self.host_name,
+                },
+                value,
+            ),
+            ScheduleFilter::Numeric {
+                field,
+                operator,
+                value,
+            } => operator.matches(
+                match field {
+                    ScheduleNumericField::Width => self.width,
+                    ScheduleNumericField::Height => self.height,
+                    ScheduleNumericField::Sill => self.sill,
+                },
+                *value,
+            ),
+        }
+    }
+
     fn cell(&self, column: ScheduleColumn) -> String {
         match column {
             ScheduleColumn::Name => self.name.clone(),
@@ -551,6 +599,7 @@ impl Row {
             ScheduleColumn::Height => format!("{:.3}", self.height),
             ScheduleColumn::Sill => format!("{:.3}", self.sill),
             ScheduleColumn::Id => self.id.to_string(),
+            _ => unreachable!("validated opening column"),
         }
     }
 }
@@ -567,12 +616,26 @@ pub(super) fn paper_table(model: &Model, id: Id) -> Result<os_render::sheet::Pap
         columns: definition
             .columns
             .iter()
-            .map(|c| c.label().to_owned())
+            .map(|c| {
+                if definition.category == ScheduleCategory::RoomFinish && *c == ScheduleColumn::Name
+                {
+                    "Name".into()
+                } else {
+                    c.label().to_owned()
+                }
+            })
             .collect(),
-        rows: defined_rows(model, Some(definition))?
-            .iter()
-            .map(|row| definition.columns.iter().map(|c| row.cell(*c)).collect())
-            .collect(),
+        rows: if definition.category == ScheduleCategory::RoomFinish {
+            rooms::rows(model, definition)?
+                .iter()
+                .map(|row| definition.columns.iter().map(|c| row.cell(*c)).collect())
+                .collect()
+        } else {
+            defined_rows(model, Some(definition))?
+                .iter()
+                .map(|row| definition.columns.iter().map(|c| row.cell(*c)).collect())
+                .collect()
+        },
     })
 }
 
@@ -701,16 +764,27 @@ impl DesktopApp {
         let mut open = true;
         let mut clicked = None;
         let mut edit = None;
+        let mut edit_window = None;
         let mut apply = false;
         let mut cancel = false;
-        egui::Window::new("Door/window schedule")
+        egui::Window::new("Schedules")
             .open(&mut open)
             .default_size(egui::vec2(820.0, 360.0))
             .show(ctx, |ui| {
                 self.schedule_definition_controls(ui);
                 let definition = self.opening_schedule.selected.and_then(|id| self.editor.document.model().schedules.get(&id)).map(|s| s.parameters.clone());
                 let columns = definition.as_ref().map(|d| d.columns.clone()).unwrap_or_else(|| ScheduleColumn::ALL.to_vec());
+                if let Some(definition) = definition.as_ref().filter(|d| d.category == ScheduleCategory::RoomFinish) {
+                    self.room_schedule_rows(ui, definition);
+                    return;
+                }
                 ui.label("Dimensions in metres • Click a row to select • Edit name to rename an instance");
+                if let Some(id) = self.selected.filter(|id| self.editor.document.model().openings.get(id)
+                    .and_then(|o| self.editor.document.model().resolve_opening(&o.parameters).ok())
+                    .is_some_and(|o| o.kind == OpeningKind::Window))
+                    && ui.add_enabled(self.opening_schedule.draft.is_none(), egui::Button::new("Edit window properties")).clicked() {
+                    edit_window = Some(id);
+                }
                 if let Some(draft) = &mut self.opening_schedule.draft {
                     ui.label(format!("Edit instance name · {}", draft.id));
                     ui.text_edit_singleline(&mut draft.name);
@@ -775,6 +849,10 @@ impl DesktopApp {
         }
         if let Some(id) = clicked {
             self.select_schedule_opening(id);
+        }
+        if let Some(id) = edit_window {
+            self.select_schedule_opening(id);
+            self.begin_opening(None);
         }
     }
 }

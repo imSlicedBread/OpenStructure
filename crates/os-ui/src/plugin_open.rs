@@ -80,17 +80,48 @@ impl Editor {
             let top_z = level.parameters.elevation + floor.parameters.top_offset;
             scene.insert(
                 *id,
-                os_geometry::floors::extrude_floor(
+                os_geometry::floor_holes::extrude_floor_rings(
                     &floor.parameters.boundary,
+                    &floor.parameters.holes,
                     top_z,
                     floor.parameters.thickness,
                 )?,
+            );
+        }
+        for (id, stair) in &document.model().stairs {
+            let lower_z = document.model().levels[&stair.parameters.lower_level]
+                .parameters
+                .elevation;
+            let upper_z = document.model().levels[&stair.parameters.upper_level]
+                .parameters
+                .elevation;
+            scene.insert(
+                *id,
+                os_geometry::stairs::stair_mesh(&stair.parameters, lower_z, upper_z)?,
             );
         }
         ensure(
             Instant::now() < deadline,
             "candidate preparation exceeded open deadline",
         )?;
+        for (id, roof) in &document.model().roofs {
+            let elevation = document.model().levels[&roof.parameters.level]
+                .parameters
+                .elevation;
+            scene.insert(
+                *id,
+                os_geometry::roofs::roof_mesh(&roof.parameters, elevation)?,
+            );
+        }
+        for (id, ceiling) in &document.model().ceilings {
+            let elevation = document.model().levels[&ceiling.parameters.level]
+                .parameters
+                .elevation;
+            scene.insert(
+                *id,
+                os_geometry::ceilings::ceiling_mesh(&ceiling.parameters, elevation)?,
+            );
+        }
         self.staged_open = Some(StagedOpen {
             document,
             scene,

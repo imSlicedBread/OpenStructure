@@ -4,6 +4,26 @@ use os_geometry::{Mesh, Vec3};
 use os_render::plan::{PlanContext, PlanLine};
 
 impl OpeningTypeDraft {
+    pub(super) fn material_editor(&mut self, ui: &mut egui::Ui, editor: &Editor) {
+        ui.heading("Materials and appearance");
+        ui.small("Assign project materials independently to the door leaf/window pane and generated frame rails.");
+        ui.horizontal(|ui| {
+            material_selector(
+                ui,
+                editor.document.model(),
+                "Panel material",
+                &mut self.family.panel_material,
+            );
+            material_selector(
+                ui,
+                editor.document.model(),
+                "Frame material",
+                &mut self.family.frame_material,
+            );
+        });
+        ui.small("Swatches use shared project material colors.");
+    }
+
     pub(super) fn preview_model(&self, editor: &Editor) -> Result<Model> {
         ensure(self.current(editor), "Opening type draft is stale")?;
         let parameters = self.parameters()?;
@@ -73,6 +93,9 @@ impl OpeningTypeDraft {
             let opening = os_model::Opening::new(
                 "core.opening",
                 os_model::OpeningParams {
+                    width_override: None,
+                    height_override: None,
+                    sill_override: None,
                     name: "Preview".into(),
                     host: wall.id(),
                     offset: 1.,
@@ -115,6 +138,12 @@ impl OpeningTypeDraft {
             let host = os_geometry::walls::NativeWall::from_model(&model, p.host)?;
             let part = host.mesh()?;
             let offset = mesh.vertices.len() as u32;
+            if !mesh.surfaces.is_empty() {
+                mesh.surfaces.resize(
+                    mesh.triangles.len() + part.triangles.len(),
+                    Default::default(),
+                );
+            }
             mesh.triangles
                 .extend(part.triangles.iter().map(|t| t.map(|i| i + offset)));
             mesh.vertices.extend(part.vertices);
@@ -387,7 +416,22 @@ impl OpeningTypeDraft {
                                 )
                             })
                             .collect();
-                        paint_lines(ui, &edges);
+                        let colors: Vec<_> = mesh
+                            .triangles
+                            .iter()
+                            .enumerate()
+                            .flat_map(|(i, _)| {
+                                let color = mesh
+                                    .surfaces
+                                    .get(i)
+                                    .and_then(|s| s.color_in(editor.document.model()))
+                                    .map_or(theme::ACCENT, |[r, g, b]| {
+                                        egui::Color32::from_rgb(r, g, b)
+                                    });
+                                [color; 3]
+                            })
+                            .collect();
+                        paint_colored_lines(ui, &edges, &colors);
                     });
                     ui.vertical(|ui| {
                         ui.label("Plan preview · current cut/range");
@@ -405,7 +449,38 @@ impl OpeningTypeDraft {
     }
 }
 
+fn material_selector(ui: &mut egui::Ui, model: &Model, label: &str, value: &mut Option<Id>) {
+    let name = value.map_or("No material", |id| {
+        model
+            .materials
+            .get(&id)
+            .map_or("Missing material", |m| m.parameters.name.as_str())
+    });
+    egui::ComboBox::from_id_salt(label)
+        .selected_text(format!("{label}: {name}"))
+        .show_ui(ui, |ui| {
+            ui.selectable_value(value, None, "No material");
+            for material in model.materials.values() {
+                ui.selectable_value(value, Some(material.id()), &material.parameters.name);
+            }
+        });
+    if let Some([r, g, b]) = (os_geometry::SurfaceIdentity {
+        layer: None,
+        material: *value,
+    })
+    .color_in(model)
+    {
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(12., 12.), egui::Sense::hover());
+        ui.painter()
+            .rect_filled(rect, 2., egui::Color32::from_rgb(r, g, b));
+    }
+}
+
 fn paint_lines(ui: &mut egui::Ui, lines: &[(Point2, Point2)]) {
+    paint_colored_lines(ui, lines, &[]);
+}
+
+fn paint_colored_lines(ui: &mut egui::Ui, lines: &[(Point2, Point2)], colors: &[egui::Color32]) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(280., 100.), egui::Sense::hover());
     if lines.is_empty() {
         ui.painter().text(
@@ -433,8 +508,10 @@ fn paint_lines(ui: &mut egui::Ui, lines: &[(Point2, Point2)]) {
                 (-(p.y - (min.y + max.y) * 0.5) * scale) as f32,
             )
     };
-    for &(a, b) in lines {
-        ui.painter()
-            .line_segment([screen(a), screen(b)], egui::Stroke::new(1., theme::ACCENT));
+    for (i, &(a, b)) in lines.iter().enumerate() {
+        ui.painter().line_segment(
+            [screen(a), screen(b)],
+            egui::Stroke::new(1., colors.get(i).copied().unwrap_or(theme::ACCENT)),
+        );
     }
 }

@@ -20,6 +20,12 @@ pub(super) fn create_at(
     let room = Room::new(
         "core.room",
         RoomParams {
+            floor_material: None,
+            wall_material: None,
+            ceiling_material: None,
+            floor_finish: None,
+            wall_finish: None,
+            ceiling_finish: None,
             number: number.to_string(),
             name: format!("Room {number}"),
             level,
@@ -52,6 +58,8 @@ pub(super) fn apply_properties(
     id: Id,
     number: &str,
     name: &str,
+    finishes: &[String; 3],
+    materials: &[Option<Id>; 3],
 ) -> Result<()> {
     let mut parameters = editor
         .document
@@ -63,6 +71,18 @@ pub(super) fn apply_properties(
         .clone();
     parameters.number = number.into();
     parameters.name = name.into();
+    [
+        parameters.floor_material,
+        parameters.wall_material,
+        parameters.ceiling_material,
+    ] = *materials;
+    [
+        parameters.floor_finish,
+        parameters.wall_finish,
+        parameters.ceiling_finish,
+    ] = finishes
+        .each_ref()
+        .map(|s| if s.is_empty() { None } else { Some(s.clone()) });
     editor.command(
         "Edit room properties",
         Command::UpdateRoom { id, parameters },

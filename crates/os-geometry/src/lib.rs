@@ -1,12 +1,17 @@
 //! Replaceable geometry kernel with plain serializable boundary types.
 use os_core::{Error, Point2, Result, ensure};
 use serde::{Deserialize, Serialize};
+pub mod ceilings;
 pub mod columns;
+pub mod floor_holes;
 pub mod floors;
 pub mod openings;
 pub mod plan;
+pub mod reflected;
+pub mod roofs;
 pub mod rooms;
 pub mod section;
+pub mod stairs;
 pub mod walls;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -62,10 +67,16 @@ pub struct SurfaceIdentity {
 impl SurfaceIdentity {
     /// Stable display swatch; actual material UUID remains available to consumers.
     pub fn color(self) -> Option<[u8; 3]> {
-        self.material.or(self.layer).map(|id| {
-            let b = id.0.as_bytes();
-            [140 + b[0] % 80, 140 + b[1] % 80, 140 + b[2] % 80]
-        })
+        self.material
+            .or(self.layer)
+            .map(os_model::legacy_surface_color)
+    }
+    /// Resolve shared appearance without changing mesh or surface identity.
+    pub fn color_in(self, model: &os_model::Model) -> Option<[u8; 3]> {
+        self.material
+            .and_then(|id| model.materials.get(&id))
+            .map(|m| m.parameters.color)
+            .or_else(|| self.color())
     }
 }
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]

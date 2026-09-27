@@ -65,7 +65,8 @@ fn context(doc: &Document, view: Id) -> Result<plan::Context> {
         .levels
         .get(&level_id)
         .ok_or_else(|| invalid("plan level missing"))?;
-    settings.range.at_level(level.parameters.elevation)?;
+    let range = settings.range.at_level_for_view(settings.view_type, 0.0)?;
+    range.at_level(level.parameters.elevation)?;
     Ok(plan::Context {
         view_id: view.id().to_string(),
         settings_revision: view.parameters.settings_revision,
@@ -73,12 +74,7 @@ fn context(doc: &Document, view: Id) -> Result<plan::Context> {
         level_elevation: level.parameters.elevation,
         origin: [settings.basis.origin.x, settings.basis.origin.y],
         yaw: settings.basis.rotation,
-        range: [
-            settings.range.top,
-            settings.range.cut,
-            settings.range.bottom,
-            settings.range.depth,
-        ],
+        range: [range.top, range.cut, range.bottom, range.depth],
         crop: settings.crop.map(|c| [c.min.x, c.min.y, c.max.x, c.max.y]),
         scale_denominator: settings.scale_denominator,
         show_walls: settings.visibility.walls,

@@ -20,6 +20,71 @@ fn render(ts: &[Triangle], selected: Option<Id>) -> RasterFrame {
 }
 
 #[test]
+fn material_color_lookup_preserves_unassigned_fallback_and_selection() {
+    let id = Id::new();
+    let material = Id::new();
+    let layer = Id::new();
+    let colors = std::collections::BTreeMap::from([(material, [0, 128, 255])]);
+    for surface in [
+        os_geometry::SurfaceIdentity::default(),
+        os_geometry::SurfaceIdentity {
+            layer: Some(layer),
+            material: None,
+        },
+        os_geometry::SurfaceIdentity {
+            layer: Some(layer),
+            material: Some(Id::new()),
+        },
+    ] {
+        let mut t = triangle(id, [0.; 3]);
+        t.surface = surface;
+        let ts = [t];
+        assert_eq!(
+            render(&ts, None).rgba,
+            RasterFrame::render_with_materials(
+                &ts,
+                [100., 100.],
+                1.,
+                None,
+                Default::default(),
+                &colors
+            )
+            .unwrap()
+            .rgba
+        );
+    }
+    let mut t = triangle(id, [0.; 3]);
+    t.surface = os_geometry::SurfaceIdentity {
+        layer: Some(layer),
+        material: Some(material),
+    };
+    let ts = [t];
+    let frame = RasterFrame::render_with_materials(
+        &ts,
+        [100., 100.],
+        1.,
+        None,
+        Default::default(),
+        &colors,
+    )
+    .unwrap();
+    assert_eq!(frame.rgba[1010], [0, 128, 255, 255]);
+    assert_eq!(
+        render(&ts, Some(id)).rgba,
+        RasterFrame::render_with_materials(
+            &ts,
+            [100., 100.],
+            1.,
+            Some(id),
+            Default::default(),
+            &colors
+        )
+        .unwrap()
+        .rgba
+    );
+}
+
+#[test]
 fn crossing_planes_change_visible_owner_within_the_same_triangles() {
     let a = Id::new();
     let b = Id::new();

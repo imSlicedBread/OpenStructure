@@ -8,6 +8,10 @@ use os_model::{
 };
 use os_render::plan::{PlanContext, PlanLine};
 
+#[cfg(test)]
+#[path = "opening_sill_tests.rs"]
+mod sill_tests;
+
 pub(super) fn has_openings(model: &Model, host: Id) -> bool {
     model.openings.values().any(|o| o.parameters.host == host)
 }
@@ -24,10 +28,148 @@ pub(super) fn panel_mesh(model: &Model, id: Id) -> Result<os_geometry::Mesh> {
 
 const SWING_SEGMENTS: usize = 16;
 
-/// One press owns a same-host offset edit. All geometry is derived from a
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum OpeningAnchor {
+    Center,
+    Start,
+    End,
+}
+
+impl OpeningAnchor {
+    fn fraction(self) -> f64 {
+        match self {
+            Self::Center => 0.5,
+            Self::Start => 0.0,
+            Self::End => 1.0,
+        }
+    }
+}
+
+/// A selected instance and the exact plan snapshot in which Rehost began.
+pub(super) struct OpeningRehost {
+    context: PlanContext,
+    session: Id,
+    revision: u64,
+    activation: Option<Id>,
+    providers: Vec<(String, Id)>,
+    drawing: Id,
+    pub id: Id,
+    original: OpeningParams,
+}
+
+impl OpeningRehost {
+    pub fn begin(
+        editor: &Editor,
+        view: Option<Id>,
+        selected: Option<Id>,
+        drawing: &os_render::plan::PlanDrawing,
+    ) -> Result<Self> {
+        let view = view.ok_or_else(|| Error::Invalid("Open a floor plan first".into()))?;
+        let context = editor.native_plan_context(view)?;
+        let id =
+            selected.ok_or_else(|| Error::Invalid("Select a door or window to rehost".into()))?;
+        let opening = editor
+            .document
+            .model()
+            .openings
+            .get(&id)
+            .ok_or_else(|| Error::Invalid("Select a door or window to rehost".into()))?;
+        ensure(
+            context.show_walls
+                && drawing
+                    .provider_lines(context)?
+                    .iter()
+                    .any(|line| line.entity == id),
+            "Selected opening is hidden in this plan",
+        )?;
+        ensure(
+            editor.document.model().views[&view].parameters.level
+                == Some(
+                    editor.document.model().walls[&opening.parameters.host]
+                        .parameters
+                        .level,
+                ),
+            "Use a floor plan on the host wall level",
+        )?;
+        Ok(Self {
+            context,
+            session: editor.document.session_id(),
+            revision: editor.document.revision(),
+            activation: editor.host.activation_id(os_walls::PLUGIN_ID),
+            providers: crate::plan_workspace::plan_provider_signature(editor),
+            drawing: drawing.identity(),
+            id,
+            original: opening.parameters.clone(),
+        })
+    }
+
+    pub fn current(
+        &self,
+        editor: &Editor,
+        view: Option<Id>,
+        selected: Option<Id>,
+        drawing: Option<&os_render::plan::PlanDrawing>,
+    ) -> bool {
+        view == Some(self.context.view_id)
+            && selected == Some(self.id)
+            && editor.document.session_id() == self.session
+            && editor.document.revision() == self.revision
+            && editor.native_plan_context(self.context.view_id).ok() == Some(self.context)
+            && editor.host.activation_id(os_walls::PLUGIN_ID) == self.activation
+            && crate::plan_workspace::plan_provider_signature(editor) == self.providers
+            && drawing.is_some_and(|d| d.identity() == self.drawing)
+    }
+
+    pub fn host(&self) -> Id {
+        self.original.host
+    }
+
+    pub fn candidate(
+        &self,
+        editor: &Editor,
+        drawing: &os_render::plan::PlanDrawing,
+        camera: os_render::plan::PlanCamera,
+        viewport: [f64; 2],
+        pointer: Point2,
+    ) -> Result<(OpeningParams, os_render::plan::PlanDrawing)> {
+        let (host, station) = crate::plan_workspace::opening_host_hit(
+            editor.document.model(),
+            drawing,
+            self.context,
+            camera,
+            viewport,
+            pointer,
+        )?
+        .ok_or_else(|| Error::Invalid("Choose a visible native wall on this plan level".into()))?;
+        ensure(host != self.original.host, "Choose a different host wall")?;
+        let mut parameters = self.original.clone();
+        parameters.host = host;
+        parameters.offset = station
+            - editor
+                .document
+                .model()
+                .resolve_opening(&self.original)?
+                .width
+                * 0.5;
+        let mut model = editor.document.model().clone();
+        model
+            .openings
+            .get_mut(&self.id)
+            .ok_or_else(|| Error::Invalid("Opening no longer exists".into()))?
+            .parameters = parameters.clone();
+        model.validate()?;
+        let preview =
+            opening_edit_preview(&model, self.id, &[self.original.host, host], self.context)?;
+        Ok((parameters, preview))
+    }
+}
+
+/// One press owns a same-host move or anchored width resize. Geometry comes from a
 /// disposable model; only `commit` is allowed to touch document history.
 pub(super) struct OpeningMove {
     context: PlanContext,
+    session: Id,
+    revision: u64,
     activation: Option<Id>,
     providers: Vec<(String, Id)>,
     drawing: Id,
@@ -35,17 +177,85 @@ pub(super) struct OpeningMove {
     original: OpeningParams,
     origin: egui::Pos2,
     anchor: Point2,
+    handle: OpeningAnchor,
     offset: f64,
+    width: f64,
+    original_width: f64,
     moved: bool,
 }
 
 impl OpeningMove {
-    pub fn current(&self, editor: &Editor, view: Option<Id>, selected: Option<Id>) -> bool {
+    pub fn current(
+        &self,
+        editor: &Editor,
+        view: Option<Id>,
+        selected: Option<Id>,
+        drawing: Option<&os_render::plan::PlanDrawing>,
+    ) -> bool {
         view == Some(self.context.view_id)
             && selected == Some(self.id)
+            && editor.document.session_id() == self.session
+            && editor.document.revision() == self.revision
+            && drawing.is_some_and(|drawing| drawing.identity() == self.drawing)
             && editor.native_plan_context(self.context.view_id).ok() == Some(self.context)
             && editor.host.activation_id(os_walls::PLUGIN_ID) == self.activation
             && crate::plan_workspace::plan_provider_signature(editor) == self.providers
+    }
+
+    pub(super) fn parameters(&self) -> OpeningParams {
+        let mut parameters = self.original.clone();
+        parameters.offset = if (self.offset - self.original.offset).abs() <= 1e-6 {
+            self.original.offset
+        } else {
+            self.offset
+        };
+        if self.handle != OpeningAnchor::Center && (self.width - self.original_width).abs() > 1e-6 {
+            match &mut parameters.definition {
+                OpeningDefinition::Legacy { width, .. } => *width = self.width,
+                OpeningDefinition::Typed { .. } => parameters.width_override = Some(self.width),
+            }
+        }
+        parameters
+    }
+
+    fn update_pointer(
+        &mut self,
+        editor: &Editor,
+        drawing: &os_render::plan::PlanDrawing,
+        query: os_render::snapping::SnapQuery,
+        point: Point2,
+    ) -> Result<()> {
+        let wall = &editor.document.model().walls[&self.original.host].parameters;
+        let point = self.context.basis.plane_to_world(point)?;
+        let anchor = self.context.basis.plane_to_world(self.anchor)?;
+        let station = |p: Point2| {
+            ((p.x - wall.start.x) * (wall.end.x - wall.start.x)
+                + (p.y - wall.start.y) * (wall.end.y - wall.start.y))
+                / wall.length()
+        };
+        // Retain the press-to-grip station offset, so an off-center grab never jumps.
+        let delta = station(point) - station(anchor);
+        self.offset = self.original.offset;
+        self.width = self.original_width;
+        if !self.moved || delta.abs() <= 1e-6 {
+            return Ok(());
+        }
+        let target = self.original.offset + self.original_width * self.handle.fraction() + delta;
+        let projected = self
+            .context
+            .basis
+            .world_to_plane(world(wall, target, 0.0))?;
+        let snapped = host_axis_snap(editor, self, drawing, query, projected)?;
+        let target = station(self.context.basis.plane_to_world(snapped)?);
+        if self.handle == OpeningAnchor::Center {
+            self.offset = target - self.original_width * 0.5;
+        } else if self.handle == OpeningAnchor::Start {
+            self.offset = target;
+            self.width = self.original.offset + self.original_width - target;
+        } else {
+            self.width = target - self.original.offset;
+        }
+        Ok(())
     }
 
     fn candidate(&self, editor: &Editor) -> Result<Model> {
@@ -54,18 +264,65 @@ impl OpeningMove {
             .openings
             .get_mut(&self.id)
             .ok_or_else(|| Error::Invalid("Opening no longer exists".into()))?;
-        opening.parameters = self.original.clone();
-        opening.parameters.offset = self.offset;
+        opening.parameters = self.parameters();
         model.validate()?;
         Ok(model)
     }
 
     pub fn preview(&self, editor: &Editor) -> Result<os_render::plan::PlanDrawing> {
         let model = self.candidate(editor)?;
-        let wall = os_geometry::walls::NativeWall::from_model(&model, self.original.host)?;
+        opening_edit_preview(&model, self.id, &[self.original.host], self.context)
+    }
+
+    pub fn host(&self) -> Id {
+        self.original.host
+    }
+
+    pub fn commit(
+        self,
+        editor: &mut Editor,
+        view: Option<Id>,
+        selected: Option<Id>,
+        drawing: Option<&os_render::plan::PlanDrawing>,
+    ) -> Result<()> {
+        ensure(
+            self.current(editor, view, selected, drawing),
+            "Opening move is stale",
+        )?;
+        // Revalidate the final pointer candidate, never a cached last-valid one.
+        self.candidate(editor)?;
+        let parameters = self.parameters();
+        if self.moved && parameters != self.original {
+            editor.command(
+                if self.handle == OpeningAnchor::Center {
+                    "Move opening"
+                } else {
+                    "Resize opening"
+                },
+                Command::UpdateOpening {
+                    id: self.id,
+                    parameters,
+                },
+            )?;
+        }
+        Ok(())
+    }
+}
+
+/// Derive replacement host graphics and the selected symbol from a disposable model.
+fn opening_edit_preview(
+    model: &Model,
+    id: Id,
+    hosts: &[Id],
+    context: PlanContext,
+) -> Result<os_render::plan::PlanDrawing> {
+    let mut host_cells = std::collections::BTreeMap::new();
+    let mut host_seams = std::collections::BTreeMap::new();
+    for &host in hosts {
+        let wall = os_geometry::walls::NativeWall::from_model(model, host)?;
         let mut cells = Vec::new();
         for (layer, footprints) in
-            wall.layer_plan_footprints(self.context.range, self.context.basis, self.context.crop)?
+            wall.layer_plan_footprints(context.range, context.basis, context.crop)?
         {
             let surface = os_geometry::SurfaceIdentity {
                 layer: layer.id,
@@ -78,63 +335,33 @@ impl OpeningMove {
             .into_iter()
             .map(|(a, b)| {
                 Ok((
-                    self.context.basis.world_to_plane(a)?,
-                    self.context.basis.world_to_plane(b)?,
+                    context.basis.world_to_plane(a)?,
+                    context.basis.world_to_plane(b)?,
                 ))
             })
             .collect::<Result<Vec<_>>>()?;
-        let resolved = model.resolve_opening(&model.openings[&self.id].parameters)?;
-        os_render::plan::PlanDrawing::from_layered_footprints(
-            self.context,
-            &[(wall.entity, cells)].into(),
-            vec![self.id],
-        )?
-        .without_wall_seams(&[(wall.entity, seams)].into())?
+        host_cells.insert(host, cells);
+        host_seams.insert(host, seams);
+    }
+    let resolved = model.resolve_opening(&model.openings[&id].parameters)?;
+    let wall = os_geometry::walls::NativeWall::from_model(model, resolved.host)?;
+    os_render::plan::PlanDrawing::from_layered_footprints(context, &host_cells, vec![id])?
+        .without_wall_seams(&host_seams)?
         .with_native_lines(
             [(
-                self.id,
-                plan_symbol(
-                    self.id,
-                    &resolved,
-                    &wall.parameters,
-                    wall.elevation,
-                    self.context,
-                )?,
+                id,
+                plan_symbol(id, &resolved, &wall.parameters, wall.elevation, context)?,
             )]
             .into(),
         )
-    }
-
-    pub fn host(&self) -> Id {
-        self.original.host
-    }
-
-    pub fn commit(self, editor: &mut Editor, view: Option<Id>, selected: Option<Id>) -> Result<()> {
-        ensure(
-            self.current(editor, view, selected),
-            "Opening move is stale",
-        )?;
-        // Revalidate the final pointer candidate, never a cached last-valid one.
-        self.candidate(editor)?;
-        if self.moved && (self.offset - self.original.offset).abs() > 1e-6 {
-            let mut parameters = self.original;
-            parameters.offset = self.offset;
-            editor.command(
-                "Move opening",
-                Command::UpdateOpening {
-                    id: self.id,
-                    parameters,
-                },
-            )?;
-        }
-        Ok(())
-    }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn opening_grip(
     editor: &Editor,
     id: Id,
-    offset: Option<f64>,
+    dimensions: Option<(f64, f64)>,
+    handle: OpeningAnchor,
     context: PlanContext,
     camera: os_render::plan::PlanCamera,
     rect: egui::Rect,
@@ -152,7 +379,8 @@ fn opening_grip(
         .basis
         .world_to_plane(world(
             &wall.parameters,
-            offset.unwrap_or(p.offset) + p.width * 0.5,
+            dimensions.map_or(p.offset, |p| p.0)
+                + dimensions.map_or(p.width, |p| p.1) * handle.fraction(),
             0.0,
         ))
         .ok()?;
@@ -166,6 +394,341 @@ fn opening_grip(
         .ok()?;
     let pos = rect.min + egui::vec2(screen.x as f32, screen.y as f32);
     (pos.is_finite() && rect.contains(pos)).then_some(pos)
+}
+
+fn opening_jambs(
+    editor: &Editor,
+    id: Id,
+    dimensions: Option<(f64, f64)>,
+    context: PlanContext,
+    camera: os_render::plan::PlanCamera,
+    rect: egui::Rect,
+) -> Option<[(OpeningAnchor, egui::Pos2); 2]> {
+    let center = opening_grip(
+        editor,
+        id,
+        dimensions,
+        OpeningAnchor::Center,
+        context,
+        camera,
+        rect,
+    )?;
+    let start = opening_grip(
+        editor,
+        id,
+        dimensions,
+        OpeningAnchor::Start,
+        context,
+        camera,
+        rect,
+    )?;
+    let end = opening_grip(
+        editor,
+        id,
+        dimensions,
+        OpeningAnchor::End,
+        context,
+        camera,
+        rect,
+    )?;
+    // Suppress both jambs when acquisition discs touch. Keep the center grip usable.
+    (start.distance(end) > 20.0 && start.distance(center) > 20.0 && end.distance(center) > 20.0)
+        .then_some([(OpeningAnchor::Start, start), (OpeningAnchor::End, end)])
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) enum DoorFlip {
+    Hinge,
+    Swing,
+}
+
+impl DoorFlip {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Hinge => "Flip door hinge",
+            Self::Swing => "Flip door swing",
+        }
+    }
+
+    fn parameters(self, original: &OpeningParams) -> OpeningParams {
+        let mut parameters = original.clone();
+        match self {
+            Self::Hinge => {
+                parameters.hinge = match parameters.hinge {
+                    DoorHinge::Start => DoorHinge::End,
+                    DoorHinge::End => DoorHinge::Start,
+                };
+            }
+            Self::Swing => {
+                parameters.swing = match parameters.swing {
+                    DoorSwing::Left => DoorSwing::Right,
+                    DoorSwing::Right => DoorSwing::Left,
+                };
+            }
+        }
+        parameters
+    }
+}
+
+/// Reuse the revision/selection/provider snapshot used by Rehost. A flip owns
+/// its entire press, even if the context changes or the click becomes a drag.
+pub(super) struct OpeningFlip {
+    snapshot: OpeningRehost,
+    control: DoorFlip,
+    rect: egui::Rect,
+    camera: os_render::plan::PlanCamera,
+    canvas: egui::Rect,
+    origin: egui::Pos2,
+}
+
+impl OpeningFlip {
+    pub fn current(
+        &self,
+        editor: &Editor,
+        view: Option<Id>,
+        selected: Option<Id>,
+        drawing: Option<&os_render::plan::PlanDrawing>,
+    ) -> bool {
+        self.snapshot.current(editor, view, selected, drawing)
+    }
+
+    pub fn commit(
+        self,
+        editor: &mut Editor,
+        view: Option<Id>,
+        selected: Option<Id>,
+        drawing: Option<&os_render::plan::PlanDrawing>,
+    ) -> Result<()> {
+        ensure(
+            self.current(editor, view, selected, drawing),
+            "Door flip is stale",
+        )?;
+        let parameters = self.control.parameters(&self.snapshot.original);
+        ensure(
+            editor.document.model().resolve_opening(&parameters)?.kind == OpeningKind::Door,
+            "Select a door to flip",
+        )?;
+        editor.command(
+            self.control.label(),
+            Command::UpdateOpening {
+                id: self.snapshot.id,
+                parameters,
+            },
+        )
+    }
+}
+
+fn flip_rects(
+    editor: &Editor,
+    id: Id,
+    drawing: &os_render::plan::PlanDrawing,
+    context: PlanContext,
+    camera: os_render::plan::PlanCamera,
+    canvas: egui::Rect,
+) -> Option<[(DoorFlip, egui::Rect); 2]> {
+    let model = editor.document.model();
+    if model
+        .resolve_opening(&model.openings.get(&id)?.parameters)
+        .ok()?
+        .kind
+        != OpeningKind::Door
+        || !drawing
+            .provider_lines(context)
+            .ok()?
+            .iter()
+            .any(|l| l.entity == id)
+    {
+        return None;
+    }
+    // Flip buttons sit away from the axis, so overlapping resize grips alone
+    // must not hide them. Project each visible, uncropped jamb independently.
+    let start = opening_grip(
+        editor,
+        id,
+        None,
+        OpeningAnchor::Start,
+        context,
+        camera,
+        canvas,
+    )?;
+    let end = opening_grip(
+        editor,
+        id,
+        None,
+        OpeningAnchor::End,
+        context,
+        camera,
+        canvas,
+    )?;
+    let center = start.lerp(end, 0.5);
+    let row = egui::pos2(center.x, start.y.min(end.y) - 30.0);
+    let controls = [
+        (
+            DoorFlip::Hinge,
+            egui::Rect::from_center_size(row + egui::vec2(-32.0, 0.0), egui::vec2(58.0, 24.0)),
+        ),
+        (
+            DoorFlip::Swing,
+            egui::Rect::from_center_size(row + egui::vec2(32.0, 0.0), egui::vec2(58.0, 24.0)),
+        ),
+    ];
+    (!controls[0].1.intersects(controls[1].1)
+        && controls.iter().all(|(_, rect)| {
+            canvas.contains_rect(rect.expand(4.0))
+                && [start, center, end].iter().all(|p| {
+                    !rect
+                        .expand(4.0)
+                        .intersects(egui::Rect::from_center_size(*p, egui::vec2(20.0, 20.0)))
+                })
+        }))
+    .then_some(controls)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn flip_input(
+    editor: &Editor,
+    draft: &mut Option<OpeningFlip>,
+    claimed: &mut bool,
+    drawing: &os_render::plan::PlanDrawing,
+    context: PlanContext,
+    camera: os_render::plan::PlanCamera,
+    canvas: egui::Rect,
+    ui: &mut egui::Ui,
+    selected: Option<Id>,
+    allow: bool,
+) -> (Vec<(DoorFlip, egui::Response)>, bool) {
+    let controls = if allow {
+        selected.and_then(|id| flip_rects(editor, id, drawing, context, camera, canvas))
+    } else {
+        None
+    };
+    let max_click_dist = ui.ctx().options(|o| o.input_options.max_click_dist);
+    if draft.as_ref().is_some_and(|d| {
+        !d.current(editor, Some(context.view_id), selected, Some(drawing))
+            || d.camera != camera
+            || d.canvas != canvas
+            || !controls.is_some_and(|controls| controls.contains(&(d.control, d.rect)))
+    }) || ui.input(|i| {
+        i.key_pressed(egui::Key::Escape)
+            || i.events
+                .iter()
+                .any(|e| matches!(e, egui::Event::PointerGone))
+            || draft.as_ref().is_some_and(|d| {
+                i.pointer
+                    .interact_pos()
+                    .is_some_and(|p| p.distance(d.origin) > max_click_dist)
+            })
+    }) {
+        *draft = None;
+    }
+    let mut responses = Vec::new();
+    let mut release = false;
+    for (control, rect) in controls.into_iter().flatten() {
+        let response = ui.interact(
+            rect,
+            ui.id().with(("door_flip", selected, control)),
+            egui::Sense::click(),
+        );
+        response.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, true, control.label())
+        });
+        if !*claimed
+            && (response.is_pointer_button_down_on() || response.clicked())
+            && ui.input(|i| i.pointer.primary_pressed())
+            // egui clears press_origin on release, including a same-frame click.
+            && let Some(origin) = ui.input(|i| {
+                i.events.iter().find_map(|event| match event {
+                    egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, .. } => Some(*pos),
+                    _ => None,
+                })
+            })
+            && let Ok(snapshot) =
+                OpeningRehost::begin(editor, Some(context.view_id), selected, drawing)
+        {
+            *draft = Some(OpeningFlip {
+                snapshot,
+                control,
+                rect,
+                camera,
+                canvas,
+                origin,
+            });
+            *claimed = true;
+        }
+        release |= response.clicked() && draft.as_ref().is_some_and(|d| d.control == control);
+        responses.push((control, response));
+    }
+    (responses, release)
+}
+
+pub(super) fn paint_flip_controls(
+    ui: &egui::Ui,
+    painter: &egui::Painter,
+    controls: Vec<(DoorFlip, egui::Response)>,
+) {
+    for (control, response) in controls {
+        let visuals = ui.style().interact(&response);
+        painter.rect(
+            response.rect,
+            3.0,
+            visuals.bg_fill,
+            visuals.bg_stroke,
+            egui::StrokeKind::Inside,
+        );
+        painter.text(
+            response.rect.center(),
+            egui::Align2::CENTER_CENTER,
+            match control {
+                DoorFlip::Hinge => "Hinge",
+                DoorFlip::Swing => "Swing",
+            },
+            egui::FontId::proportional(12.0),
+            visuals.text_color(),
+        );
+        response.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(match control {
+            DoorFlip::Hinge => "Flip door hinge: wall start ↔ wall end. Uses the host's stored start → end direction.",
+            DoorFlip::Swing => "Flip door swing: left ↔ right of wall. Uses the host's stored start → end direction.",
+        });
+    }
+}
+
+/// Restrict the existing snap solver to the host axis and other visible jambs.
+/// Never use the selected opening's aperture edges as references for its own move.
+fn host_axis_snap(
+    editor: &Editor,
+    draft: &OpeningMove,
+    drawing: &os_render::plan::PlanDrawing,
+    mut query: os_render::snapping::SnapQuery,
+    point: Point2,
+) -> Result<Point2> {
+    use os_render::snapping::{SnapScene, SnapSegment};
+    let model = editor.document.model();
+    let wall = &model.walls[&draft.original.host].parameters;
+    let context = draft.context;
+    let mut segments = vec![SnapSegment {
+        entity: draft.original.host,
+        feature: 0,
+        start: context.basis.world_to_plane(wall.start)?,
+        end: context.basis.world_to_plane(wall.end)?,
+    }];
+    segments.extend(drawing.provider_lines(context)?.iter().filter_map(|line| {
+        let opening = model.openings.get(&line.entity)?;
+        (line.entity != draft.id
+            && opening.parameters.host == draft.original.host
+            && line.feature < 2)
+            .then_some(SnapSegment {
+                entity: line.entity,
+                feature: line.feature,
+                start: line.start,
+                end: line.end,
+            })
+    }));
+    query.pointer = query.camera.project(point, query.viewport)?;
+    query.exclude_entity = Some(draft.id);
+    Ok(SnapScene::new(context, segments)?
+        .query(context, query)?
+        .candidate(context, query)?
+        .map_or(point, |candidate| candidate.point))
 }
 
 /// Returns a release request. Keep pointer ownership until the workspace has
@@ -182,6 +745,7 @@ pub(super) fn move_input(
     ctx: &egui::Context,
     selected: Option<Id>,
     allow: bool,
+    snap_query: os_render::snapping::SnapQuery,
 ) -> bool {
     let rect = response.rect;
     let plane = |pos: egui::Pos2| {
@@ -193,10 +757,13 @@ pub(super) fn move_input(
             [f64::from(rect.width()), f64::from(rect.height())],
         )
     };
-    if draft
-        .as_ref()
-        .is_some_and(|d| d.drawing != drawing.identity() || !allow)
-    {
+    if draft.as_ref().is_some_and(|d| {
+        !d.current(editor, Some(context.view_id), selected, Some(drawing)) || !allow
+    }) || ctx.input(|i| {
+        i.events
+            .iter()
+            .any(|e| matches!(e, egui::Event::PointerGone))
+    }) {
         *draft = None;
     }
     if allow
@@ -207,22 +774,45 @@ pub(super) fn move_input(
         && drawing
             .provider_lines(context)
             .is_ok_and(|lines| lines.iter().any(|l| l.entity == id))
-        && let Some(grip) = opening_grip(editor, id, None, context, camera, rect)
         && let Some(pos) = ctx.input(|i| i.pointer.press_origin())
-        && pos.distance(grip) <= 10.0
+        && let Some(handle) = opening_jambs(editor, id, None, context, camera, rect)
+            .into_iter()
+            .flatten()
+            .find_map(|(handle, grip)| (pos.distance(grip) <= 10.0).then_some(handle))
+            .or_else(|| {
+                opening_grip(
+                    editor,
+                    id,
+                    None,
+                    OpeningAnchor::Center,
+                    context,
+                    camera,
+                    rect,
+                )
+                .filter(|grip| pos.distance(*grip) <= 10.0)
+                .map(|_| OpeningAnchor::Center)
+            })
         && let Ok(anchor) = plane(pos)
     {
         let original = editor.document.model().openings[&id].parameters.clone();
+        let Ok(resolved) = editor.document.model().resolve_opening(&original) else {
+            return false;
+        };
         *draft = Some(OpeningMove {
             context,
+            session: editor.document.session_id(),
+            revision: editor.document.revision(),
             activation: editor.host.activation_id(os_walls::PLUGIN_ID),
             providers: crate::plan_workspace::plan_provider_signature(editor),
             drawing: drawing.identity(),
             id,
             offset: original.offset,
+            width: resolved.width,
+            original_width: resolved.width,
             original,
             origin: pos,
             anchor,
+            handle,
             moved: false,
         });
         *claimed = true;
@@ -230,16 +820,13 @@ pub(super) fn move_input(
     if let Some(d) = draft {
         if let Some(pos) = ctx.input(|i| i.pointer.interact_pos()) {
             d.moved |= pos.distance(d.origin) > ctx.options(|o| o.input_options.max_click_dist);
-            let wall = &editor.document.model().walls[&d.original.host].parameters;
-            d.offset = plane(pos)
-                .and_then(|point| context.basis.plane_to_world(point))
-                .map_or(f64::NAN, |point| {
-                    let anchor = context.basis.plane_to_world(d.anchor).unwrap();
-                    d.original.offset
-                        + ((point.x - anchor.x) * (wall.end.x - wall.start.x)
-                            + (point.y - anchor.y) * (wall.end.y - wall.start.y))
-                            / wall.length()
-                });
+            if plane(pos)
+                .and_then(|point| d.update_pointer(editor, drawing, snap_query, point))
+                .is_err()
+            {
+                d.offset = f64::NAN;
+                d.width = f64::NAN;
+            }
         }
         if ctx.input(|i| i.pointer.primary_released()) {
             if response.contains_pointer()
@@ -278,7 +865,8 @@ pub(super) fn paint_move_grip(
         && let Some(pos) = opening_grip(
             editor,
             id,
-            draft.map(|d| d.offset),
+            draft.map(|d| (d.offset, d.width)),
+            OpeningAnchor::Center,
             context,
             camera,
             response.rect,
@@ -299,6 +887,65 @@ pub(super) fn paint_move_grip(
             .is_some_and(|p| p.distance(pos) <= 10.0)
         {
             response.ctx.set_cursor_icon(egui::CursorIcon::Grab);
+        }
+    }
+    if let Some(id) = selected
+        && drawing
+            .provider_lines(context)
+            .is_ok_and(|lines| lines.iter().any(|l| l.entity == id))
+        && let Some(jambs) = opening_jambs(
+            editor,
+            id,
+            draft.map(|d| (d.offset, d.width)),
+            context,
+            camera,
+            response.rect,
+        )
+    {
+        let axis = jambs[1].1 - jambs[0].1;
+        let cursor = if axis.x.abs() > 2.0 * axis.y.abs() {
+            egui::CursorIcon::ResizeHorizontal
+        } else if axis.y.abs() > 2.0 * axis.x.abs() {
+            egui::CursorIcon::ResizeVertical
+        } else if axis.x * axis.y > 0.0 {
+            egui::CursorIcon::ResizeNwSe
+        } else {
+            egui::CursorIcon::ResizeNeSw
+        };
+        for (handle, pos) in jambs {
+            let hovered = response
+                .hover_pos()
+                .is_some_and(|p| p.distance(pos) <= 10.0);
+            let active = draft.is_some_and(|d| d.handle == handle);
+            let color = if error.is_some() {
+                theme::ERROR
+            } else {
+                theme::ACCENT
+            };
+            painter.add(egui::Shape::convex_polygon(
+                vec![
+                    pos + egui::vec2(0.0, -6.0),
+                    pos + egui::vec2(6.0, 0.0),
+                    pos + egui::vec2(0.0, 6.0),
+                    pos + egui::vec2(-6.0, 0.0),
+                ],
+                if active || hovered {
+                    color
+                } else {
+                    egui::Color32::TRANSPARENT
+                },
+                egui::Stroke::new(2.0, color),
+            ));
+            if active || hovered {
+                response.ctx.set_cursor_icon(cursor);
+                painter.text(
+                    pos + egui::vec2(0.0, -14.0),
+                    egui::Align2::CENTER_BOTTOM,
+                    "Resize opening · opposite jamb fixed",
+                    egui::FontId::proportional(12.0),
+                    theme::TEXT,
+                );
+            }
         }
     }
     if let Some(error) = error {
@@ -444,6 +1091,8 @@ pub(super) struct OpeningDraft {
     kind: OpeningKind,
     type_id: Option<Id>,
     params: OpeningParams,
+    dimension_overrides: [bool; 2],
+    override_sill: bool,
     values: [String; 4],
     error: Option<String>,
 }
@@ -533,6 +1182,9 @@ impl OpeningDraft {
                 |type_id| OpeningDefinition::Typed { type_id },
             );
             let parameters = OpeningParams {
+                width_override: None,
+                height_override: None,
+                sill_override: None,
                 hinge: Default::default(),
                 swing: Default::default(),
                 name: format!("{kind:?}"),
@@ -560,6 +1212,11 @@ impl OpeningDraft {
             editing,
             kind: resolved.kind,
             type_id: resolved.type_id,
+            dimension_overrides: [
+                params.width_override.is_some(),
+                params.height_override.is_some(),
+            ],
+            override_sill: params.sill_override.is_some(),
             params,
             values,
             error: None,
@@ -575,6 +1232,15 @@ impl OpeningDraft {
     fn parameters(&self) -> Result<OpeningParams> {
         let mut values = [0.0; 4];
         for (i, text) in self.values.iter().enumerate() {
+            if self.type_id.is_some()
+                && !match i {
+                    0 => true,
+                    1 | 2 => self.dimension_overrides[i - 1],
+                    _ => self.override_sill,
+                }
+            {
+                continue;
+            }
             values[i] = text
                 .trim()
                 .parse()
@@ -582,6 +1248,11 @@ impl OpeningDraft {
         }
         let mut p = self.params.clone();
         p.offset = values[0];
+        if self.type_id.is_some() {
+            p.width_override = self.dimension_overrides[0].then_some(values[1]);
+            p.height_override = self.dimension_overrides[1].then_some(values[2]);
+            p.sill_override = self.override_sill.then_some(values[3]);
+        }
         if let OpeningDefinition::Legacy {
             kind,
             width,
@@ -773,6 +1444,32 @@ impl DesktopApp {
                     if ui.button("Edit opening").clicked() {
                         self.begin_opening(None);
                     }
+                    if ui
+                        .add_enabled(
+                            self.selected_ids.len() == 1
+                                && self.selected.is_some_and(|id| {
+                                    self.editor.document.model().openings.contains_key(&id)
+                                }),
+                            egui::Button::new("Array along wall"),
+                        )
+                        .clicked()
+                    {
+                        self.begin_opening_array();
+                    }
+                    if ui
+                        .add_enabled(
+                            self.selected.is_some_and(|id| {
+                                self.editor.document.model().openings.contains_key(&id)
+                            }),
+                            egui::Button::new("Rehost"),
+                        )
+                        .on_hover_text(
+                            "Move the selected door or window to another visible native wall",
+                        )
+                        .clicked()
+                    {
+                        self.begin_opening_rehost();
+                    }
                 });
             });
         });
@@ -793,7 +1490,7 @@ impl DesktopApp {
             ui.heading(format!("{} {:?}", if draft.editing { "Edit" } else { "New" }, draft.kind));
             let host = &self.editor.document.model().walls[&draft.params.host].parameters;
             ui.label(format!("Host: {} · {:.3} m long · {:.3} m high", host.name, host.length(), host.height));
-            ui.label("Offset, hinge and swing belong to this instance. Width, height and sill belong to the reusable type. All dimensions are in metres.");
+            ui.label("Inherit type dimensions or override them for this instance. Windows can also override sill. All dimensions are in metres.");
             egui::ScrollArea::vertical().max_height((ctx.content_rect().height()-260.0).max(100.0)).show(ui, |ui| {
                 egui::Grid::new("opening_fields").num_columns(2).show(ui, |ui| {
                     ui.label("Name"); ui.add(egui::TextEdit::singleline(&mut draft.params.name).char_limit(256).desired_width(170.0)); ui.end_row();
@@ -802,11 +1499,54 @@ impl DesktopApp {
                     ui.end_row();
                     match self.editor.document.model().resolve_opening(&draft.params) {
                         Ok(resolved) if resolved.type_id.is_some() => {
+                            let defaults = &self.editor.document.model().opening_types[&resolved.type_id.unwrap()].parameters;
                             ui.label("Assigned type");
-                            ui.label(format!("{} · {:.3} × {:.3} m · sill {:.3} m",
+                            ui.label(format!("{} · defaults {:.3} × {:.3} m · sill {:.3} m",
                                 resolved.type_name.unwrap_or_else(|| "Opening type".into()),
-                                resolved.width, resolved.height, resolved.sill));
+                                defaults.width, defaults.height, defaults.sill));
                             ui.end_row();
+                            for (index, label, default) in [(1, "width", defaults.width), (2, "height", defaults.height)] {
+                                ui.label(LABELS[index]);
+                                ui.vertical(|ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.radio_value(&mut draft.dimension_overrides[index - 1], false, format!("Inherit {label}"));
+                                        ui.radio_value(&mut draft.dimension_overrides[index - 1], true, format!("Override {label}"));
+                                    });
+                                    ui.add_enabled(draft.dimension_overrides[index - 1],
+                                        egui::TextEdit::singleline(&mut draft.values[index]).char_limit(64).desired_width(170.0));
+                                    let effective = if draft.dimension_overrides[index - 1] {
+                                        draft.values[index].trim().parse::<f64>().ok()
+                                    } else { Some(default) };
+                                    ui.label(effective.map_or_else(|| "Invalid value".into(), |v| format!("Effective {label}: {v:.3} m · default {default:.3} m")));
+                                    if ui.button(format!("Reset {label} to type default")).clicked() {
+                                        draft.dimension_overrides[index - 1] = false;
+                                        draft.values[index] = default.to_string();
+                                    }
+                                });
+                                ui.end_row();
+                            }
+                            if resolved.kind == OpeningKind::Window {
+                                ui.label("Sill mode");
+                                ui.vertical(|ui| {
+                                    ui.radio_value(&mut draft.override_sill, false, "Use type default");
+                                    ui.radio_value(&mut draft.override_sill, true, "Override sill");
+                                });
+                                ui.end_row();
+                                let default_sill = self.editor.document.model().opening_types[&resolved.type_id.unwrap()].parameters.sill;
+                                ui.label(LABELS[3]);
+                                ui.add_enabled(draft.override_sill,
+                                    egui::TextEdit::singleline(&mut draft.values[3]).char_limit(64).desired_width(170.0));
+                                ui.end_row();
+                                ui.label("Effective sill");
+                                let effective = if draft.override_sill { draft.values[3].parse::<f64>().ok() } else { Some(default_sill) };
+                                ui.label(effective.map_or_else(|| "Invalid value".into(), |v| format!("{v:.3} m (type default {default_sill:.3} m)")));
+                                ui.end_row();
+                                if ui.button("Reset sill to type default").clicked() {
+                                    draft.override_sill = false;
+                                    draft.values[3] = default_sill.to_string();
+                                }
+                                ui.end_row();
+                            }
                             if let Some(type_id) = resolved.type_id
                                 && ui.button("Edit shared type dimensions…").clicked() {
                                 edit_type = Some(type_id);

@@ -34,6 +34,19 @@ pub fn affected_entities(model: &Model, changed: &BTreeSet<Id>) -> BTreeSet<Id> 
             reverse.entry(material).or_default().push(column.id());
         }
     }
+    for stair in model.stairs.values() {
+        reverse
+            .entry(stair.parameters.lower_level)
+            .or_default()
+            .push(stair.id());
+        reverse
+            .entry(stair.parameters.upper_level)
+            .or_default()
+            .push(stair.id());
+        if let Some(material) = stair.parameters.material {
+            reverse.entry(material).or_default().push(stair.id());
+        }
+    }
     for floor in model.floors.values() {
         reverse
             .entry(floor.parameters.level)
@@ -41,6 +54,27 @@ pub fn affected_entities(model: &Model, changed: &BTreeSet<Id>) -> BTreeSet<Id> 
             .push(floor.id());
         if let Some(material) = floor.parameters.material {
             reverse.entry(material).or_default().push(floor.id());
+        }
+    }
+    for floor in model.roofs.values() {
+        reverse
+            .entry(floor.parameters.level)
+            .or_default()
+            .push(floor.id());
+        if let Some(material) = floor.parameters.material {
+            reverse.entry(material).or_default().push(floor.id());
+        }
+    }
+    for ceiling in model.ceilings.values() {
+        reverse
+            .entry(ceiling.parameters.level)
+            .or_default()
+            .push(ceiling.id());
+        if let Some(room) = ceiling.parameters.boundary_room {
+            reverse.entry(room).or_default().push(ceiling.id());
+        }
+        if let Some(material) = ceiling.parameters.material {
+            reverse.entry(material).or_default().push(ceiling.id());
         }
     }
     for entity in model.extensions.values() {
@@ -63,12 +97,22 @@ pub fn affected_entities(model: &Model, changed: &BTreeSet<Id>) -> BTreeSet<Id> 
     }
     for dimension in model.dimensions.values() {
         let p = &dimension.parameters;
-        for target in std::iter::once(p.view).chain(p.references().map(|reference| reference.wall))
+        for target in
+            std::iter::once(p.view).chain(p.references().map(|reference| reference.entity()))
         {
             reverse.entry(target).or_default().push(dimension.id());
         }
         // Annotation edits invalidate their owning drawing as well.
         reverse.entry(dimension.id()).or_default().push(p.view);
+    }
+    for tag in model.opening_tags.values() {
+        for target in [tag.parameters.opening, tag.parameters.view] {
+            reverse.entry(target).or_default().push(tag.id());
+        }
+        reverse
+            .entry(tag.id())
+            .or_default()
+            .push(tag.parameters.view);
     }
     for tag in model.room_tags.values() {
         for target in [tag.parameters.room, tag.parameters.view] {
@@ -118,6 +162,9 @@ pub fn affected_entities(model: &Model, changed: &BTreeSet<Id>) -> BTreeSet<Id> 
             || model.wall_joins.contains_key(id)
             || model.floors.contains_key(id)
             || model.columns.contains_key(id)
+            || model.stairs.contains_key(id)
+            || model.roofs.contains_key(id)
+            || model.ceilings.contains_key(id)
             || model.extensions.contains_key(id)
             || model.levels.contains_key(id)
             || model.grids.contains_key(id)
@@ -152,6 +199,9 @@ pub fn affected_entities(model: &Model, changed: &BTreeSet<Id>) -> BTreeSet<Id> 
             || model.wall_joins.contains_key(id)
             || model.floors.contains_key(id)
             || model.columns.contains_key(id)
+            || model.stairs.contains_key(id)
+            || model.roofs.contains_key(id)
+            || model.ceilings.contains_key(id)
             || model.walls.contains_key(id)
             || model.openings.contains_key(id)
             || model.opening_types.contains_key(id)
@@ -160,6 +210,7 @@ pub fn affected_entities(model: &Model, changed: &BTreeSet<Id>) -> BTreeSet<Id> 
             || model.views.contains_key(id)
             || model.dimensions.contains_key(id)
             || model.room_tags.contains_key(id)
+            || model.opening_tags.contains_key(id)
             || model.grids.contains_key(id)
     });
     // Schedule rows derive host data on each revision; include schedule IDs for

@@ -10,6 +10,8 @@ pub enum WallEdit {
     Move,
     ResizeStart,
     ResizeEnd,
+    TrimStart,
+    TrimEnd,
     OffsetCopy,
 }
 
@@ -154,7 +156,25 @@ impl WallGesture {
             self.installed && self.current(editor, active),
             "Installed Wall gesture is stale or belongs to another provider",
         )?;
-        let p = self.parameters(point)?;
+        self.installed_parameters(editor, active, self.parameters(point)?)
+    }
+    /// Reuse the bounded Wall adapter for an already validated rigid transform.
+    #[cfg(feature = "external-plugins")]
+    pub(crate) fn installed_parameters(
+        &self,
+        editor: &Editor,
+        active: Option<Id>,
+        p: WallParams,
+    ) -> Result<(
+        crate::plugin_tools::ToolDraft,
+        crate::plugin_tools::ToolContext,
+        os_plugin_host::worker::ViewContext,
+    )> {
+        ensure(
+            self.installed && self.current(editor, active),
+            "Stale Wall transform",
+        )?;
+        p.validate()?;
         let context = crate::plugin_tools::ToolContext {
             level: p.level,
             selection: self
@@ -239,6 +259,31 @@ impl WallGesture {
                 mode != WallEdit::OffsetCopy || original.material.is_none(),
                 "Installed Wall copies do not support material assignment",
             )?;
+            ensure(
+                mode != WallEdit::TrimStart
+                    || !editor
+                        .document
+                        .model()
+                        .openings
+                        .values()
+                        .any(|opening| opening.parameters.host == id),
+                "Installed Wall cannot atomically preserve hosted openings when trimming/extending the start",
+            )?;
+        }
+        if matches!(mode, WallEdit::TrimStart | WallEdit::TrimEnd) {
+            ensure(
+                editor.document.model().walls[&id].header.type_id == os_walls::WALL_TYPE,
+                "Trim/Extend supports native straight walls only",
+            )?;
+            ensure(
+                !editor
+                    .document
+                    .model()
+                    .wall_joins
+                    .values()
+                    .any(|join| join.parameters.members().contains(&id)),
+                "Trim/Extend is unavailable for explicitly joined walls",
+            )?;
         }
         let c = gesture.context;
         let elevation = editor.document.model().levels[&original.level]
@@ -259,8 +304,10 @@ impl WallGesture {
         gesture.edit = Some((id, mode));
         gesture.start = match mode {
             WallEdit::Move => None,
-            WallEdit::ResizeStart => Some(c.basis.world_to_plane(original.end)?),
-            WallEdit::ResizeEnd | WallEdit::OffsetCopy => {
+            WallEdit::ResizeStart | WallEdit::TrimStart => {
+                Some(c.basis.world_to_plane(original.end)?)
+            }
+            WallEdit::ResizeEnd | WallEdit::TrimEnd | WallEdit::OffsetCopy => {
                 Some(c.basis.world_to_plane(original.start)?)
             }
         };
@@ -268,6 +315,65 @@ impl WallGesture {
     }
     pub fn edit_mode(&self) -> Option<WallEdit> {
         self.edit.map(|(_, mode)| mode)
+    }
+    pub fn source_id(&self) -> Option<Id> {
+        self.edit.map(|(id, _)| id)
+    }
+    pub fn is_trim_extend(&self) -> bool {
+        matches!(
+            self.edit_mode(),
+            Some(WallEdit::TrimStart | WallEdit::TrimEnd)
+        )
+    }
+    /// Resolve a picked finite reference wall to the exact source-axis crossing.
+    /// The returned point is in the active plan's local basis.
+    pub fn trim_extend_point(&self, boundary: &WallParams) -> Result<Point2> {
+        let mode = self
+            .edit_mode()
+            .ok_or_else(|| os_core::Error::Invalid("Trim/Extend needs an edited wall".into()))?;
+        ensure(
+            matches!(mode, WallEdit::TrimStart | WallEdit::TrimEnd),
+            "Trim/Extend needs a start or end endpoint",
+        )?;
+        ensure(
+            boundary.level == self.parameters.level,
+            "Choose a boundary wall on the same level",
+        )?;
+        boundary.validate()?;
+        let p = self.parameters.start;
+        let r = Point2::new(self.parameters.end.x - p.x, self.parameters.end.y - p.y);
+        let q = boundary.start;
+        let s = Point2::new(boundary.end.x - q.x, boundary.end.y - q.y);
+        let cross = |a: Point2, b: Point2| a.x * b.y - a.y * b.x;
+        let denominator = cross(r, s);
+        let source_length = r.x.hypot(r.y);
+        let boundary_length = s.x.hypot(s.y);
+        ensure(
+            denominator.is_finite() && denominator.abs() > source_length * boundary_length * 1e-12,
+            "Source and boundary walls are parallel",
+        )?;
+        let qp = Point2::new(q.x - p.x, q.y - p.y);
+        let station = cross(qp, s) / denominator * source_length;
+        let boundary_station = cross(qp, r) / denominator * boundary_length;
+        ensure(
+            boundary_station >= -1e-8 && boundary_station <= boundary_length + 1e-8,
+            "Source axis does not meet the picked boundary wall",
+        )?;
+        match mode {
+            WallEdit::TrimStart => ensure(
+                station < source_length - 1e-6,
+                "Start intersection would cross the fixed end",
+            )?,
+            WallEdit::TrimEnd => ensure(
+                station > 1e-6,
+                "End intersection would cross the fixed start",
+            )?,
+            _ => unreachable!("mode checked above"),
+        }
+        let t = station / source_length;
+        let world = Point2::new(p.x + r.x * t, p.y + r.y * t);
+        ensure(world.is_finite(), "Wall intersection is not finite")?;
+        self.context.basis.world_to_plane(world)
     }
     /// Fully specified drafts do not need snap acquisition. Invalid exact text
     /// still follows this route so its validation error is not masked by snapping.
@@ -306,6 +412,8 @@ impl WallGesture {
             }
             Some(WallEdit::ResizeStart) => "Place wall start (end stays fixed)",
             Some(WallEdit::ResizeEnd) => "Place wall end (start stays fixed)",
+            Some(WallEdit::TrimStart) => "Click a boundary wall to trim/extend the start",
+            Some(WallEdit::TrimEnd) => "Click a boundary wall to trim/extend the end",
             Some(WallEdit::OffsetCopy) => "Place parallel copy (+ left, - right)",
         }
     }
@@ -322,6 +430,11 @@ impl WallGesture {
     }
     pub fn parameters(&self, pointer: Point2) -> Result<WallParams> {
         ensure(pointer.is_finite(), "invalid wall pointer")?;
+        ensure(
+            !self.is_trim_extend()
+                || (self.length.trim().is_empty() && self.angle_degrees.trim().is_empty()),
+            "Trim/Extend uses the picked boundary intersection",
+        )?;
         let start = self
             .start
             .ok_or_else(|| os_core::Error::Invalid("Choose a start point".into()))?;
@@ -430,11 +543,13 @@ impl WallGesture {
             },
         )?;
         match self.edit_mode() {
-            Some(WallEdit::ResizeStart) => {
+            Some(WallEdit::ResizeStart | WallEdit::TrimStart) => {
                 parameters.start = parameters.end;
                 parameters.end = self.parameters.end;
             }
-            Some(WallEdit::ResizeEnd) => parameters.start = self.parameters.start,
+            Some(WallEdit::ResizeEnd | WallEdit::TrimEnd) => {
+                parameters.start = self.parameters.start
+            }
             _ => {}
         }
         parameters.validate()?;
@@ -460,6 +575,54 @@ impl WallGesture {
             let independent = &editor.document.model().walls[&source].parameters;
             parameters.thickness = independent.thickness;
             parameters.material = independent.material;
+        }
+        if let Some((source, mode @ (WallEdit::TrimStart | WallEdit::TrimEnd))) = self.edit {
+            let model = editor.document.model();
+            let mut commands = vec![os_document::Command::UpdateWall {
+                id: source,
+                parameters: parameters.clone(),
+            }];
+            if mode == WallEdit::TrimStart {
+                let original = &model.walls[&source].parameters;
+                let dx = original.end.x - original.start.x;
+                let dy = original.end.y - original.start.y;
+                let length = dx.hypot(dy);
+                let moved_start = Point2::new(
+                    parameters.start.x - original.start.x,
+                    parameters.start.y - original.start.y,
+                );
+                let station = (moved_start.x * dx + moved_start.y * dy) / length;
+                for opening in model
+                    .openings
+                    .values()
+                    .filter(|o| o.parameters.host == source)
+                {
+                    let mut opening_parameters = opening.parameters.clone();
+                    opening_parameters.offset -= station;
+                    commands.push(os_document::Command::UpdateOpening {
+                        id: opening.id(),
+                        parameters: opening_parameters,
+                    });
+                }
+            }
+            let label = if mode == WallEdit::TrimStart {
+                "Trim/extend wall start"
+            } else {
+                "Trim/extend wall end"
+            };
+            let mut candidate = crate::Document::from_model(model.clone())?;
+            candidate.execute(label, commands.clone())?;
+            if commands.len() > 1 {
+                editor.document.execute(label, commands)?;
+                return editor.regenerate();
+            }
+            return editor.wall_command(
+                label,
+                os_plugin_api::Request::EditWall {
+                    id: source,
+                    parameters,
+                },
+            );
         }
         if let Some((source, WallEdit::OffsetCopy)) = self.edit
             && let Some(assignment) = editor
@@ -500,10 +663,12 @@ impl WallGesture {
                 os_plugin_api::Request::CreateWall(parameters),
             ),
             Some((id, mode)) => (
-                if mode == WallEdit::Move {
-                    "Move wall in plan"
-                } else {
-                    "Resize wall in plan"
+                match mode {
+                    WallEdit::Move => "Move wall in plan",
+                    WallEdit::ResizeStart | WallEdit::ResizeEnd => "Resize wall in plan",
+                    WallEdit::TrimStart => "Trim/extend wall start",
+                    WallEdit::TrimEnd => "Trim/extend wall end",
+                    WallEdit::OffsetCopy => unreachable!("offset copy handled above"),
                 },
                 os_plugin_api::Request::EditWall { id, parameters },
             ),

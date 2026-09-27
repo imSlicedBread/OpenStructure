@@ -210,7 +210,14 @@ fn import_openings(
             )?,
             "IFCDOORTYPE" | "IFCWINDOWTYPE" => {
                 ensure(used_types.contains(n), "IFC: unused opening type")?;
-                nulls(e, &[1, 3, 4, 5, 6, 7, 8, 11, 12])?;
+                nulls(e, &[1, 4, 5, 6, 7, 8, 11, 12])?;
+                if type_dimensions_v3(e.at(3)?, e.kind == "IFCWINDOWTYPE")?.is_some() {
+                    // The defaults are reconstructed independently of occurrence geometry.
+                } else if e.kind == "IFCDOORTYPE" {
+                    nulls(e, &[3])?;
+                } else {
+                    window_default_sill(e.at(3)?)?;
+                }
                 eq(
                     e.at(9)?,
                     Value::Enum(
@@ -239,8 +246,15 @@ fn import_openings(
             continue;
         }
         nulls(e, &[1, 4, 6, 7, 12])?; // no fictitious component body
-        let typed = match e.at(3)?.text()? {
+        let description = e.at(3)?.text()?;
+        let typed = match description {
+            s if s.starts_with("OpenStructure.Typed.v3;") => true,
             "OpenStructure.Typed.v1" => true,
+            "OpenStructure.Typed.v2;sill=inherit" | "OpenStructure.Typed.v2;sill=override"
+                if e.kind == "IFCWINDOW" =>
+            {
+                true
+            }
             "OpenStructure.Legacy.v1" => false,
             _ => return Err(bad("unsupported hosted opening exchange description")),
         };
@@ -327,14 +341,50 @@ fn import_openings(
             )
         };
         let sill = origin[2];
+        let mut width_override = None;
+        let mut height_override = None;
+        let mut sill_override = None;
         let definition = if let Some(ty) = types.get(n) {
             let type_id = ids[ty];
+            let v3 = type_dimensions_v3(es[ty].at(3)?, kind == OpeningKind::Window)?;
+            let default_sill = if v3.is_none() && kind == OpeningKind::Window {
+                window_default_sill(es[ty].at(3)?)?
+            } else {
+                None
+            };
+            let (type_width, type_height, type_sill) = if let Some(defaults) = v3 {
+                let overrides = occurrence_dimensions_v3(
+                    description,
+                    kind == OpeningKind::Window,
+                    [width, height, sill],
+                    defaults,
+                )?;
+                [width_override, height_override, sill_override] = overrides;
+                (defaults[0], defaults[1], defaults[2])
+            } else {
+                let type_sill = match (description, default_sill) {
+                    ("OpenStructure.Typed.v1", None) => sill,
+                    ("OpenStructure.Typed.v2;sill=inherit", Some(default)) => {
+                        ensure(
+                            sill == default,
+                            "IFC: inherited sill disagrees with type default",
+                        )?;
+                        default
+                    }
+                    ("OpenStructure.Typed.v2;sill=override", Some(default)) => {
+                        sill_override = Some(sill);
+                        default
+                    }
+                    _ => return Err(bad("missing or inconsistent typed window v2 metadata")),
+                };
+                (width, height, type_sill)
+            };
             let params = OpeningTypeParams {
                 name: es[ty].at(2)?.text()?.into(),
                 kind,
-                width,
-                height,
-                sill,
+                width: type_width,
+                height: type_height,
+                sill: type_sill,
                 pane_position: WindowPanePosition::Center,
                 family: OpeningFamily::default(),
             };
@@ -360,6 +410,9 @@ fn import_openings(
         let mut opening = Opening::new(
             "core.opening",
             OpeningParams {
+                width_override,
+                height_override,
+                sill_override,
                 name: e.at(2)?.text()?.into(),
                 host: ids[&host_id],
                 offset: origin[0] - wall_origin[0],
@@ -374,8 +427,103 @@ fn import_openings(
     Ok(())
 }
 
+/// V3 stores shared dimension defaults independently of occurrence geometry.
+/// Older dialects are validated by their existing v1/v2 parsing paths.
+fn type_dimensions_v3(value: &Value, window: bool) -> Result<Option<[f64; 3]>> {
+    if *value == Value::Null {
+        return Ok(None);
+    }
+    let text = value.text()?;
+    if !text.starts_with("OpenStructure.Type.v3;") {
+        return Ok(None);
+    }
+    let fields: Vec<_> = text.split(';').collect();
+    ensure(
+        fields.len() == if window { 4 } else { 3 },
+        "IFC: incomplete v3 type defaults",
+    )?;
+    let mut defaults = [0.0; 3];
+    for (i, key) in ["width=", "height=", "sill="]
+        .iter()
+        .take(if window { 3 } else { 2 })
+        .enumerate()
+    {
+        let text = fields[i + 1]
+            .strip_prefix(key)
+            .ok_or_else(|| bad("invalid v3 type default field"))?;
+        let number = text
+            .parse::<f64>()
+            .map_err(|_| bad("invalid v3 type default number"))?;
+        ensure(
+            number.is_finite()
+                && (number >= 0.001 || (i == 2 && number == 0.0))
+                && text == format!("{number:?}"),
+            "IFC: invalid v3 type default",
+        )?;
+        defaults[i] = number;
+    }
+    Ok(Some(defaults))
+}
+
+fn occurrence_dimensions_v3(
+    text: &str,
+    window: bool,
+    effective: [f64; 3],
+    defaults: [f64; 3],
+) -> Result<[Option<f64>; 3]> {
+    let fields: Vec<_> = text.split(';').collect();
+    ensure(
+        fields.first() == Some(&"OpenStructure.Typed.v3")
+            && fields.len() == if window { 4 } else { 3 },
+        "IFC: missing or mixed v3 occurrence metadata",
+    )?;
+    let mut overrides = [None; 3];
+    for (i, key) in ["width=", "height=", "sill="]
+        .iter()
+        .take(if window { 3 } else { 2 })
+        .enumerate()
+    {
+        match fields[i + 1].strip_prefix(key) {
+            Some("inherit") => ensure(
+                effective[i] == defaults[i],
+                "IFC: inherited dimension disagrees with v3 type default",
+            )?,
+            Some("override") => overrides[i] = Some(effective[i]),
+            _ => return Err(bad("invalid v3 dimension inheritance state")),
+        }
+    }
+    Ok(overrides)
+}
+
+fn window_default_sill(value: &Value) -> Result<Option<f64>> {
+    if *value == Value::Null {
+        return Ok(None);
+    }
+    let text = value
+        .text()?
+        .strip_prefix("OpenStructure.WindowType.v2;default_sill=")
+        .ok_or_else(|| bad("unsupported window type description"))?;
+    let sill = text
+        .parse::<f64>()
+        .map_err(|_| bad("invalid window type default sill"))?;
+    ensure(
+        sill.is_finite() && (sill == 0.0 || sill >= 0.001) && text == format!("{sill:?}"),
+        "IFC: invalid window type default sill",
+    )?;
+    Ok(Some(sill))
+}
+
 pub fn import(bytes: &[u8]) -> Result<Exchange<Model>> {
     let es = step::parse(bytes)?;
+    if let Some((n, entity)) = es
+        .iter()
+        .find(|(_, entity)| matches!(entity.kind.as_str(), "IFCROOF" | "IFCCOVERING"))
+    {
+        return Err(os_core::Error::Unsupported(format!(
+            "IFC #{n}: {} import is unsupported; native roofs/ceilings cannot be silently omitted",
+            entity.kind
+        )));
+    }
     // Arity and entity whitelist prevent silently ignoring additional product types,
     // properties, materials, styles, custom openings or unsupported geometry.
     let arities: BTreeMap<&str, usize> = [

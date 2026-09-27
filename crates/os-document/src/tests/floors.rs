@@ -9,6 +9,7 @@ fn fixture() -> (Document, Floor, Id) {
         MaterialParams {
             name: "Concrete".into(),
             density_kg_m3: 2400.0,
+            color: [180, 180, 180],
         },
     );
     let floor = Floor::new(
@@ -25,6 +26,7 @@ fn fixture() -> (Document, Floor, Id) {
                 Point2::new(1., 4.),
                 Point2::new(0., 4.),
             ],
+            holes: Vec::new(),
             thickness: 0.2,
             top_offset: 0.0,
         },

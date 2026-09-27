@@ -9,6 +9,81 @@ use zip::{ZipWriter, write::SimpleFileOptions};
 const FIXTURE: &str = include_str!("../../../fixtures/schema-2-plans.json");
 const PLAN: &str = "55555555-5555-4555-8555-555555555555";
 
+#[test]
+fn schema_44_phase_defaults_preserve_settings_and_reject_partial_data_atomically() {
+    // Start with a frozen old document, then isolate the schema 44 -> 45 step.
+    let mut legacy: Value = serde_json::from_str(FIXTURE).unwrap();
+    migrate(&mut legacy, 2).unwrap();
+    legacy["schema_version"] = 44.into();
+    for (key, data) in legacy.as_object_mut().unwrap() {
+        if key == "project" {
+            data["header"]["schema_version"] = 44.into();
+        } else if key != "extensions"
+            && let Some(map) = data.as_object_mut()
+        {
+            for entity in map
+                .values_mut()
+                .filter(|value| value.get("header").is_some())
+            {
+                entity["header"]["schema_version"] = 44.into();
+            }
+        }
+    }
+    for view in legacy["views"].as_object_mut().unwrap().values_mut() {
+        if let Some(plan) = view["parameters"]["plan"].as_object_mut() {
+            plan.remove("target_phase");
+            plan.remove("phase_filter");
+            plan.insert("schema_version".into(), 2.into());
+        }
+    }
+    let old_plan = &mut legacy["views"][PLAN]["parameters"]["plan"];
+    old_plan["scale_denominator"] = 75.into();
+    old_plan["basis"]["rotation"] = 0.3.into();
+    old_plan["crop"] = json!({"min":{"x":-4.,"y":-3.},"max":{"x":9.,"y":8.}});
+    let before = legacy.clone();
+    migrate(&mut legacy, 44).unwrap();
+    let model: Model = serde_json::from_value(legacy.clone()).unwrap();
+    let p = model.views[&serde_json::from_value(json!(PLAN)).unwrap()]
+        .parameters
+        .plan
+        .unwrap();
+    assert_eq!(p.target_phase, model.latest_phase());
+    assert_eq!(p.phase_filter, os_model::PhaseFilter::ShowAll);
+    let mut restored = legacy["views"][PLAN]["parameters"]["plan"].clone();
+    restored.as_object_mut().unwrap().remove("target_phase");
+    restored.as_object_mut().unwrap().remove("phase_filter");
+    restored["schema_version"] = 2.into();
+    assert_eq!(restored, before["views"][PLAN]["parameters"]["plan"]);
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("legacy44.osb");
+    archive(&path, &before);
+    let bytes = std::fs::read(&path).unwrap();
+    let doc = ZipJsonStorage.open(&path).unwrap();
+    assert_eq!(doc.model(), &model);
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    ZipJsonStorage.save(&doc, &path).unwrap();
+    assert_eq!(ZipJsonStorage.open(&path).unwrap().model(), &model);
+    for field in ["target_phase", "phase_filter"] {
+        let mut ambiguous = before.clone();
+        ambiguous["views"][PLAN]["parameters"]["plan"][field] = Value::Null;
+        let copy = ambiguous.clone();
+        assert!(migrate(&mut ambiguous, 44).is_err());
+        assert_eq!(ambiguous, copy);
+        archive(&path, &copy);
+        let bytes = std::fs::read(&path).unwrap();
+        assert!(ZipJsonStorage.open(&path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        let mut missing = legacy.clone();
+        missing["views"][PLAN]["parameters"]["plan"]
+            .as_object_mut()
+            .unwrap()
+            .remove(field);
+        let copy = missing.clone();
+        assert!(migrate(&mut missing, SCHEMA_VERSION).is_err());
+        assert_eq!(missing, copy);
+    }
+}
+
 fn archive(path: &Path, value: &Value) {
     let mut zip = ZipWriter::new(File::create(path).unwrap());
     zip.add_directory("assets/", SimpleFileOptions::default())
@@ -68,7 +143,10 @@ fn frozen_schema_two_views_migrate_without_losing_identity_or_opaque_contents() 
         assert_eq!(view.parameters.settings_revision, 0);
         assert_eq!(
             view.parameters.plan,
-            (view.parameters.kind == ViewKind::Plan).then(PlanSettings::default)
+            (view.parameters.kind == ViewKind::Plan).then(|| PlanSettings {
+                target_phase: model.latest_phase(),
+                ..PlanSettings::default()
+            })
         );
     }
     let directory = tempfile::tempdir().unwrap();
@@ -120,7 +198,11 @@ fn future_malformed_or_ambiguous_current_settings_are_rejected_without_replacing
     migrate(&mut source, 2).unwrap();
     let directory = tempfile::tempdir().unwrap();
     for (index, field, bad) in [
-        (0, "schema_version", json!(2)),
+        (
+            0,
+            "schema_version",
+            json!(os_model::PLAN_SETTINGS_VERSION + 1),
+        ),
         (1, "range", json!({"top":1,"cut":2,"bottom":0,"depth":-1})),
         (2, "scale_denominator", json!(0)),
         (
@@ -134,6 +216,8 @@ fn future_malformed_or_ambiguous_current_settings_are_rejected_without_replacing
             json!({"walls":true,"extensions":true,"unknown":true}),
         ),
         (5, "crop", json!({"min":{"x":2,"y":0},"max":{"x":1,"y":1}})),
+        (6, "target_phase", json!(Id::new())),
+        (7, "phase_filter", json!("FutureFilter")),
     ] {
         let mut value = source.clone();
         value["views"][PLAN]["parameters"]["plan"][field] = bad;

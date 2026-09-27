@@ -3,11 +3,43 @@ use crate::Editor;
 use os_core::{Id, Point2, Result, ensure};
 use os_document::Command;
 use os_geometry::plan::{HorizontalBasis, PlanCrop, PlanRange, PlanRole};
-use os_model::{DimensionEndpoint, DimensionParams, PlanSettings, View, ViewKind, ViewParams};
+use os_model::{DimensionParams, PlanSettings, View, ViewKind, ViewParams};
 use os_render::plan::{
     MAX_PLAN_ELEMENTS, PlanContext, PlanDimensionItem, PlanDrawing, PlanRoomFace, PlanRoomItem,
 };
 use std::collections::BTreeMap;
+
+/// Shared by frozen drawing snapshots and placement previews. Never persisted.
+pub(crate) fn opening_tag_graphic(
+    model: &os_model::Model,
+    entity: Id,
+    parameters: &os_model::OpeningTagParams,
+    context: PlanContext,
+) -> Result<os_render::plan::PlanOpeningTag> {
+    let (label, diagnostic) = parameters.label(model);
+    let leader_source = parameters.resolve(model).ok().and_then(|opening| {
+        let host = &model.walls.get(&opening.host)?.parameters;
+        opening.validate_host(host).ok()?;
+        let distance = opening.offset + opening.width * 0.5;
+        let length = host.start.distance(host.end);
+        context
+            .basis
+            .world_to_plane(Point2::new(
+                host.start.x + (host.end.x - host.start.x) * distance / length,
+                host.start.y + (host.end.y - host.start.y) * distance / length,
+            ))
+            .ok()
+    });
+    Ok(os_render::plan::PlanOpeningTag {
+        entity,
+        view: parameters.view,
+        opening: parameters.opening,
+        anchor: context.basis.world_to_plane(parameters.position)?,
+        leader_source,
+        label,
+        diagnostic,
+    })
+}
 
 /// Derived drawing retains provider validity authority. Do not cache a bare
 /// copied provider drawing after dropping its checked results.
@@ -57,11 +89,44 @@ impl ProviderPlanDrawing {
     }
 }
 
+/// Build the same checked stair plan graphic used after commit. A placement
+/// draft may supply its own UUID without adding an entity to the document.
+pub fn project_stair_for_plan(
+    entity: Id,
+    parameters: &os_model::StairParams,
+    lower_z: f64,
+    upper_z: f64,
+    context: PlanContext,
+) -> Result<os_render::plan::PlanStairItem> {
+    parameters.dimensions(lower_z, upper_z)?;
+    os_render::plan::PlanStairItem::derive(
+        entity,
+        parameters.start,
+        parameters.end,
+        parameters.width,
+        parameters.riser_count as usize,
+        parameters.structural_thickness,
+        parameters.material,
+        lower_z,
+        upper_z,
+        context,
+    )
+}
+
 impl Editor {
     pub fn create_floor_plan(&mut self, name: &str, level: Id) -> Result<Id> {
-        let view = View::new("core.view", ViewParams::floor_plan(name, level));
+        let mut view = View::new("core.view", ViewParams::floor_plan(name, level));
+        view.parameters.plan.as_mut().unwrap().target_phase = self.document.model().latest_phase();
         let id = view.id();
         self.command("Create floor plan", Command::AddView(view))?;
+        Ok(id)
+    }
+
+    pub fn create_reflected_ceiling_plan(&mut self, name: &str, level: Id) -> Result<Id> {
+        let mut view = View::new("core.view", ViewParams::reflected_ceiling_plan(name, level));
+        view.parameters.plan.as_mut().unwrap().target_phase = self.document.model().latest_phase();
+        let id = view.id();
+        self.command("Create reflected ceiling plan", Command::AddView(view))?;
         Ok(id)
     }
 
@@ -133,7 +198,15 @@ impl Editor {
             .plan
             .ok_or_else(|| os_core::Error::Invalid("plan settings missing".into()))?;
         settings.validate()?;
-        let range = settings.range;
+        let range = settings
+            .range
+            .at_level_for_view(settings.view_type, level.parameters.elevation)?;
+        let range = PlanRange {
+            top: range.top,
+            cut: range.cut,
+            bottom: range.bottom,
+            depth: range.depth,
+        };
         Ok(PlanContext {
             session_id: self.document.session_id(),
             model_revision: self.document.revision(),
@@ -143,13 +216,7 @@ impl Editor {
                 origin: settings.basis.origin,
                 rotation: settings.basis.rotation,
             },
-            range: PlanRange {
-                top: range.top,
-                cut: range.cut,
-                bottom: range.bottom,
-                depth: range.depth,
-            }
-            .at_level(level.parameters.elevation)?,
+            range,
             crop: settings.crop.map(|crop| PlanCrop {
                 min: crop.min,
                 max: crop.max,
@@ -266,7 +333,9 @@ impl Editor {
                 .walls
                 .len()
                 .saturating_add(model.floors.len())
+                .saturating_add(model.ceilings.len())
                 .saturating_add(model.columns.len())
+                .saturating_add(model.stairs.len())
                 .saturating_add(model.openings.len())
                 <= MAX_PLAN_ELEMENTS,
             "section exceeds 10000 model elements",
@@ -288,12 +357,65 @@ impl Editor {
                 Ok(SectionFloor {
                     entity: floor.id(),
                     boundary: floor.parameters.boundary.clone(),
+                    holes: floor.parameters.holes.clone(),
                     top,
                     thickness: floor.parameters.thickness,
                 })
             })
             .collect::<Result<Vec<_>>>()?;
+        let mut ceiling_resolver = os_geometry::ceilings::CeilingResolver::default();
+        let ceilings = model
+            .ceilings
+            .values()
+            .filter(|ceiling| {
+                model.levels[&ceiling.parameters.level].parameters.building == building
+            })
+            .map(|ceiling| {
+                let parameters =
+                    ceiling_resolver.effective_parameters(model, &ceiling.parameters)?;
+                let Some(parameters) = parameters else {
+                    return Ok(None);
+                };
+                let elevation = model.levels[&parameters.level].parameters.elevation;
+                ensure(elevation.is_finite(), "section ceiling level overflow")?;
+                Ok(Some((ceiling.id(), parameters, elevation)))
+            })
+            .collect::<Result<Vec<_>>>()?
+            .into_iter()
+            .flatten()
+            .collect();
+        let stairs = model
+            .stairs
+            .values()
+            .filter(|stair| {
+                model.levels[&stair.parameters.lower_level]
+                    .parameters
+                    .building
+                    == building
+            })
+            .map(|stair| {
+                let lower = model.levels[&stair.parameters.lower_level]
+                    .parameters
+                    .elevation;
+                let upper = model.levels[&stair.parameters.upper_level]
+                    .parameters
+                    .elevation;
+                (stair.id(), stair.parameters.clone(), lower, upper)
+            })
+            .collect();
         Ok(SectionSnapshot {
+            roofs: model
+                .roofs
+                .values()
+                .filter(|roof| model.levels[&roof.parameters.level].parameters.building == building)
+                .map(|roof| {
+                    (
+                        roof.id(),
+                        roof.parameters.clone(),
+                        model.levels[&roof.parameters.level].parameters.elevation,
+                    )
+                })
+                .collect(),
             context,
             interfaces: os_geometry::walls::butt_interfaces(model)?,
             plane: os_geometry::section::VerticalSectionPlane {
@@ -305,6 +427,8 @@ impl Editor {
             },
             walls,
             floors,
+            ceilings,
+            stairs,
         })
     }
 
@@ -380,17 +504,81 @@ impl Editor {
     pub(crate) fn plan_snapshot(&self, view: Id) -> Result<PlanSnapshot> {
         let context = self.native_plan_context(view)?;
         let model = self.document.model();
+        let settings = model.views[&view].parameters.plan.expect("validated plan");
+        ensure(
+            model
+                .walls
+                .len()
+                .saturating_add(model.openings.len())
+                .saturating_add(model.floors.len())
+                .saturating_add(model.stairs.len())
+                .saturating_add(model.roofs.len())
+                .saturating_add(model.ceilings.len())
+                .saturating_add(model.columns.len())
+                .saturating_add(model.rooms.len())
+                .saturating_add(model.room_separation_lines.len())
+                <= MAX_PLAN_ELEMENTS,
+            "plan phase inputs exceed 10000 elements",
+        )?;
+        let target = settings
+            .target_phase
+            .or_else(|| model.latest_phase())
+            .ok_or_else(|| os_core::Error::Invalid("plan phase missing".into()))?;
+        let phase_statuses = model
+            .walls
+            .keys()
+            .chain(model.openings.keys())
+            .chain(model.floors.keys())
+            .chain(model.stairs.keys())
+            .chain(model.roofs.keys())
+            .chain(model.ceilings.keys())
+            .chain(model.columns.keys())
+            .chain(model.rooms.keys())
+            .chain(model.room_separation_lines.keys())
+            .map(|id| Ok((*id, model.phase_status(*id, target)?)))
+            .collect::<Result<BTreeMap<_, _>>>()?;
+        let mut excluded: std::collections::BTreeSet<_> = phase_statuses
+            .iter()
+            .filter(|(_, status)| !settings.phase_filter.includes(**status))
+            .map(|(id, _)| *id)
+            .collect();
+        for opening in model.openings.values() {
+            if !context.show_walls || excluded.contains(&opening.parameters.host) {
+                excluded.insert(opening.id());
+            }
+        }
+        // Resolve openings and joins against a view-only model copy. The document,
+        // room enclosure solver and committed 3D model retain their full topology.
+        let mut wall_source = std::borrow::Cow::Borrowed(model);
+        if model
+            .walls
+            .keys()
+            .chain(model.openings.keys())
+            .any(|id| excluded.contains(id))
+        {
+            let source = wall_source.to_mut();
+            source.walls.retain(|id, _| !excluded.contains(id));
+            source.openings.retain(|id, _| !excluded.contains(id));
+            source.wall_joins.retain(|_, join| {
+                join.parameters
+                    .members()
+                    .iter()
+                    .all(|id| !excluded.contains(id))
+            });
+        }
         ensure(
             model
                 .walls
                 .len()
                 .saturating_add(model.floors.len())
+                .saturating_add(model.stairs.len().saturating_mul(4))
                 .saturating_add(model.columns.len())
                 .saturating_add(model.extensions.len())
                 .saturating_add(model.grids.len())
                 .saturating_add(model.openings.len().saturating_mul(64))
                 .saturating_add(model.dimensions.len())
                 .saturating_add(model.room_tags.len())
+                .saturating_add(model.opening_tags.len())
                 .saturating_add(model.detail_lines.len())
                 .saturating_add(model.room_separation_lines.len())
                 <= MAX_PLAN_ELEMENTS,
@@ -398,8 +586,11 @@ impl Editor {
         )?;
         let mut walls = Vec::new();
         if context.show_walls {
-            for id in model.walls.keys() {
-                walls.push(os_geometry::walls::NativeWall::from_model(model, *id)?);
+            for id in wall_source.walls.keys() {
+                walls.push(os_geometry::walls::NativeWall::from_model(
+                    &wall_source,
+                    *id,
+                )?);
             }
         }
         let unavailable = if context.show_extensions {
@@ -449,7 +640,15 @@ impl Editor {
                 )
             })
             .collect();
+        let mut ceiling_resolver = os_geometry::ceilings::CeilingResolver::default();
         Ok(PlanSnapshot {
+            phase_statuses,
+            excluded: excluded.clone(),
+            material_colors: model
+                .materials
+                .iter()
+                .map(|(id, m)| (*id, m.parameters.color))
+                .collect(),
             context,
             graphics,
             opening_kinds,
@@ -457,6 +656,7 @@ impl Editor {
             room_separation_lines: model
                 .room_separation_lines
                 .values()
+                .filter(|line| !excluded.contains(&line.id()))
                 .filter(|line| line.parameters.level == plan_level)
                 .map(|line| {
                     Ok(os_render::plan::PlanRoomSeparationLine {
@@ -481,9 +681,17 @@ impl Editor {
                     })
                 })
                 .collect::<Result<Vec<_>>>()?,
+            opening_tags: model
+                .opening_tags
+                .values()
+                .filter(|tag| !excluded.contains(&tag.parameters.opening))
+                .filter(|tag| tag.parameters.view == view)
+                .map(|tag| opening_tag_graphic(model, tag.id(), &tag.parameters, context))
+                .collect::<Result<Vec<_>>>()?,
             room_tags: model
                 .room_tags
                 .values()
+                .filter(|tag| !excluded.contains(&tag.parameters.room))
                 .filter(|tag| tag.parameters.view == view)
                 .map(|tag| {
                     let resolved = tag.parameters.resolve(model);
@@ -505,24 +713,33 @@ impl Editor {
             openings: model
                 .openings
                 .values()
+                .filter(|opening| !excluded.contains(&opening.id()))
                 .map(|o| Ok((o.id(), model.resolve_opening(&o.parameters)?)))
                 .collect::<Result<Vec<_>>>()?,
             room_segments: model.room_boundary_segments(plan_level)?,
             rooms: model
                 .rooms
                 .values()
+                .filter(|room| !excluded.contains(&room.id()))
                 .filter(|room| room.parameters.level == plan_level)
                 .map(|room| (room.id(), room.parameters.clone()))
                 .collect(),
             dimensions: model
                 .dimensions
                 .values()
+                .filter(|dimension| {
+                    dimension
+                        .parameters
+                        .references()
+                        .all(|reference| !excluded.contains(&reference.entity()))
+                })
                 .filter(|dimension| dimension.parameters.view == view)
                 .map(|dimension| (dimension.id(), dimension.parameters.clone()))
                 .collect(),
             dimension_walls: model
                 .walls
                 .values()
+                .filter(|wall| !excluded.contains(&wall.id()))
                 .map(|wall| {
                     (
                         wall.id(),
@@ -536,6 +753,7 @@ impl Editor {
             columns: model
                 .columns
                 .values()
+                .filter(|column| !excluded.contains(&column.id()))
                 .map(|column| {
                     let elevation = model.levels[&column.parameters.level].parameters.elevation;
                     (column.id(), column.parameters.clone(), elevation)
@@ -544,6 +762,7 @@ impl Editor {
             floors: model
                 .floors
                 .values()
+                .filter(|floor| !excluded.contains(&floor.id()))
                 .map(|floor| {
                     let level = &model.levels[&floor.parameters.level];
                     (
@@ -553,13 +772,85 @@ impl Editor {
                     )
                 })
                 .collect(),
+            stairs: model
+                .stairs
+                .values()
+                .filter(|stair| !excluded.contains(&stair.id()))
+                .filter(|stair| {
+                    model.levels[&stair.parameters.lower_level]
+                        .parameters
+                        .building
+                        == building
+                })
+                .map(|stair| {
+                    let lower = model.levels[&stair.parameters.lower_level]
+                        .parameters
+                        .elevation;
+                    let upper = model.levels[&stair.parameters.upper_level]
+                        .parameters
+                        .elevation;
+                    (stair.id(), stair.parameters.clone(), lower, upper)
+                })
+                .collect(),
             section_markers,
+            roofs: model
+                .roofs
+                .values()
+                .filter(|roof| !excluded.contains(&roof.id()))
+                .filter(|roof| model.levels[&roof.parameters.level].parameters.building == building)
+                .map(|roof| {
+                    (
+                        roof.id(),
+                        roof.parameters.clone(),
+                        model.levels[&roof.parameters.level].parameters.elevation,
+                    )
+                })
+                .collect(),
+            ceilings: {
+                let settings = model.views[&view]
+                    .parameters
+                    .plan
+                    .expect("validated plan settings");
+                if settings.view_type == os_model::PlanViewType::ReflectedCeilingPlan
+                    && settings.visibility.ceilings
+                {
+                    model
+                        .ceilings
+                        .values()
+                        .filter(|ceiling| !excluded.contains(&ceiling.id()))
+                        .filter(|ceiling| {
+                            model.levels[&ceiling.parameters.level].parameters.building == building
+                        })
+                        .map(|ceiling| {
+                            let parameters = ceiling_resolver
+                                .effective_parameters(model, &ceiling.parameters)?;
+                            Ok(parameters.map(|parameters| {
+                                let elevation =
+                                    model.levels[&parameters.level].parameters.elevation;
+                                (ceiling.id(), parameters, elevation)
+                            }))
+                        })
+                        .collect::<Result<Vec<_>>>()?
+                        .into_iter()
+                        .flatten()
+                        .collect()
+                } else {
+                    Vec::new()
+                }
+            },
             unavailable,
         })
     }
 }
 
+#[cfg(test)]
+pub(crate) mod phase_tests;
+
 pub(crate) struct PlanSnapshot {
+    phase_statuses: BTreeMap<Id, os_model::PhaseStatus>,
+    excluded: std::collections::BTreeSet<Id>,
+    roofs: Vec<(Id, os_model::RoofParams, f64)>,
+    material_colors: BTreeMap<Id, [u8; 3]>,
     pub context: PlanContext,
     graphics: Option<os_model::PlanGraphicsStyles>,
     opening_kinds: BTreeMap<Id, os_model::OpeningKind>,
@@ -567,6 +858,7 @@ pub(crate) struct PlanSnapshot {
     detail_lines: Vec<os_render::plan::PlanDetailLine>,
     room_separation_lines: Vec<os_render::plan::PlanRoomSeparationLine>,
     room_tags: Vec<os_render::plan::PlanRoomTag>,
+    opening_tags: Vec<os_render::plan::PlanOpeningTag>,
     walls: Vec<os_geometry::walls::NativeWall>,
     openings: Vec<(Id, os_model::ResolvedOpening)>,
     room_segments: Vec<os_geometry::rooms::BoundarySegment>,
@@ -575,6 +867,8 @@ pub(crate) struct PlanSnapshot {
     dimension_walls: Vec<(Id, Id, os_core::Point2, os_core::Point2)>,
     plan_level: Id,
     floors: Vec<(Id, os_model::FloorParams, f64)>,
+    ceilings: Vec<(Id, os_model::CeilingParams, f64)>,
+    stairs: Vec<(Id, os_model::StairParams, f64, f64)>,
     columns: Vec<(Id, os_model::ColumnParams, f64)>,
     section_markers: Vec<(Id, os_model::SectionViewSettings)>,
     unavailable: Vec<Id>,
@@ -586,14 +880,16 @@ impl PlanSnapshot {
     }
     fn derive_with_provider_lines(
         self,
-        lines: BTreeMap<Id, Vec<os_render::plan::PlanLine>>,
+        mut lines: BTreeMap<Id, Vec<os_render::plan::PlanLine>>,
     ) -> Result<PlanDrawing> {
+        lines.retain(|id, _| !self.excluded.contains(id));
         let (room_faces, room_items, room_diagnostic) =
             derive_room_graphics(self.context, &self.room_segments, &self.rooms)?;
         let dimension_items = derive_dimension_graphics(
             self.context,
             self.plan_level,
             &self.dimension_walls,
+            &self.openings,
             &self.dimensions,
         )?;
         let angular_items = self
@@ -636,7 +932,16 @@ impl PlanSnapshot {
                     let top = level + parameters.top_offset;
                     let bottom = top - parameters.thickness;
                     if top > self.context.range.depth && bottom < self.context.range.top {
-                        total.saturating_add(parameters.boundary.len().saturating_sub(2))
+                        total.saturating_add(
+                            parameters
+                                .boundary
+                                .len()
+                                .saturating_add(
+                                    parameters.holes.iter().map(Vec::len).sum::<usize>(),
+                                )
+                                .saturating_add(parameters.holes.len().saturating_mul(2))
+                                .saturating_sub(2),
+                        )
                     } else {
                         total
                     }
@@ -660,19 +965,87 @@ impl PlanSnapshot {
                     .iter()
                     .map(|point| self.context.basis.world_to_plane(*point))
                     .collect::<Result<Vec<_>>>()?;
-                let triangles = os_geometry::floors::triangulate_floor(&boundary)?;
+                let holes = parameters
+                    .holes
+                    .iter()
+                    .map(|ring| {
+                        ring.iter()
+                            .map(|point| self.context.basis.world_to_plane(*point))
+                            .collect::<Result<Vec<_>>>()
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                let triangulation =
+                    os_geometry::floor_holes::triangulate_floor_rings(&boundary, &holes)?;
                 Ok(os_render::plan::PlanFloorItem {
                     entity,
-                    area_m2: os_geometry::floors::signed_area(&boundary).abs(),
+                    area_m2: triangulation.net_area,
                     boundary,
-                    triangles,
+                    holes,
+                    vertices: triangulation.vertices,
+                    triangles: triangulation.triangles,
                 })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let ceiling_items = self
+            .ceilings
+            .iter()
+            .filter_map(|(entity, parameters, level_elevation)| {
+                match os_geometry::ceilings::ceiling_plan(
+                    parameters,
+                    *level_elevation,
+                    self.context.range,
+                    self.context.basis,
+                    self.context.crop,
+                ) {
+                    Ok(Some(plan)) => Some(Ok(os_render::plan::PlanCeilingItem {
+                        entity: *entity,
+                        boundary: plan.boundary,
+                        holes: plan.holes,
+                        vertices: plan.vertices,
+                        triangles: plan.triangles,
+                        area_m2: plan.area_m2,
+                    })),
+                    Ok(None) => None,
+                    Err(error) => Some(Err(error)),
+                }
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let stair_items = self
+            .stairs
+            .iter()
+            .map(|(entity, parameters, lower, upper)| {
+                project_stair_for_plan(*entity, parameters, *lower, *upper, self.context)
             })
             .collect::<Result<Vec<_>>>()?;
         let mut solids = BTreeMap::new();
         let mut segments = Vec::new();
         let mut native_lines = BTreeMap::new();
         let mut seams = BTreeMap::new();
+        for (id, roof, elevation) in &self.roofs {
+            let plan = os_geometry::roofs::roof_plan(
+                roof,
+                *elevation,
+                self.context.range,
+                self.context.basis,
+                self.context.crop,
+            )?;
+            seams.insert(*id, plan.seams);
+            solids.insert(
+                *id,
+                plan.footprints
+                    .into_iter()
+                    .map(|footprint| {
+                        (
+                            os_geometry::SurfaceIdentity {
+                                layer: None,
+                                material: roof.material,
+                            },
+                            footprint,
+                        )
+                    })
+                    .collect(),
+            );
+        }
         for wall in self.walls {
             let id = wall.entity;
             let parameters = &wall.parameters;
@@ -742,12 +1115,29 @@ impl PlanSnapshot {
             segment.end = self.context.basis.world_to_plane(segment.end)?;
         }
         let mut grids = self.grids;
+        let roof_ids: std::collections::BTreeSet<_> =
+            self.roofs.iter().map(|(id, _, _)| *id).collect();
+        for item in drawing
+            .items(self.context)?
+            .iter()
+            .filter(|item| roof_ids.contains(&item.entity))
+        {
+            for (start, end) in item.outline() {
+                segments.push(os_render::snapping::SnapSegment {
+                    entity: item.entity,
+                    feature: segments.len() as u32,
+                    start,
+                    end,
+                });
+            }
+        }
         for grid in &mut grids {
             grid.start = self.context.basis.world_to_plane(grid.start)?;
             grid.end = self.context.basis.world_to_plane(grid.end)?;
         }
         let mut drawing = drawing
             .with_grids(grids)?
+            .with_stairs(stair_items)?
             .with_native_lines(native_lines)?
             .with_provider_lines(lines)?
             .with_detail_lines(self.detail_lines)?
@@ -757,10 +1147,14 @@ impl PlanSnapshot {
             .with_rooms(room_items)?
             .with_dimensions(dimension_items)?
             .with_floors(floor_items)?
+            .with_ceilings(ceiling_items)?
             .with_columns(&column_items)?
             .with_angular_dimensions(angular_items)?
             .with_room_tags(self.room_tags)?
-            .with_room_boundary_diagnostic(room_diagnostic)?;
+            .with_opening_tags(self.opening_tags)?
+            .with_room_boundary_diagnostic(room_diagnostic)?
+            .with_material_colors(self.material_colors);
+        let mut appearances = BTreeMap::new();
         if let Some(styles) = self.graphics {
             use os_geometry::plan::PlanRole;
             use os_render::plan::{PlanElementAppearance, PlanStroke};
@@ -769,7 +1163,6 @@ impl PlanSnapshot {
                 weight_mm: style.weight_mm,
                 dashed: style.pattern == os_model::PlanLinePattern::Dashed,
             };
-            let mut appearances = BTreeMap::new();
             for item in drawing.items(self.context)? {
                 if !self.wall_ids.contains(&item.entity) {
                     continue;
@@ -812,8 +1205,73 @@ impl PlanSnapshot {
                     },
                 );
             }
-            drawing = drawing.with_appearances(appearances)?;
         }
+        // Resolve once for all consumers. Preserve category weights while phase
+        // color and dash pattern take precedence over local/linked styles.
+        let mut apply_phase = |id, role, weight| {
+            let Some(status) = self.phase_statuses.get(&id) else {
+                return;
+            };
+            use os_model::PhaseStatus::*;
+            let (color, dashed) = match status {
+                Existing => ([112, 118, 124], false),
+                New => ([35, 65, 88], false),
+                Demolished => ([155, 82, 68], true),
+                Temporary => ([126, 92, 145], true),
+                Future | PreviouslyDemolished => return,
+            };
+            let entry = appearances
+                .entry(id)
+                .or_insert_with(os_render::plan::PlanElementAppearance::default);
+            let stroke = if role == os_geometry::plan::PlanRole::Cut {
+                &mut entry.cut
+            } else {
+                &mut entry.projected
+            };
+            *stroke = Some(os_render::plan::PlanStroke {
+                color,
+                dashed,
+                weight_mm: stroke.map_or(weight, |value| value.weight_mm),
+            });
+        };
+        for item in drawing
+            .items(self.context)?
+            .iter()
+            .chain(drawing.columns(self.context)?)
+        {
+            apply_phase(
+                item.entity,
+                item.footprint.role,
+                if item.footprint.role == os_geometry::plan::PlanRole::Cut {
+                    0.35
+                } else {
+                    0.18
+                },
+            );
+        }
+        for line in drawing.provider_lines(self.context)? {
+            if drawing.is_native_line(line.entity) {
+                apply_phase(line.entity, line.role, 0.18);
+            }
+        }
+        for floor in drawing
+            .floors(self.context)?
+            .iter()
+            .chain(drawing.ceilings(self.context)?)
+        {
+            apply_phase(floor.entity, os_geometry::plan::PlanRole::Projected, 0.18);
+        }
+        for room in drawing.rooms(self.context)? {
+            apply_phase(room.entity, os_geometry::plan::PlanRole::Projected, 0.15);
+        }
+        for line in drawing.room_separation_lines(self.context)? {
+            apply_phase(
+                line.entity,
+                os_geometry::plan::PlanRole::Projected,
+                os_render::plan::ROOM_SEPARATOR_WEIGHT_MM,
+            );
+        }
+        drawing = drawing.with_appearances(appearances)?;
         Ok(drawing)
     }
 }
@@ -870,16 +1328,20 @@ fn section_marker_lines(
 struct SectionFloor {
     entity: Id,
     boundary: Vec<Point2>,
+    holes: Vec<Vec<Point2>>,
     top: f64,
     thickness: f64,
 }
 
 pub(crate) struct SectionSnapshot {
+    roofs: Vec<(Id, os_model::RoofParams, f64)>,
     context: PlanContext,
     interfaces: Vec<os_geometry::walls::ButtInterface>,
     plane: os_geometry::section::VerticalSectionPlane,
     walls: Vec<os_geometry::walls::NativeWall>,
     floors: Vec<SectionFloor>,
+    ceilings: Vec<(Id, os_model::CeilingParams, f64)>,
+    stairs: Vec<(Id, os_model::StairParams, f64, f64)>,
 }
 
 impl SectionSnapshot {
@@ -952,10 +1414,43 @@ impl SectionSnapshot {
             }
         }
         for floor in self.floors {
-            let mesh =
-                os_geometry::floors::extrude_floor(&floor.boundary, floor.top, floor.thickness)?;
+            let mesh = os_geometry::floor_holes::extrude_floor_rings(
+                &floor.boundary,
+                &floor.holes,
+                floor.top,
+                floor.thickness,
+            )?;
             add_section_contours(
                 segments.entry(floor.entity).or_default(),
+                vertical_section(&mesh, self.plane)?,
+                &mut raw_segment_count,
+            )?;
+        }
+        for (entity, parameters, elevation) in self.ceilings {
+            let mesh = os_geometry::ceilings::ceiling_mesh(&parameters, elevation)?;
+            add_section_contours(
+                segments.entry(entity).or_default(),
+                vertical_section(&mesh, self.plane)?,
+                &mut raw_segment_count,
+            )?;
+        }
+        for (entity, parameters, elevation) in &self.roofs {
+            let mesh = os_geometry::roofs::roof_mesh(parameters, *elevation)?;
+            add_section_contours(
+                segments.entry(*entity).or_default(),
+                vertical_section(&mesh, self.plane)?,
+                &mut raw_segment_count,
+            )?;
+        }
+        let stair_materials = self
+            .stairs
+            .iter()
+            .map(|(id, parameters, _, _)| (*id, parameters.material))
+            .collect::<BTreeMap<_, _>>();
+        for (entity, parameters, lower, upper) in self.stairs {
+            let mesh = os_geometry::stairs::stair_mesh(&parameters, lower, upper)?;
+            add_section_contours(
+                segments.entry(entity).or_default(),
                 vertical_section(&mesh, self.plane)?,
                 &mut raw_segment_count,
             )?;
@@ -963,6 +1458,7 @@ impl SectionSnapshot {
 
         os_geometry::walls::remove_section_interfaces(&mut segments, &self.interfaces, self.plane)?;
         let mut lines = layer_lines;
+        let mut stair_lines = Vec::new();
         let mut line_count = lines.values().map(Vec::len).sum::<usize>();
         ensure(
             line_count <= MAX_PLAN_ELEMENTS,
@@ -971,8 +1467,13 @@ impl SectionSnapshot {
         for (entity, raw_edges) in segments {
             let retained = reduce_section_edges(raw_edges)?;
             ensure(
-                retained.len() <= 256,
-                "section element exceeds 256 cut segments",
+                retained.len()
+                    <= if stair_materials.contains_key(&entity) {
+                        772
+                    } else {
+                        256
+                    },
+                "section element exceeds cut segment limit",
             )?;
             let mut features = Vec::with_capacity(retained.len());
             for (feature, segment) in retained.into_iter().enumerate() {
@@ -985,6 +1486,15 @@ impl SectionSnapshot {
                     segment.start.distance(segment.end) > SECTION_TOLERANCE,
                     "section contains a sub-tolerance edge",
                 )?;
+                if let Some(material) = stair_materials.get(&entity) {
+                    line_surfaces.insert(
+                        (entity, feature as u32),
+                        os_geometry::SurfaceIdentity {
+                            layer: None,
+                            material: *material,
+                        },
+                    );
+                }
                 features.push(PlanLine {
                     entity,
                     feature: feature as u32,
@@ -994,12 +1504,21 @@ impl SectionSnapshot {
                 });
             }
             if !features.is_empty() {
-                lines.insert(entity, features);
+                if stair_materials.contains_key(&entity) {
+                    stair_lines.push(os_render::plan::PlanStairItem::from_section_lines(
+                        entity,
+                        stair_materials[&entity],
+                        features,
+                    ));
+                } else {
+                    lines.insert(entity, features);
+                }
             }
         }
         let unavailable = lines.keys().copied().collect();
         PlanDrawing::from_prisms(self.context, &BTreeMap::new(), unavailable)?
             .with_native_lines(lines)
+            .and_then(|drawing| drawing.with_stairs(stair_lines))
             .map(|drawing| drawing.with_line_surfaces(line_surfaces))
     }
 }
@@ -1155,24 +1674,248 @@ fn add_section_contours(
     Ok(())
 }
 
+#[cfg(test)]
+#[allow(clippy::items_after_test_module)]
+mod stair_section_tests {
+    use super::*;
+
+    fn context() -> PlanContext {
+        PlanContext {
+            session_id: Id::new(),
+            model_revision: 1,
+            view_id: Id::new(),
+            settings_revision: 1,
+            basis: HorizontalBasis::default(),
+            range: PlanRange {
+                top: 4.0,
+                cut: 1.5,
+                bottom: -1.0,
+                depth: -1.0,
+            },
+            crop: Some(PlanCrop {
+                min: Point2::new(0.0, -1.0),
+                max: Point2::new(5.0, 4.0),
+            }),
+            scale_denominator: 100.0,
+            show_walls: true,
+            show_extensions: false,
+        }
+    }
+
+    fn snapshot(
+        context: PlanContext,
+        plane: os_geometry::section::VerticalSectionPlane,
+        stair: Id,
+        material: Id,
+    ) -> SectionSnapshot {
+        SectionSnapshot {
+            context,
+            interfaces: Vec::new(),
+            plane,
+            walls: Vec::new(),
+            floors: Vec::new(),
+            roofs: Vec::new(),
+            ceilings: Vec::new(),
+            stairs: vec![(
+                stair,
+                os_model::StairParams {
+                    name: "Flight".into(),
+                    lower_level: Id::new(),
+                    upper_level: Id::new(),
+                    start: Point2::new(0.0, 0.0),
+                    end: Point2::new(4.0, 0.0),
+                    width: 1.0,
+                    riser_count: 8,
+                    structural_thickness: 0.2,
+                    material: Some(material),
+                },
+                0.0,
+                2.0,
+            )],
+        }
+    }
+
+    #[test]
+    fn longitudinal_and_transverse_stair_sections_use_mesh_contours() {
+        let stair = Id::new();
+        let material = Id::new();
+        let longitudinal_context = context();
+        let longitudinal = snapshot(
+            longitudinal_context,
+            os_geometry::section::VerticalSectionPlane {
+                origin: Point2::new(0.0, 0.0),
+                direction: Point2::new(1.0, 0.0),
+            },
+            stair,
+            material,
+        )
+        .derive()
+        .unwrap();
+        let longitudinal_lines = longitudinal.provider_lines(longitudinal_context).unwrap();
+        assert!(longitudinal_lines.len() > 8);
+        assert!(longitudinal_lines.iter().all(|line| {
+            line.entity == stair
+                && line.role == PlanRole::Cut
+                && longitudinal.line_surface(stair, line.feature).material == Some(material)
+        }));
+
+        let transverse_context = context();
+        let transverse = snapshot(
+            transverse_context,
+            os_geometry::section::VerticalSectionPlane {
+                origin: Point2::new(2.125, -1.0),
+                direction: Point2::new(0.0, 1.0),
+            },
+            stair,
+            material,
+        )
+        .derive()
+        .unwrap();
+        let transverse_lines = transverse.provider_lines(transverse_context).unwrap();
+        assert_eq!(transverse_lines.len(), 4);
+        assert!(transverse_lines.iter().all(|line| line.entity == stair));
+    }
+
+    #[test]
+    fn maximum_riser_section_uses_bounded_native_stair_line_path() {
+        let context = context();
+        let stair = Id::new();
+        let mut source = snapshot(
+            context,
+            os_geometry::section::VerticalSectionPlane {
+                origin: Point2::new(0.0, 0.0),
+                direction: Point2::new(1.0, 0.0),
+            },
+            stair,
+            Id::new(),
+        );
+        source.stairs[0].1.riser_count = 256;
+        let drawing = source.derive().unwrap();
+        let lines = drawing.provider_lines(context).unwrap();
+        assert!(lines.len() > 256);
+        assert!(lines.len() <= 772);
+        assert!(lines.iter().all(|line| line.entity == stair));
+    }
+
+    #[test]
+    fn editor_plan_snapshot_projects_level_connected_stair() {
+        use os_model::{Level, LevelParams, Stair};
+
+        let mut editor = Editor::new().unwrap();
+        let lower = *editor.document.model().levels.keys().next().unwrap();
+        let building = editor.document.model().levels[&lower].parameters.building;
+        let upper = Level::new(
+            "core.level",
+            LevelParams {
+                name: "Upper".into(),
+                elevation: 2.0,
+                building,
+            },
+        );
+        let upper_id = upper.id();
+        editor
+            .command("Add level", Command::AddLevel(upper))
+            .unwrap();
+        let stair = Stair::new(
+            "core.stair",
+            os_model::StairParams {
+                name: "Flight".into(),
+                lower_level: lower,
+                upper_level: upper_id,
+                start: Point2::new(0.0, 0.0),
+                end: Point2::new(4.0, 0.0),
+                width: 1.0,
+                riser_count: 8,
+                structural_thickness: 0.2,
+                material: None,
+            },
+        );
+        let stair_id = stair.id();
+        editor
+            .command("Add stair", Command::AddStair(stair))
+            .unwrap();
+        let view = editor.create_floor_plan("Ground", lower).unwrap();
+        let context = editor.native_plan_context(view).unwrap();
+        let drawing = editor.native_wall_plan(view).unwrap();
+        assert_eq!(drawing.stairs(context).unwrap().len(), 1);
+        let parameters = &editor.document.model().stairs[&stair_id].parameters;
+        let lower_z = editor.document.model().levels[&lower].parameters.elevation;
+        let preview = project_stair_for_plan(stair_id, parameters, lower_z, 2.0, context).unwrap();
+        assert_eq!(drawing.stairs(context).unwrap()[0], preview);
+        assert_eq!(
+            drawing.pick(context, Point2::new(0.75, 0.0)).unwrap(),
+            Some(stair_id)
+        );
+        assert_eq!(
+            drawing.pick_stair(context, Point2::new(0.75, 0.0)).unwrap(),
+            Some(stair_id)
+        );
+        assert!(
+            drawing
+                .items(context)
+                .unwrap()
+                .iter()
+                .any(|item| item.entity == stair_id && item.footprint.role == PlanRole::Cut)
+        );
+    }
+
+    #[test]
+    fn placement_preview_helper_is_deterministic_without_document_mutation() {
+        use os_model::{Level, LevelParams};
+
+        let mut editor = Editor::new().unwrap();
+        let lower = *editor.document.model().levels.keys().next().unwrap();
+        let building = editor.document.model().levels[&lower].parameters.building;
+        let upper = Level::new(
+            "core.level",
+            LevelParams {
+                name: "Upper".into(),
+                elevation: 2.0,
+                building,
+            },
+        );
+        let upper_id = upper.id();
+        editor
+            .command("Add level", Command::AddLevel(upper))
+            .unwrap();
+        let view = editor.create_floor_plan("Draft", lower).unwrap();
+        let context = editor.native_plan_context(view).unwrap();
+        let params = os_model::StairParams {
+            name: "Uncommitted flight".into(),
+            lower_level: lower,
+            upper_level: upper_id,
+            start: Point2::new(0.0, 0.0),
+            end: Point2::new(4.0, 0.0),
+            width: 1.0,
+            riser_count: 8,
+            structural_thickness: 0.2,
+            material: None,
+        };
+        let draft_id = Id::new();
+        let revision = editor.document.revision();
+        let before = editor.document.model().stairs.len();
+        let first = project_stair_for_plan(draft_id, &params, 0.0, 2.0, context).unwrap();
+        let second = project_stair_for_plan(draft_id, &params, 0.0, 2.0, context).unwrap();
+        assert_eq!(first, second);
+        assert!(first.contains(Point2::new(0.75, 0.0)));
+        assert!(first.visible_strokes().count() > 8);
+        assert_eq!(editor.document.model().stairs.len(), before);
+        assert_eq!(editor.document.revision(), revision);
+    }
+}
+
 fn derive_dimension_graphics(
     context: PlanContext,
     plan_level: Id,
     walls: &[(Id, Id, os_core::Point2, os_core::Point2)],
+    openings: &[(Id, os_model::ResolvedOpening)],
     dimensions: &[(Id, DimensionParams)],
 ) -> Result<Vec<PlanDimensionItem>> {
     let walls: BTreeMap<_, _> = walls
         .iter()
         .map(|(id, level, start, end)| (*id, (*level, *start, *end)))
         .collect();
-    let endpoint = |reference: &os_model::DimensionReference| {
-        walls.get(&reference.wall).and_then(|(level, start, end)| {
-            (*level == plan_level).then_some(match reference.endpoint {
-                DimensionEndpoint::Start => *start,
-                DimensionEndpoint::End => *end,
-            })
-        })
-    };
+    let openings: BTreeMap<_, _> = openings.iter().map(|(id, p)| (*id, p)).collect();
     let mut output = Vec::new();
     let mut count = 0usize;
     for (entity, parameters) in dimensions {
@@ -1181,11 +1924,16 @@ fn derive_dimension_graphics(
         }
         let orphan_hint = context.basis.world_to_plane(parameters.orphan_hint)?;
         let resolved = parameters.resolve_anchors_with(|reference| {
-            endpoint(&reference).ok_or(if walls.contains_key(&reference.wall) {
-                os_model::DimensionDiagnostic::WrongLevel
-            } else {
-                os_model::DimensionDiagnostic::MissingWall
-            })
+            reference.resolve_with(
+                plan_level,
+                |id| walls.get(&id).copied(),
+                |id| {
+                    let p = openings
+                        .get(&id)
+                        .ok_or(os_model::DimensionDiagnostic::MissingOpening)?;
+                    Ok((p.host, p.offset, p.width))
+                },
+            )
         });
         let mut item = PlanDimensionItem {
             spans: Vec::new(),

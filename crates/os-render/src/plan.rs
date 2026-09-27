@@ -14,10 +14,15 @@ mod room_separation_lines;
 pub use room_separation_lines::{
     PlanRoomSeparationLine, ROOM_SEPARATOR_WEIGHT_MM, clip_room_separation_line,
 };
+mod opening_tags;
 mod room_tags;
+mod stairs;
 pub use detail_lines::{DETAIL_LINE_WEIGHT_MM, PlanDetailLine, clip_detail_line};
+pub use opening_tags::PlanOpeningTag;
 pub use room_tags::PlanRoomTag;
+pub use stairs::PlanStairItem;
 mod grids;
+mod overlap;
 mod provider_lines;
 pub use angular::PlanAngularDimension;
 pub use grids::PlanGrid;
@@ -95,7 +100,7 @@ impl PlanElementAppearance {
         match role {
             PlanRole::Cut => self.cut,
             PlanRole::Projected => self.projected,
-            PlanRole::Depth => None,
+            PlanRole::Depth => self.projected,
         }
     }
 }
@@ -244,39 +249,57 @@ impl PlanDimensionItem {
 pub struct PlanFloorItem {
     pub entity: Id,
     pub boundary: Vec<Point2>,
+    pub holes: Vec<Vec<Point2>>,
+    /// Boundary followed by each opening loop, matching triangle indices.
+    pub vertices: Vec<Point2>,
     pub triangles: Vec<[u32; 3]>,
     pub area_m2: f64,
 }
+
+/// A reflected-plan ceiling uses the same validated polygon/fill representation
+/// as a floor, but remains a separate category so visibility and picking do not
+/// leak into ordinary floor plans.
+pub type PlanCeilingItem = PlanFloorItem;
 
 impl PlanFloorItem {
     pub fn contains(&self, point: Point2) -> bool {
         if !point.is_finite() || self.boundary.len() < 3 {
             return false;
         }
-        let mut inside = false;
-        for (a, b) in self
-            .boundary
-            .iter()
-            .zip(self.boundary.iter().cycle().skip(1))
-            .take(self.boundary.len())
-        {
-            let cross = (b.x - a.x) * (point.y - a.y) - (b.y - a.y) * (point.x - a.x);
-            if cross.abs() <= 1e-9
-                && point.x >= a.x.min(b.x) - 1e-9
-                && point.x <= a.x.max(b.x) + 1e-9
-                && point.y >= a.y.min(b.y) - 1e-9
-                && point.y <= a.y.max(b.y) + 1e-9
-            {
-                return true;
-            }
-            if (a.y > point.y) != (b.y > point.y)
-                && point.x < (b.x - a.x) * (point.y - a.y) / (b.y - a.y) + a.x
-            {
-                inside = !inside;
-            }
-        }
-        inside
+        ring_contains_point(&self.boundary, point)
+            && !self
+                .holes
+                .iter()
+                .any(|hole| ring_contains_point(hole, point))
     }
+}
+
+fn ring_contains_point(ring: &[Point2], point: Point2) -> bool {
+    if ring.len() < 3 {
+        return false;
+    }
+    let mut inside = false;
+    for (a, b) in ring
+        .iter()
+        .zip(ring.iter().cycle().skip(1))
+        .take(ring.len())
+    {
+        let cross = (b.x - a.x) * (point.y - a.y) - (b.y - a.y) * (point.x - a.x);
+        if cross.abs() <= 1e-9
+            && point.x >= a.x.min(b.x) - 1e-9
+            && point.x <= a.x.max(b.x) + 1e-9
+            && point.y >= a.y.min(b.y) - 1e-9
+            && point.y <= a.y.max(b.y) + 1e-9
+        {
+            return true;
+        }
+        if (a.y > point.y) != (b.y > point.y)
+            && point.x < (b.x - a.x) * (point.y - a.y) / (b.y - a.y) + a.x
+        {
+            inside = !inside;
+        }
+    }
+    inside
 }
 
 impl PlanRoomItem {
@@ -314,6 +337,7 @@ impl PlanRoomItem {
 /// Bounded initial polygon IR. Drawing adapters can consume the same ordered list
 /// as picking; screen/output adapters and curves/text/styles are later D/E work.
 pub struct PlanDrawing {
+    material_colors: BTreeMap<Id, [u8; 3]>,
     line_surfaces: BTreeMap<(Id, u32), os_geometry::SurfaceIdentity>,
     identity: Id,
     context: PlanContext,
@@ -326,6 +350,7 @@ pub struct PlanDrawing {
     lines: Vec<PlanLine>,
     rooms: Vec<PlanRoomItem>,
     room_tags: Vec<PlanRoomTag>,
+    opening_tags: Vec<PlanOpeningTag>,
     detail_lines: Vec<PlanDetailLine>,
     detail_segments: Vec<crate::snapping::SnapSegment>,
     detail_segment_count: usize,
@@ -336,6 +361,8 @@ pub struct PlanDrawing {
     dimensions: Vec<PlanDimensionItem>,
     angular_dimensions: Vec<PlanAngularDimension>,
     floors: Vec<PlanFloorItem>,
+    ceilings: Vec<PlanCeilingItem>,
+    stairs: Vec<PlanStairItem>,
     columns: Vec<PlanColumnItem>,
     room_boundary_diagnostic: Option<String>,
     line_segments: Vec<crate::snapping::SnapSegment>,
@@ -345,6 +372,16 @@ pub struct PlanDrawing {
     appearances: BTreeMap<Id, PlanElementAppearance>,
 }
 impl PlanDrawing {
+    pub fn with_material_colors(mut self, colors: BTreeMap<Id, [u8; 3]>) -> Self {
+        self.material_colors = colors;
+        self
+    }
+    pub fn surface_color(&self, surface: os_geometry::SurfaceIdentity) -> Option<[u8; 3]> {
+        surface
+            .material
+            .and_then(|id| self.material_colors.get(&id).copied())
+            .or_else(|| surface.color())
+    }
     pub fn with_line_surfaces(
         mut self,
         surfaces: BTreeMap<(Id, u32), os_geometry::SurfaceIdentity>,
@@ -483,6 +520,7 @@ impl PlanDrawing {
         });
         Ok(Self {
             line_surfaces: BTreeMap::new(),
+            material_colors: BTreeMap::new(),
             source_ids: solids
                 .keys()
                 .copied()
@@ -497,6 +535,7 @@ impl PlanDrawing {
             lines: Vec::new(),
             rooms: Vec::new(),
             room_tags: Vec::new(),
+            opening_tags: Vec::new(),
             detail_lines: Vec::new(),
             detail_segments: Vec::new(),
             detail_segment_count: 0,
@@ -508,6 +547,8 @@ impl PlanDrawing {
             angular_dimensions: Vec::new(),
             identity: Id::new(),
             floors: Vec::new(),
+            ceilings: Vec::new(),
+            stairs: Vec::new(),
             columns: Vec::new(),
             room_boundary_diagnostic: None,
             line_segments: Vec::new(),
@@ -588,6 +629,38 @@ impl PlanDrawing {
         )?;
         Ok(&self.items)
     }
+    /// Checked multi-wall editing query; exclusions participate in snap identity.
+    pub fn snap_excluding(
+        &self,
+        current: PlanContext,
+        query: crate::snapping::SnapQuery,
+        excluded: &std::collections::BTreeSet<Id>,
+    ) -> Result<crate::snapping::SnapResult> {
+        self.items(current)?;
+        self.snaps
+            .as_ref()
+            .ok_or_else(|| {
+                os_core::Error::Unsupported("drawing has no semantic snap provider".into())
+            })?
+            .query_excluding(current, query, excluded)
+    }
+    /// Checked graph-edit acquisition: legal-axis filtering precedes ranking.
+    pub fn snap_on_axis(
+        &self,
+        current: PlanContext,
+        query: crate::snapping::SnapQuery,
+        excluded: &std::collections::BTreeSet<Id>,
+        axis: crate::snapping::SnapAxis,
+    ) -> Result<crate::snapping::SnapResult> {
+        self.items(current)?;
+        self.snaps
+            .as_ref()
+            .ok_or_else(|| {
+                os_core::Error::Unsupported("drawing has no semantic snap provider".into())
+            })?
+            .query_on_axis(current, query, excluded, axis)
+    }
+
     pub fn unavailable(&self, current: PlanContext) -> Result<&[Id]> {
         self.items(current)?;
         Ok(&self.unavailable)
@@ -614,21 +687,33 @@ impl PlanDrawing {
             let cut_exists = self
                 .items
                 .iter()
+                .chain(self.columns.iter())
                 .any(|item| item.entity == *entity && item.footprint.role == PlanRole::Cut)
                 || (self.native_line_ids.contains(entity)
                     && self
                         .lines
                         .iter()
                         .any(|line| line.entity == *entity && line.role == PlanRole::Cut));
-            let projected_exists =
-                self.items.iter().any(|item| {
-                    item.entity == *entity && item.footprint.role == PlanRole::Projected
-                }) || (self.native_line_ids.contains(entity)
+            let projected_exists = self
+                .items
+                .iter()
+                .chain(self.columns.iter())
+                .any(|item| item.entity == *entity && item.footprint.role != PlanRole::Cut)
+                || (self.native_line_ids.contains(entity)
                     && self
                         .lines
                         .iter()
-                        .any(|line| line.entity == *entity && line.role == PlanRole::Projected))
-                    || self.floors.iter().any(|floor| floor.entity == *entity);
+                        .any(|line| line.entity == *entity && line.role != PlanRole::Cut))
+                || self.rooms.iter().any(|room| room.entity == *entity)
+                || self
+                    .room_separation_lines
+                    .iter()
+                    .any(|line| line.entity == *entity)
+                || self.floors.iter().any(|floor| floor.entity == *entity)
+                || self
+                    .ceilings
+                    .iter()
+                    .any(|ceiling| ceiling.entity == *entity);
             ensure(
                 (appearance.cut.is_none() || cut_exists)
                     && (appearance.projected.is_none() || projected_exists)
@@ -659,6 +744,7 @@ impl PlanDrawing {
             self.items
                 .len()
                 .saturating_add(self.floors.len())
+                .saturating_add(self.ceilings.len())
                 .saturating_add(self.columns.len())
                 .saturating_add(rooms.len())
                 <= MAX_PLAN_ELEMENTS,
@@ -734,6 +820,7 @@ impl PlanDrawing {
             self.items
                 .len()
                 .saturating_add(self.floors.len())
+                .saturating_add(self.ceilings.len())
                 .saturating_add(self.columns.len())
                 .saturating_add(self.rooms.len())
                 .saturating_add(faces.len())
@@ -774,6 +861,7 @@ impl PlanDrawing {
             self.items
                 .len()
                 .saturating_add(self.floors.len())
+                .saturating_add(self.ceilings.len())
                 .saturating_add(self.columns.len())
                 .saturating_add(self.rooms.len())
                 .saturating_add(self.room_faces.len())
@@ -872,6 +960,7 @@ impl PlanDrawing {
                         .sum::<usize>(),
                 )
                 .saturating_add(floors.len())
+                .saturating_add(self.ceilings.len())
                 <= MAX_PLAN_ELEMENTS,
             "plan exceeds 10000 elements",
         )?;
@@ -903,27 +992,100 @@ impl PlanDrawing {
             ensure(
                 (3..=256).contains(&floor.boundary.len())
                     && floor.boundary.iter().all(|point| point.is_finite())
+                    && floor.holes.len() <= 16
+                    && floor.holes.iter().all(|hole| {
+                        (3..=256).contains(&hole.len())
+                            && hole.iter().all(|point| point.is_finite())
+                    })
+                    && floor.boundary.len() + floor.holes.iter().map(Vec::len).sum::<usize>()
+                        <= 1024
                     && floor.area_m2.is_finite()
-                    && floor.area_m2 > 1e-8
-                    && floor.triangles.len() == floor.boundary.len() - 2
-                    && floor
-                        .triangles
-                        .iter()
-                        .flatten()
-                        .all(|index| (*index as usize) < floor.boundary.len())
-                    && (polygon_area(&floor.boundary) - floor.area_m2).abs()
-                        <= 1e-8_f64.max(floor.area_m2 * 1e-8),
+                    && floor.area_m2 > 1e-8,
                 "invalid floor plan geometry",
             )?;
+            let triangulation =
+                os_geometry::floor_holes::triangulate_floor_rings(&floor.boundary, &floor.holes)?;
             ensure(
-                os_geometry::floors::triangulate_floor(&floor.boundary)? == floor.triangles,
-                "floor plan triangulation does not match its boundary",
+                floor.vertices == triangulation.vertices
+                    && floor.triangles == triangulation.triangles
+                    && (triangulation.net_area - floor.area_m2).abs()
+                        <= 1e-8_f64.max(floor.area_m2 * 1e-8),
+                "floor plan triangulation does not match its rings",
             )?;
         }
         floors.sort_by_key(|floor| floor.entity);
         self.source_ids
             .extend(floors.iter().map(|floor| floor.entity));
         self.floors = floors;
+        Ok(self)
+    }
+    pub fn with_ceilings(mut self, mut ceilings: Vec<PlanCeilingItem>) -> Result<Self> {
+        ensure(
+            self.items
+                .len()
+                .saturating_add(self.floors.len())
+                .saturating_add(self.ceilings.len())
+                .saturating_add(self.columns.len())
+                .saturating_add(ceilings.len())
+                <= MAX_PLAN_ELEMENTS,
+            "plan exceeds 10000 elements",
+        )?;
+        ensure(
+            self.source_ids.len().saturating_add(ceilings.len()) <= MAX_PLAN_ELEMENTS,
+            "plan exceeds 10000 source elements",
+        )?;
+        ensure(
+            self.floors
+                .iter()
+                .chain(ceilings.iter())
+                .fold(0usize, |total, area| {
+                    total.saturating_add(area.triangles.len())
+                })
+                <= MAX_PLAN_FLOOR_TRIANGLES,
+            "ceiling plan fills exceed the 50000 triangle limit",
+        )?;
+        let mut ids = BTreeSet::new();
+        for ceiling in &ceilings {
+            ensure(
+                !ceiling.entity.0.is_nil()
+                    && ids.insert(ceiling.entity)
+                    && !self.source_ids.contains(&ceiling.entity)
+                    && !self
+                        .floors
+                        .iter()
+                        .any(|floor| floor.entity == ceiling.entity),
+                "invalid or duplicate ceiling plan identity",
+            )?;
+            ensure(
+                (3..=256).contains(&ceiling.boundary.len())
+                    && ceiling.boundary.iter().all(|point| point.is_finite())
+                    && ceiling.holes.len() <= 16
+                    && ceiling.holes.iter().all(|hole| {
+                        (3..=256).contains(&hole.len())
+                            && hole.iter().all(|point| point.is_finite())
+                    })
+                    && ceiling.boundary.len() + ceiling.holes.iter().map(Vec::len).sum::<usize>()
+                        <= 1024
+                    && ceiling.area_m2.is_finite()
+                    && ceiling.area_m2 > 1e-8,
+                "invalid ceiling plan geometry",
+            )?;
+            let triangulation = os_geometry::floor_holes::triangulate_floor_rings(
+                &ceiling.boundary,
+                &ceiling.holes,
+            )?;
+            ensure(
+                ceiling.vertices == triangulation.vertices
+                    && ceiling.triangles == triangulation.triangles
+                    && (triangulation.net_area - ceiling.area_m2).abs()
+                        <= 1e-8_f64.max(ceiling.area_m2 * 1e-8),
+                "ceiling plan triangulation does not match its rings",
+            )?;
+        }
+        ceilings.sort_by_key(|ceiling| ceiling.entity);
+        self.source_ids
+            .extend(ceilings.iter().map(|ceiling| ceiling.entity));
+        self.ceilings = ceilings;
         Ok(self)
     }
     pub fn rooms(&self, current: PlanContext) -> Result<&[PlanRoomItem]> {
@@ -959,6 +1121,7 @@ impl PlanDrawing {
                 + self.separator_segment_count
                 + self.grids.len()
                 + self.floors.len()
+                + self.ceilings.len()
                 + self.columns.len()
                 + self.rooms.len()
                 <= MAX_PLAN_ELEMENTS,
@@ -973,7 +1136,8 @@ impl PlanDrawing {
                     && !self.rooms.iter().any(|d| d.entity == item.entity)
                     && !self.grids.iter().any(|d| d.entity == item.entity)
                     && !self.lines.iter().any(|d| d.entity == item.entity)
-                    && !self.floors.iter().any(|d| d.entity == item.entity),
+                    && !self.floors.iter().any(|d| d.entity == item.entity)
+                    && !self.ceilings.iter().any(|d| d.entity == item.entity),
                 "duplicate angular dimension identity",
             )?;
         }
@@ -984,6 +1148,10 @@ impl PlanDrawing {
     pub fn floors(&self, current: PlanContext) -> Result<&[PlanFloorItem]> {
         self.items(current)?;
         Ok(&self.floors)
+    }
+    pub fn ceilings(&self, current: PlanContext) -> Result<&[PlanCeilingItem]> {
+        self.items(current)?;
+        Ok(&self.ceilings)
     }
     pub fn with_room_boundary_diagnostic(mut self, diagnostic: Option<String>) -> Result<Self> {
         ensure(
@@ -1040,6 +1208,18 @@ impl PlanDrawing {
             })
             .map(|floor| floor.entity))
     }
+    pub fn pick_ceiling(&self, current: PlanContext, point: Point2) -> Result<Option<Id>> {
+        ensure(point.is_finite(), "invalid ceiling pick point")?;
+        Ok(self
+            .ceilings(current)?
+            .iter()
+            .rev()
+            .find(|ceiling| {
+                current.crop.is_none_or(|crop| point_in_crop(crop, point))
+                    && ceiling.contains(point)
+            })
+            .map(|ceiling| ceiling.entity))
+    }
     pub fn pick_dimension_screen(
         &self,
         current: PlanContext,
@@ -1048,6 +1228,20 @@ impl PlanDrawing {
         pointer: Point2,
         radius_pixels: f64,
     ) -> Result<Option<Id>> {
+        Ok(self
+            .dimension_hits(current, camera, viewport, pointer, radius_pixels)?
+            .into_iter()
+            .next())
+    }
+
+    fn dimension_hits(
+        &self,
+        current: PlanContext,
+        camera: PlanCamera,
+        viewport: [f64; 2],
+        pointer: Point2,
+        radius_pixels: f64,
+    ) -> Result<Vec<Id>> {
         ensure(
             pointer.is_finite()
                 && radius_pixels.is_finite()
@@ -1056,14 +1250,15 @@ impl PlanDrawing {
             "invalid dimension pick query",
         )?;
         let dimensions = self.dimensions(current)?;
+        let mut hits = Vec::new();
         if let Some(crop) = current.crop
             && !point_in_crop(crop, camera.unproject(pointer, viewport)?)
         {
-            return Ok(None);
+            return Ok(hits);
         }
         for dimension in self.angular_dimensions.iter().rev() {
             if dimension.hit(current, camera, viewport, pointer, radius_pixels)? {
-                return Ok(Some(dimension.entity));
+                hits.push(dimension.entity);
             }
         }
         for dimension in dimensions
@@ -1116,10 +1311,10 @@ impl PlanDrawing {
                             }))
             };
             if hit {
-                return Ok(Some(dimension.entity));
+                hits.push(dimension.entity);
             }
         }
-        Ok(None)
+        Ok(hits)
     }
     pub fn pick(&self, current: PlanContext, point: Point2) -> Result<Option<Id>> {
         ensure(point.is_finite(), "invalid plan pick point")?;
@@ -1128,7 +1323,8 @@ impl PlanDrawing {
             .iter()
             .rev()
             .find(|item| item.footprint.contains(point))
-            .map(|item| item.entity))
+            .map(|item| item.entity)
+            .or(self.pick_ceiling(current, point)?))
     }
 }
 

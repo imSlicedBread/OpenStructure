@@ -1,10 +1,179 @@
-# Native .osb format, container 2 / model schema 28
+# Native .osb format, container 2 / model schema 45
+
+Schema 45 upgrades strict `PlanSettings` from version 2 to 3. Each plan stores
+`target_phase` (a project phase UUID, or explicit null to follow the latest phase)
+and `phase_filter` (`ShowAll`, `ShowExisting`, `ShowNew`, `ShowDemolished`, or
+`ShowTemporary`). The 44→45 migration pins older plans to the latest project
+phase and `ShowAll`, preserving all other settings and advancing native headers.
+Both fields are required in version 3. Partial/ambiguous legacy fields, invalid
+references and unknown filters reject atomically. A pinned phase is a view
+reference and cannot be removed while that reference remains. Native full-model
+transport is API 26; generic API 2 and container 2 are unchanged.
+
+Schema 44 adds ordered project phases and element lifecycles. New documents
+contain `Existing` and `New Construction`; native walls, openings, floors,
+stairs, roofs, ceilings, columns, rooms and room separators can reference
+creation/demolition phases. The explicit 43→44 migration assigns all existing
+phaseable elements to Existing and advances native headers. Generated phase IDs
+are deterministic per project. Ambiguous preexisting phase fields are rejected.
+Migration validates a copy before adoption; the
+container remains version 2. See [native phase coverage](native-phases.md).
+Current native full-model plugins use API 26/schema 45; generic API 2 is
+unchanged.
+
+Schema 43 adds tagged associative dimension references for native wall endpoints
+and opening jambs. The 42→43 migration strictly converts legacy wall endpoint
+objects, advances native headers, and rejects ambiguous reference shapes
+atomically. The frozen `schema-42-dimension-anchors.json` fixture verifies
+preservation; `dimension_anchors.rs` covers `.osb` save/reopen. Container 2 is
+unchanged. At that historical schema, native full-model plugins used API 24;
+current compatibility is API 26/schema 45. Generic API 2 remains unchanged.
+
+Schema 42 adds required `ScheduleParams.filters`, empty for new definitions.
+Rules have an explicit `kind` tag (`text` or `numeric`), snake_case field and
+operator names, and a `value` string or f64 metre threshold. For example:
+`{"kind":"text","field":"name","operator":"contains","value":"Entry"}`.
+Door/Window/All definitions support at most 32 AND rules. Text is trimmed,
+nonempty, bounded to 256 UTF-8 bytes without controls; numeric values are finite.
+Typed fields/operators reject incompatible combinations. RoomFinish requires
+empty filters. The explicit 41→42 migration requires the schedules map, adds
+empty filters to every existing schedule, rejects any preexisting filters field
+as ambiguous, and advances all native entity headers. Migration validates a copy
+before adoption. Current-schema schedules missing filters are rejected.
+The dedicated `schema-41-schedule-filters.json` fixture and
+`crates/os-storage/tests/schedule_filters.rs` cover migration, preservation,
+round trips and atomic failure. Rows remain derived, never persisted.
+
+Schema 41 adds the required opening-tag `label_preset` enum. The explicit
+40→41 migration assigns `Full` to existing tags and advances native headers;
+an ambiguous preexisting preset is rejected atomically. At that milestone,
+native full-model plugins used API 24/schema 43; current compatibility is API
+26/schema 45. Generic API 2 and container 2 are unchanged.
+
+Schema 38 adds the required `roofs` map of native single-plane roof entities.
+Each roof stores its level, optional material, outer boundary and opening rings,
+vertical thickness/top offset, slope anchor/direction, and signed rise per run.
+The atomic 37→38 migration adds an empty map and advances native headers; an
+already-present roof map in schema 37 is rejected as ambiguous. Roofs are not
+exchanged through IFC in this increment; both import
+and export fail closed when an IFC roof is encountered. See
+[native roofs](native-roofs.md).
+
+Schema 39 adds the required `ceilings` map of horizontal level-relative native
+ceiling entities and upgrades saved plan settings to version 2 for the distinct
+upward-looking reflected-ceiling range. The atomic 38→39 migration adds an empty
+map, advances headers, and preserves prior floor-plan ranges. See
+[native ceilings](native-ceilings.md).
+
+Schema 40 adds the nullable `CeilingParams.boundary_room` source identity. The
+atomic 39→40 migration initializes existing ceilings as manually bounded and
+advances native headers. Room-backed ceilings resolve their current boundary
+from the accepted room topology; unresolved links retain their last saved outline
+for repair or detachment. Schema 40 is an intermediate model version.
+
+Schema 37 added the required `stairs` map for native straight flights between
+two levels. Rise and going derive from the referenced level elevations and the
+authored plan run/riser count. The atomic 36→37 migration added an empty map and
+advanced native headers; at schema 37 native full-model plugins used API 18/schema 37.
+Stair geometry remains unsupported by IFC export until stair exchange is
+implemented. See [native stairs](native-stairs.md).
+
+Schema 36 adds required `FloorParams.holes`, an authored list of strictly
+contained, disjoint inner boundary rings. The atomic 35→36 migration inserts an
+empty list for every existing floor and advances native headers/root, preserving
+all floor data, IDs, and opaque extension payloads. Current-schema missing
+opening lists are rejected. At the schema-36 milestone, native full-model API 17
+required schema 36;
+generic API 2 and container 2 remain unchanged. See
+[native slab openings](native-floor-slabs.md).
+
+Schema 35 adds required nullable `RoomParams.floor_material`, `wall_material`,
+and `ceiling_material` UUID fields. Each non-null reference must exist in the
+project materials map; whole-model transaction validation rejects removal of a
+referenced material. Finish code strings remain independent, with no inference
+between codes and references. The atomic 34→35 migration inserts null for all
+three fields in every room and advances the root and every native header.
+Any pre-existing reference field in schema 34 (including null) is rejected.
+Room IDs, signatures, finish strings, material RGB, extensions and schedule
+definitions are preserved. Current schema requires all three fields and rejects
+missing or dangling references. At the schema-35 milestone, native API 16
+required schema 35; generic API 2 and container 2 remain unchanged. See
+[native rooms](native-rooms.md).
+
+Schema 34 adds required `MaterialParams.color`, exactly three integer RGB bytes
+in 0..=255. The atomic 33→34 migration assigns each existing material its prior
+`SurfaceIdentity.color()` swatch: `[140 + b[0] % 80, 140 + b[1] % 80,
+140 + b[2] % 80]` from the material UUID bytes. Any pre-existing `color` field
+is ambiguous and rejected. All native headers/root advance; IDs, geometry,
+density, assignments, room finish strings and opaque extensions are preserved.
+Current files reject missing/malformed colors. At the schema-34 milestone,
+native full-model API 15 required schema 34; generic API 2 and container 2
+remain unchanged. See
+[shared material colors](native-material-colors.md) for evidence and limitations.
+
+Schema 33 adds required nullable `RoomParams.floor_finish`, `wall_finish` and
+`ceiling_finish` strings. Present codes are trimmed, nonempty, at most 128 UTF-8
+bytes and contain no control characters. They represent finish intent only.
+Saved schedules add `RoomFinish`, eight room columns and room sorts; incompatible
+column/category/sort combinations are rejected. Existing Door/Window/All
+definitions retain their meaning. Derived room area and rows are never stored.
+The atomic 32→33 migration inserts null fields, advances all native headers/root,
+rejects ambiguous fields or legacy room-category schedules, and preserves UUIDs,
+boundary signatures, definitions and opaque extension payloads. Current-schema
+missing finish fields are errors. Native full-model API 14 required schema 33;
+generic API 2 and container 2 are unchanged. See [native rooms](native-rooms.md).
+
+Schema 32 advances reusable opening families from version 3 to 4 and adds
+required nullable `panel_material` and `frame_material` UUID references. The
+panel assignment applies to the door leaf or window pane; the frame assignment
+applies to generated rails. The atomic 31→32 migration inserts null assignments
+for existing families and advances native headers/root. Ambiguous preexisting
+fields are rejected. Native full-model plugin API 13 carries schema 32; generic
+API 2 and container version 2 are unchanged. See
+[door/window material assignments](native-opening-materials.md).
+
+Schema 31 adds the required `opening_tags` map. Each `core.opening_tag`
+stores its owning plan view UUID, opening UUID and world XY position. Labels
+derive from live instance/type parameters; missing and wrong-level targets remain
+persisted with visible diagnostics. One tag per opening per view is enforced.
+The atomic 30→31 migration rejects an existing map, inserts an empty map and
+advances native headers/root; all prior fields and opaque extensions survive.
+See [opening-tag evidence](native-opening-tags.md).
+
+IFC behavior is documented separately; plugin schema/API compatibility does
+not alter the bounded IFC exchange protocol.
+
+Schema 30 adds required serialized `OpeningParams.width_override` and
+`height_override`, each `Option<f64>`. Null inherits the shared type default;
+a number pins the instance, including an explicit value equal to the default.
+Legacy definitions keep their dimensions and require both overrides to be null.
+Resolved dimensions must be finite and at least 1 mm, fit the family/frame and
+host, and pass whole-model overlap/clearance validation.
+The explicit atomic 29→30 migration inserts null into both fields on every
+opening and advances all native headers/root. Either pre-existing field is
+ambiguous and rejected. IDs, definitions, existing sill overrides, geometry and
+opaque extensions are preserved; missing fields in current files are rejected.
+Frozen schema-29 coverage and save/reopen checks live in
+`crates/os-storage/tests/opening_dimensions.rs`. The earlier 28→29 sill
+migration remains an independent step in the chain.
+
+Schema 29 adds required `OpeningParams.sill_override: Option<f64>`. Explicit
+`null` inherits a typed window's `OpeningTypeParams.sill`; a number pins that
+instance, even when equal to the default. Legacy definitions retain their sill
+and require `null`. Doors reject sill overrides. Effective sill must be finite,
+zero or at least 1 mm, and satisfy existing host clearance and separation rules.
+The explicit 28→29 migration inserts `null` into every opening and advances
+all native headers and the root version. A pre-existing override is ambiguous
+and rejected atomically. IDs, type references, legacy sills, geometry and opaque
+extension payloads are preserved. Current-schema missing fields are errors.
+Container version 2 and generic plugin API 2 are unchanged; current native API is 26/schema 45.
 
 Schema 25 adds optional frame width/depth fields to reusable opening families
 and advances their family payload to version 2. The 24→25 migration defaults
 frame width to zero and depth to 50 mm, preserving the pre-frame opening geometry.
 Frame members are derived; they add no independent model entities or UUIDs.
-Native full-model plugins use API 9/schema 28. The 27→28 migration adds empty
+At the schema-37 milestone, native full-model plugins used API 18/schema 37.
+The 27→28 migration adds empty
 plan-graphics template and view-binding maps and advances native headers without
 rewriting opaque plugin payloads. The 26→27 migration added the first-class
 native `columns` map. Generic API 2 is unchanged.
@@ -24,7 +193,8 @@ only with `Center`. Legacy opening definitions remain independent and resolve
 to `Center` without acquiring a type field. Migration 22→23 rejects ambiguous
 pre-existing values, advances native entity headers, and preserves all other
 fields and identities. See [native hosted openings](native-hosted-openings.md)
-for the plan/3D behavior. Native full-model plugins now use API 5/schema 23;
+for the plan/3D behavior. At the schema-23 milestone, native full-model plugins
+used API 5/schema 23;
 generic API 2 is unchanged.
 
 Schema 22 adds required `wall_types` and `wall_type_assignments` maps for
@@ -95,7 +265,7 @@ project.osb
 ```
 
 The manifest contains `format = "OpenStructure"`, `container_version = 2`,
-`schema_version = 23`, a UUID `project_id`, `model_entry = "model.json"`, and
+`schema_version = 43`, a UUID `project_id`, `model_entry = "model.json"`, and
 `units = "metres"`. The same project identity and model schema must match the
 model. Unknown future container or model versions fail with an explicit error.
 
@@ -160,7 +330,7 @@ Tests also package the old model in an actual `.osb`, open and migrate it, then
 resave and reopen it with current manifest/model versions and unchanged UUIDs.
 
 Container 1 remains readable, including its auxiliary files. Saving writes
-container 2 and model schema 23 without changing model IDs; older builds reject newer versions
+container 2 and model schema 45 without changing model IDs; older builds reject newer versions
 instead of silently dropping opaque contents. Opening never rewrites the source.
 See the earlier container-only change in
 [ADR 0007](decisions/0007-opaque-container-files.md).

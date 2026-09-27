@@ -1,10 +1,16 @@
+mod common;
+
 use os_model::{Model, SCHEMA_VERSION};
 use os_storage::migrate;
 use serde_json::{Value, json};
 
 fn schema_27_model() -> Value {
     let mut value = serde_json::to_value(Model::new("Legacy graphics")).unwrap();
+    common::remove_phase_fields(&mut value);
+    value.as_object_mut().unwrap().remove("stairs");
+    value.as_object_mut().unwrap().remove("roofs");
     value["schema_version"] = json!(27);
+    value.as_object_mut().unwrap().remove("opening_tags");
     value
         .as_object_mut()
         .unwrap()

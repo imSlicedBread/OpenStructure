@@ -133,10 +133,14 @@ fn crop_eight_handles_hit_radius_rotated_edges_and_corners() {
 #[test]
 fn crop_cancel_keeps_pointer_until_release_and_never_edits() {
     for (size, scale) in PROFILES {
-        for reason in [
+        let reasons: Vec<_> = [
             "collapse", "outside", "escape", "mode", "view", "revision", "settings", "session",
-            "provider", "drawing", "context", "missing",
-        ] {
+            "drawing", "context", "missing",
+        ]
+        .into_iter()
+        .chain(std::iter::once("provider").filter(|_| cfg!(feature = "external-plugins")))
+        .collect();
+        for reason in reasons {
             let mut h = fixture(size, scale, 0.0);
             let camera = h.app.plans.cameras[&h.view];
             let p = at(&h, Point2::new(1.0, 0.0));

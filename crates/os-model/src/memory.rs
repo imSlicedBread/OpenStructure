@@ -97,12 +97,24 @@ named_parameters!(SiteParams, project);
 named_parameters!(BuildingParams, site);
 named_parameters!(LevelParams, elevation, building);
 named_parameters!(GridParams, building, start, end);
-named_parameters!(MaterialParams, density_kg_m3);
+named_parameters!(MaterialParams, density_kg_m3, color);
 named_parameters!(PlanGraphicsTemplateParams, styles);
+named_parameters!(PhaseParams, order);
 // Plan settings contain only fixed-size scalars/points/options; inline entity
 // size already accounts for them. Keep this pattern exhaustive on schema changes.
 named_parameters!(ViewParams, kind, level, settings_revision, plan, section);
 named_parameters!(WallParams, start, end, thickness, height, level, material);
+named_parameters!(
+    StairParams,
+    lower_level,
+    upper_level,
+    start,
+    end,
+    width,
+    riser_count,
+    structural_thickness,
+    material
+);
 named_parameters!(
     ColumnParams,
     level,
@@ -113,7 +125,17 @@ named_parameters!(
     base_offset,
     material
 );
-named_parameters!(OpeningParams, host, offset, definition, hinge, swing);
+named_parameters!(
+    OpeningParams,
+    host,
+    offset,
+    definition,
+    width_override,
+    height_override,
+    sill_override,
+    hinge,
+    swing
+);
 // Family profile allocation is counted explicitly below.
 named_parameters!(
     OpeningTypeParams,
@@ -144,13 +166,19 @@ impl Model {
             wall_type_assignments,
             wall_joins,
             floors,
+            stairs,
+            roofs,
+            ceilings,
             columns,
             openings,
             opening_types,
             dimensions,
             rooms,
             room_separation_lines,
+            phases,
+            element_lifecycles,
             room_tags,
+            opening_tags,
             detail_lines,
             grids,
             materials,
@@ -179,6 +207,65 @@ impl Model {
         estimate.tree::<Id, PlanGraphicsBinding>(plan_graphics.len());
         entities!(walls, Wall);
         entities!(columns, Column);
+        entities!(stairs, Stair);
+        estimate.tree::<Id, Ceiling>(ceilings.len());
+        for ceiling in ceilings.values() {
+            estimate.header(&ceiling.header);
+            let CeilingParams {
+                name,
+                level: _,
+                material: _,
+                boundary_room: _,
+                boundary,
+                holes,
+                thickness: _,
+                elevation_offset: _,
+            } = &ceiling.parameters;
+            estimate.add(name.capacity());
+            estimate.add(
+                boundary
+                    .capacity()
+                    .saturating_mul(size_of::<os_core::Point2>()),
+            );
+            estimate.add(
+                holes
+                    .capacity()
+                    .saturating_mul(size_of::<Vec<os_core::Point2>>()),
+            );
+            for hole in holes {
+                estimate.add(hole.capacity().saturating_mul(size_of::<os_core::Point2>()));
+            }
+        }
+        estimate.tree::<Id, Roof>(roofs.len());
+        for roof in roofs.values() {
+            estimate.header(&roof.header);
+            let RoofParams {
+                name,
+                level: _,
+                material: _,
+                boundary,
+                holes,
+                thickness: _,
+                top_offset: _,
+                slope_start: _,
+                slope_end: _,
+                rise_per_run: _,
+            } = &roof.parameters;
+            estimate.add(name.capacity());
+            estimate.add(
+                boundary
+                    .capacity()
+                    .saturating_mul(size_of::<os_core::Point2>()),
+            );
+            estimate.add(
+                holes
+                    .capacity()
+                    .saturating_mul(size_of::<Vec<os_core::Point2>>()),
+            );
+            for hole in holes {
+                estimate.add(hole.capacity().saturating_mul(size_of::<os_core::Point2>()));
+            }
+        }
         estimate.tree::<Id, WallTypeAssignment>(wall_type_assignments.len());
         estimate.tree::<Id, WallType>(wall_types.len());
         for ty in wall_types.values() {
@@ -206,6 +293,7 @@ impl Model {
                 level: _,
                 material: _,
                 boundary,
+                holes,
                 thickness: _,
                 top_offset: _,
             } = &floor.parameters;
@@ -215,6 +303,14 @@ impl Model {
                     .capacity()
                     .saturating_mul(size_of::<os_core::Point2>()),
             );
+            estimate.add(
+                holes
+                    .capacity()
+                    .saturating_mul(size_of::<Vec<os_core::Point2>>()),
+            );
+            for ring in holes {
+                estimate.add(ring.capacity().saturating_mul(size_of::<os_core::Point2>()));
+            }
         }
         entities!(openings, Opening);
         entities!(opening_types, OpeningType);
@@ -249,8 +345,14 @@ impl Model {
         for line in room_separation_lines.values() {
             estimate.header(&line.header);
         }
+        entities!(phases, Phase);
+        estimate.tree::<Id, ElementLifecycle>(element_lifecycles.len());
         estimate.tree::<Id, Room>(rooms.len());
         estimate.tree::<Id, RoomTag>(room_tags.len());
+        estimate.tree::<Id, OpeningTag>(opening_tags.len());
+        for tag in opening_tags.values() {
+            estimate.header(&tag.header);
+        }
         estimate.tree::<Id, DetailLine>(detail_lines.len());
         for line in detail_lines.values() {
             estimate.header(&line.header);
@@ -266,9 +368,21 @@ impl Model {
                 level: _,
                 seed: _,
                 boundary_signature,
+                floor_finish,
+                wall_finish,
+                ceiling_finish,
+                floor_material: _,
+                wall_material: _,
+                ceiling_material: _,
             } = &room.parameters;
             estimate.add(number.capacity());
             estimate.add(name.capacity());
+            for code in [floor_finish, wall_finish, ceiling_finish]
+                .into_iter()
+                .flatten()
+            {
+                estimate.add(code.capacity());
+            }
             estimate.add(
                 boundary_signature
                     .capacity()
@@ -286,8 +400,19 @@ impl Model {
                 category: _,
                 columns,
                 sort: _,
+                filters,
             } = &schedule.parameters;
             estimate.add(name.capacity());
+            estimate.add(
+                filters
+                    .capacity()
+                    .saturating_mul(size_of::<ScheduleFilter>()),
+            );
+            for filter in filters {
+                if let ScheduleFilter::Text { value, .. } = filter {
+                    estimate.add(value.capacity());
+                }
+            }
             estimate.add(
                 columns
                     .capacity()

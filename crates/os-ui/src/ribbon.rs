@@ -116,7 +116,12 @@ impl DesktopApp {
                     .show(ui, |ui| {
                         ui.horizontal_top(|ui| match self.ribbon_tab {
                             RibbonTab::Architecture => {
-                                ribbon_group(ui, "Openings", |ui| self.opening_commands(ui));
+                                ribbon_group(ui, "Openings", |ui| {
+                                    self.opening_commands(ui);
+                                    if ui.add_enabled(self.plans.active.is_some() && self.selected.is_some_and(|id| self.editor.document.model().openings.contains_key(&id)), egui::Button::new("Opening Tag")).clicked() {
+                                        self.begin_opening_tag();
+                                    }
+                                });
                                 ribbon_group(ui, "Spaces", |ui| {
                                     if command(ui, Icon::Room, "Room", true)
                                         .on_hover_text(
@@ -166,6 +171,15 @@ impl DesktopApp {
                                     }
                                 });
                                 ribbon_group(ui, "Build", |ui| {
+                                    ui.horizontal(|ui| {
+                                        if ui.add_enabled(self.plans.active.is_some(), egui::Button::new("Roof")).clicked()
+                                            && let Some(view) = self.plans.active { self.begin_roof(view); }
+                                        if ui.add_enabled(self.plans.active.is_some(), egui::Button::new("Stair"))
+                                            .on_hover_text("Draw a straight stair from the active plan level to a higher level. Set width and risers in Properties.")
+                                            .clicked() && let Some(view) = self.plans.active {
+                                            self.begin_stair(view);
+                                        }
+                                    });
                                     if command(ui, Icon::Wall, "Wall", true)
                                         .on_hover_text(
                                             "Create a wall from numeric endpoints in Properties.",
@@ -199,7 +213,17 @@ impl DesktopApp {
                                     }
                                 });
                             }
-                            RibbonTab::Manage => self.manage_commands(ui),
+                            RibbonTab::Manage => {
+                                self.manage_commands(ui);
+                                ribbon_group(ui, "Opening type library", |ui| {
+                                    if ui.button("Import type package…").clicked() {
+                                        self.begin_import_opening_type_package();
+                                    }
+                                    if ui.button("Browse local library…").clicked() {
+                                        self.begin_opening_type_library_dialog();
+                                    }
+                                });
+                            }
                             RibbonTab::ModifyWalls => {
                                 ribbon_group(ui, "Openings", |ui| self.opening_commands(ui));
                                 ribbon_group(ui, "Edit selection", |ui| {
@@ -287,6 +311,11 @@ impl DesktopApp {
     }
 
     fn manage_commands(&mut self, ui: &mut egui::Ui) {
+        ribbon_group(ui, "Phases", |ui| {
+            if ui.button("Manage phases…").clicked() {
+                self.begin_phases();
+            }
+        });
         ribbon_group(ui, "Project", |ui| {
             ui.set_width(230.0);
             ui.add(

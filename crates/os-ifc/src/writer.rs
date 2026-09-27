@@ -23,6 +23,7 @@ mod floor_tests {
                     os_core::Point2::new(2., 0.),
                     os_core::Point2::new(0., 2.),
                 ],
+                holes: Vec::new(),
                 thickness: 0.2,
                 top_offset: 0.0,
             },
@@ -31,6 +32,21 @@ mod floor_tests {
         let error = export(&m).unwrap_err();
         assert!(matches!(error, os_core::Error::Unsupported(_)));
         assert!(error.to_string().contains("floors/slabs"));
+    }
+
+    #[test]
+    fn custom_phasing_requires_explicit_ifc_loss_acknowledgement() {
+        let mut model = Model::new("Phased project");
+        let phase = os_model::new_phase("Renovation", 2);
+        model.phases.insert(phase.id(), phase);
+        let report = crate::WallIfc.export_report(&model).unwrap();
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("phases"))
+        );
+        assert!(crate::IfcAdapter::export(&crate::WallIfc, &model).is_err());
     }
 }
 
@@ -147,6 +163,26 @@ pub fn export(m: &Model) -> Result<Exchange<Vec<u8>>> {
             "IFC export does not support native columns; keep the native .osb document".into(),
         ));
     }
+    if !m.stairs.is_empty() {
+        return Err(os_core::Error::Unsupported(
+            "IFC export does not support native stairs; keep the native .osb document".into(),
+        ));
+    }
+    if !m.roofs.is_empty() {
+        return Err(os_core::Error::Unsupported(
+            "IFC export does not support native roofs; keep the native .osb document".into(),
+        ));
+    }
+    if !m.ceilings.is_empty() {
+        return Err(os_core::Error::Unsupported(
+            "IFC export does not support native ceilings; keep the native .osb document".into(),
+        ));
+    }
+    if !m.ceilings.is_empty() {
+        return Err(os_core::Error::Unsupported(
+            "IFC export does not support native ceilings; keep the native .osb document".into(),
+        ));
+    }
     let mut type_operations = BTreeMap::new();
     for e in m.openings.values() {
         let p = m.resolve_opening(&e.parameters)?;
@@ -201,6 +237,18 @@ pub fn export(m: &Model) -> Result<Exchange<Vec<u8>>> {
     }
     if !m.grids.is_empty() {
         warnings.push(format!("{} native architectural grids and their metadata are not exported; keep the native .osb document.", m.grids.len()));
+    }
+    let ordered_phases = m.ordered_phases();
+    let has_custom_phasing = ordered_phases.len() != 2
+        || ordered_phases[0].parameters.name != "Existing"
+        || ordered_phases[1].parameters.name != "New Construction"
+        || m.element_lifecycles.values().any(|lifecycle| {
+            lifecycle.created_in != ordered_phases[0].id() || lifecycle.demolished_in.is_some()
+        });
+    if has_custom_phasing {
+        warnings.push(
+            "Native project phases and element creation/demolition states are not exported; keep the native .osb document.".into(),
+        );
     }
     if !m.plugin_requirements.is_empty() {
         warnings.push("Native plugin requirement records are not exported.".into());
@@ -337,10 +385,20 @@ pub fn export(m: &Model) -> Result<Exchange<Vec<u8>>> {
         let kind = if door { "IFCDOORTYPE" } else { "IFCWINDOWTYPE" };
         let predefined = if door { "DOOR" } else { "WINDOW" };
         let op = type_operations[&e.id()];
+        let description = quote(&format!(
+            "OpenStructure.Type.v3;width={:?};height={:?}{}",
+            e.parameters.width,
+            e.parameters.height,
+            if door {
+                String::new()
+            } else {
+                format!(";sill={:?}", e.parameters.sill)
+            },
+        ));
         let id = w.add(
             kind,
             format!(
-                "'{}',$,{},$,$,$,$,$,$,.{predefined}.,.{op}.,$,$",
+                "'{}',$,{},{description},$,$,$,$,$,.{predefined}.,.{op}.,$,$",
                 guid(e.id()),
                 quote(&e.parameters.name)
             ),
@@ -377,9 +435,31 @@ pub fn export(m: &Model) -> Result<Exchange<Vec<u8>>> {
         // Description is an explicit bounded dialect discriminator: deleting a
         // type relationship must not silently turn a Typed instance into Legacy.
         let (description, classification) = if v.type_id.is_some() {
-            ("OpenStructure.Typed.v1", "$,$".into())
+            let state = |value: Option<f64>| {
+                if value.is_some() {
+                    "override"
+                } else {
+                    "inherit"
+                }
+            };
+            (
+                format!(
+                    "OpenStructure.Typed.v3;width={};height={}{}",
+                    state(e.parameters.width_override),
+                    state(e.parameters.height_override),
+                    if door {
+                        String::new()
+                    } else {
+                        format!(";sill={}", state(e.parameters.sill_override))
+                    }
+                ),
+                "$,$".into(),
+            )
         } else {
-            ("OpenStructure.Legacy.v1", format!(".{predefined}.,.{op}."))
+            (
+                "OpenStructure.Legacy.v1".to_owned(),
+                format!(".{predefined}.,.{op}."),
+            )
         };
         let fill = w.add(
             kind,

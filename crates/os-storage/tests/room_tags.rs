@@ -1,3 +1,5 @@
+mod common;
+
 use os_core::Point2;
 use os_document::{Command, Document};
 use os_model::{Model, RoomTag, RoomTagParams, SCHEMA_VERSION, ViewKind};
@@ -14,8 +16,21 @@ fn room_tag_frozen_schema_twelve_migration_preserves_all_data_except_versions_an
     migrate(&mut migrated, 12).unwrap();
     let mut expected = original.clone();
     expected["schema_version"] = json!(SCHEMA_VERSION);
+    for room in expected["rooms"].as_object_mut().unwrap().values_mut() {
+        for field in [
+            "floor_finish",
+            "wall_finish",
+            "ceiling_finish",
+            "floor_material",
+            "wall_material",
+            "ceiling_material",
+        ] {
+            room["parameters"][field] = Value::Null;
+        }
+    }
     expected["schedules"] = json!({});
     expected["room_tags"] = json!({});
+    expected["opening_tags"] = json!({});
     expected["sheets"] = json!({});
     expected["detail_lines"] = json!({});
     expected["room_separation_lines"] = json!({});
@@ -23,6 +38,11 @@ fn room_tag_frozen_schema_twelve_migration_preserves_all_data_except_versions_an
     expected["wall_types"] = json!({});
     expected["wall_type_assignments"] = json!({});
     expected["columns"] = json!({});
+    expected["stairs"] = json!({});
+    expected["roofs"] = json!({});
+    expected["phases"] = migrated["phases"].clone();
+    expected["element_lifecycles"] = migrated["element_lifecycles"].clone();
+    common::apply_schema_38_defaults(&mut expected);
     expected["plan_graphics_templates"] = json!({});
     expected["plan_graphics"] = json!({});
     expected["project"]["header"]["schema_version"] = json!(SCHEMA_VERSION);
@@ -45,6 +65,7 @@ fn room_tag_frozen_schema_twelve_migration_preserves_all_data_except_versions_an
             entity["header"]["schema_version"] = json!(SCHEMA_VERSION);
         }
     }
+    common::apply_schema_43_dimension_references(&mut expected);
     assert_eq!(
         migrated, expected,
         "every UUID, header field and parameter must survive unchanged"

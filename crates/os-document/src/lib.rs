@@ -19,6 +19,16 @@ pub use history::{HistoryLimits, HistoryStats};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "command", content = "data")]
 pub enum Command {
+    AddPhase(Phase),
+    UpdatePhase {
+        id: Id,
+        parameters: PhaseParams,
+    },
+    RemovePhase(Id),
+    SetElementLifecycle {
+        element: Id,
+        lifecycle: ElementLifecycle,
+    },
     AddPlanGraphicsTemplate(PlanGraphicsTemplate),
     UpdatePlanGraphicsTemplate {
         id: Id,
@@ -70,6 +80,12 @@ pub enum Command {
     },
     RemoveSheet(Id),
     AddRoomTag(RoomTag),
+    AddOpeningTag(OpeningTag),
+    UpdateOpeningTag {
+        id: Id,
+        parameters: OpeningTagParams,
+    },
+    RemoveOpeningTag(Id),
     AddDetailLine(DetailLine),
     UpdateDetailLine {
         id: Id,
@@ -89,6 +105,24 @@ pub enum Command {
     RemoveRoomTag(Id),
     AddFloor(Floor),
     AddColumn(Column),
+    AddStair(Stair),
+    AddCeiling(Ceiling),
+    UpdateCeiling {
+        id: Id,
+        parameters: CeilingParams,
+    },
+    RemoveCeiling(Id),
+    AddRoof(Roof),
+    UpdateRoof {
+        id: Id,
+        parameters: RoofParams,
+    },
+    RemoveRoof(Id),
+    UpdateStair {
+        id: Id,
+        parameters: StairParams,
+    },
+    RemoveStair(Id),
     UpdateColumn {
         id: Id,
         parameters: ColumnParams,
@@ -176,6 +210,21 @@ pub struct Document {
     events: Vec<ChangeEvent>,
     revision: u64,
 }
+
+fn phaseable_ids(model: &Model) -> BTreeSet<Id> {
+    let mut ids = BTreeSet::new();
+    ids.extend(model.walls.keys().copied());
+    ids.extend(model.openings.keys().copied());
+    ids.extend(model.floors.keys().copied());
+    ids.extend(model.stairs.keys().copied());
+    ids.extend(model.roofs.keys().copied());
+    ids.extend(model.ceilings.keys().copied());
+    ids.extend(model.columns.keys().copied());
+    ids.extend(model.rooms.keys().copied());
+    ids.extend(model.room_separation_lines.keys().copied());
+    ids
+}
+
 impl Document {
     pub fn new(name: &str) -> Result<Self> {
         Self::from_model(Model::new(name))
@@ -236,9 +285,36 @@ impl Document {
     pub fn execute(&mut self, label: &str, commands: Vec<Command>) -> Result<()> {
         ensure(!commands.is_empty(), "empty transaction")?;
         let mut candidate = self.model.clone();
+        let original_phaseable = phaseable_ids(&self.model);
         let mut changed = BTreeSet::new();
         for command in commands {
             let id = match command {
+                Command::AddPhase(phase) => {
+                    let id = phase.id();
+                    ensure(!candidate.phases.contains_key(&id), "phase already exists")?;
+                    candidate.phases.insert(id, phase);
+                    id
+                }
+                Command::UpdatePhase { id, parameters } => {
+                    candidate
+                        .phases
+                        .get_mut(&id)
+                        .ok_or_else(|| Error::Invalid("phase missing".into()))?
+                        .parameters = parameters;
+                    id
+                }
+                Command::RemovePhase(id) => {
+                    ensure(candidate.phases.remove(&id).is_some(), "phase missing")?;
+                    id
+                }
+                Command::SetElementLifecycle { element, lifecycle } => {
+                    ensure(
+                        candidate.is_phaseable_element(element),
+                        "element is missing or cannot be phased",
+                    )?;
+                    candidate.element_lifecycles.insert(element, lifecycle);
+                    element
+                }
                 Command::AddMaterial(material) => {
                     let id = material.id();
                     ensure(
@@ -329,6 +405,64 @@ impl Document {
                     candidate.columns.insert(id, column);
                     id
                 }
+                Command::AddStair(stair) => {
+                    let id = stair.id();
+                    ensure(!candidate.stairs.contains_key(&id), "stair already exists")?;
+                    candidate.stairs.insert(id, stair);
+                    id
+                }
+
+                Command::AddCeiling(ceiling) => {
+                    let id = ceiling.id();
+                    ensure(
+                        !candidate.ceilings.contains_key(&id),
+                        "ceiling already exists",
+                    )?;
+                    candidate.ceilings.insert(id, ceiling);
+                    id
+                }
+                Command::UpdateCeiling { id, parameters } => {
+                    candidate
+                        .ceilings
+                        .get_mut(&id)
+                        .ok_or_else(|| Error::Invalid("ceiling missing".into()))?
+                        .parameters = parameters;
+                    id
+                }
+                Command::RemoveCeiling(id) => {
+                    ensure(candidate.ceilings.remove(&id).is_some(), "ceiling missing")?;
+                    id
+                }
+                Command::AddRoof(roof) => {
+                    let id = roof.id();
+                    ensure(!candidate.roofs.contains_key(&id), "roof already exists")?;
+                    candidate.roofs.insert(id, roof);
+                    id
+                }
+                Command::UpdateRoof { id, parameters } => {
+                    candidate
+                        .roofs
+                        .get_mut(&id)
+                        .ok_or_else(|| Error::Invalid("roof missing".into()))?
+                        .parameters = parameters;
+                    id
+                }
+                Command::RemoveRoof(id) => {
+                    ensure(candidate.roofs.remove(&id).is_some(), "roof missing")?;
+                    id
+                }
+                Command::UpdateStair { id, parameters } => {
+                    candidate
+                        .stairs
+                        .get_mut(&id)
+                        .ok_or_else(|| Error::Invalid("stair missing".into()))?
+                        .parameters = parameters;
+                    id
+                }
+                Command::RemoveStair(id) => {
+                    ensure(candidate.stairs.remove(&id).is_some(), "stair missing")?;
+                    id
+                }
                 Command::UpdateColumn { id, parameters } => {
                     candidate
                         .columns
@@ -417,6 +551,16 @@ impl Document {
                     )?;
                     id
                 }
+                Command::AddOpeningTag(tag) => {
+                    tag.parameters.validate_creation(&candidate)?;
+                    let id = tag.id();
+                    ensure(
+                        !candidate.opening_tags.contains_key(&id),
+                        "opening tag already exists",
+                    )?;
+                    candidate.opening_tags.insert(id, tag);
+                    id
+                }
                 Command::AddRoomTag(tag) => {
                     tag.parameters.validate_creation(&candidate)?;
                     let id = tag.id();
@@ -472,6 +616,26 @@ impl Document {
                     ensure(
                         candidate.room_separation_lines.remove(&id).is_some(),
                         "room separation line missing",
+                    )?;
+                    id
+                }
+                Command::UpdateOpeningTag { id, parameters } => {
+                    let tag = candidate
+                        .opening_tags
+                        .get_mut(&id)
+                        .ok_or_else(|| Error::Invalid("opening tag missing".into()))?;
+                    ensure(
+                        tag.parameters.view == parameters.view
+                            && tag.parameters.opening == parameters.opening,
+                        "opening tag view and target cannot change",
+                    )?;
+                    tag.parameters = parameters;
+                    id
+                }
+                Command::RemoveOpeningTag(id) => {
+                    ensure(
+                        candidate.opening_tags.remove(&id).is_some(),
+                        "opening tag missing",
                     )?;
                     id
                 }
@@ -821,6 +985,22 @@ impl Document {
             };
             changed.insert(id);
         }
+        let current_phaseable = phaseable_ids(&candidate);
+        candidate
+            .element_lifecycles
+            .retain(|id, _| current_phaseable.contains(id));
+        let latest_phase = candidate
+            .latest_phase()
+            .ok_or_else(|| Error::Invalid("project has no phases".into()))?;
+        for id in current_phaseable.difference(&original_phaseable) {
+            candidate
+                .element_lifecycles
+                .entry(*id)
+                .or_insert(ElementLifecycle {
+                    created_in: latest_phase,
+                    demolished_in: None,
+                });
+        }
         ensure(
             !candidate.views.is_empty() || self.model.views.is_empty(),
             "cannot remove the last view",
@@ -936,6 +1116,13 @@ mod floor_tests;
 #[cfg(test)]
 #[path = "tests/columns.rs"]
 mod column_tests;
+#[cfg(test)]
+#[path = "tests/stairs.rs"]
+mod stair_tests;
+
+#[cfg(test)]
+#[path = "tests/ceilings.rs"]
+mod ceiling_tests;
 
 #[cfg(test)]
 #[path = "tests/sheets.rs"]

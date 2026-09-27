@@ -4,7 +4,7 @@ use os_ifc::{IfcAdapter, WallIfc};
 use os_model::{
     Column, ColumnParams, DoorHinge, DoorSwing, Level, LevelParams, Model, Opening,
     OpeningDefinition, OpeningFamily, OpeningHostCut, OpeningKind, OpeningParams, OpeningType,
-    OpeningTypeParams, Wall, WallParams, WindowPanePosition,
+    OpeningTypeParams, Stair, StairParams, Wall, WallParams, WindowPanePosition,
 };
 
 fn model() -> Model {
@@ -45,6 +45,89 @@ fn model() -> Model {
         m.walls.insert(wall.id(), wall);
     }
     m
+}
+
+#[test]
+fn native_roof_exchange_fails_closed_in_both_directions() {
+    let mut m = model();
+    let bytes = WallIfc.export_report(&m).unwrap().value;
+    let text = String::from_utf8(bytes).unwrap();
+    let with_roof = text.replacen(
+        "ENDSEC;\nEND-ISO-10303-21;",
+        "#99999=IFCROOF('roof',$,'Roof',$,$,$,$,$,.SHED_ROOF.);\nENDSEC;\nEND-ISO-10303-21;",
+        1,
+    );
+    assert_ne!(with_roof, text);
+    let error = WallIfc.import_report(with_roof.as_bytes()).unwrap_err();
+    assert!(error.to_string().contains("IFCROOF"), "{error}");
+    let roof = os_model::Roof::new(
+        "core.roof",
+        os_model::RoofParams {
+            name: "Roof".into(),
+            level: *m.levels.keys().next().unwrap(),
+            material: None,
+            boundary: vec![
+                Point2::new(0., 0.),
+                Point2::new(4., 0.),
+                Point2::new(0., 4.),
+            ],
+            holes: vec![],
+            thickness: 0.2,
+            top_offset: 3.,
+            slope_start: Point2::new(0., 0.),
+            slope_end: Point2::new(1., 0.),
+            rise_per_run: 0.25,
+        },
+    );
+    m.roofs.insert(roof.id(), roof);
+    assert!(
+        WallIfc
+            .export_report(&m)
+            .unwrap_err()
+            .to_string()
+            .contains("native roofs")
+    );
+}
+
+#[test]
+fn native_ceiling_exchange_fails_closed_in_both_directions() {
+    let mut m = model();
+    let bytes = WallIfc.export_report(&m).unwrap().value;
+    let text = String::from_utf8(bytes).unwrap();
+    let with_ceiling = text.replacen(
+        "ENDSEC;\nEND-ISO-10303-21;",
+        "#99999=IFCCOVERING('ceiling',$,'Ceiling',$,$,$,$,$,.CEILING.);\nENDSEC;\nEND-ISO-10303-21;",
+        1,
+    );
+    assert_ne!(with_ceiling, text);
+    let error = WallIfc.import_report(with_ceiling.as_bytes()).unwrap_err();
+    assert!(error.to_string().contains("IFCCOVERING"), "{error}");
+
+    let ceiling = os_model::Ceiling::new(
+        "core.ceiling",
+        os_model::CeilingParams {
+            name: "Ceiling".into(),
+            level: *m.levels.keys().next().unwrap(),
+            material: None,
+            boundary_room: None,
+            boundary: vec![
+                Point2::new(0., 0.),
+                Point2::new(4., 0.),
+                Point2::new(0., 4.),
+            ],
+            holes: vec![],
+            thickness: 0.12,
+            elevation_offset: 2.55,
+        },
+    );
+    m.ceilings.insert(ceiling.id(), ceiling);
+    assert!(
+        WallIfc
+            .export_report(&m)
+            .unwrap_err()
+            .to_string()
+            .contains("native ceilings")
+    );
 }
 
 #[test]
@@ -111,6 +194,41 @@ fn ifc_export_fails_closed_for_native_columns() {
     m.columns.insert(column.id(), column);
     m.validate().unwrap();
     assert!(WallIfc.export_report(&m).is_err());
+}
+
+#[test]
+fn ifc_export_fails_closed_for_native_stairs() {
+    let mut model = Model::new("Stairs");
+    let lower = *model.levels.keys().next().unwrap();
+    let building = model.levels[&lower].parameters.building;
+    let upper = Level::new(
+        "core.level",
+        LevelParams {
+            name: "Upper".into(),
+            elevation: 3.2,
+            building,
+        },
+    );
+    let upper_id = upper.id();
+    model.levels.insert(upper_id, upper);
+    let stair = Stair::new(
+        "core.stair",
+        StairParams {
+            name: "Main stair".into(),
+            lower_level: lower,
+            upper_level: upper_id,
+            start: Point2::new(0.0, 0.0),
+            end: Point2::new(3.6, 0.0),
+            width: 0.9,
+            riser_count: 18,
+            structural_thickness: 0.16,
+            material: None,
+        },
+    );
+    model.stairs.insert(stair.id(), stair);
+    model.validate().unwrap();
+    let error = WallIfc.export_report(&model).unwrap_err();
+    assert!(error.to_string().contains("does not support native stairs"));
 }
 
 #[test]
@@ -250,6 +368,9 @@ fn hosted(kind: OpeningKind, typed: bool, hinge: DoorHinge, swing: DoorSwing) ->
             let o = Opening::new(
                 "core.opening",
                 OpeningParams {
+                    width_override: None,
+                    height_override: None,
+                    sill_override: None,
                     name: format!("Opening 'α' {offset}"),
                     host: *host,
                     offset,
@@ -279,6 +400,259 @@ fn hosted(kind: OpeningKind, typed: bool, hinge: DoorHinge, swing: DoorSwing) ->
 
 fn exported(m: &Model) -> String {
     String::from_utf8(WallIfc.export_report(m).unwrap().value).unwrap()
+}
+
+// Retain explicit v2 compatibility coverage after the writer advances to v3.
+fn exported_v2(m: &Model) -> String {
+    assert_eq!(m.opening_types.len(), 1);
+    assert!(
+        m.openings.values().all(
+            |o| o.parameters.width_override.is_none() && o.parameters.height_override.is_none()
+        )
+    );
+    let text = exported(m);
+    let ty = rows(&text, "IFCWINDOWTYPE")[0];
+    let sill = m.opening_types.values().next().unwrap().parameters.sill;
+    change(&text, ty, |a| {
+        a[3] = format!("'OpenStructure.WindowType.v2;default_sill={sill:?}'")
+    })
+    .replace(
+        "OpenStructure.Typed.v3;width=inherit;height=inherit;sill=",
+        "OpenStructure.Typed.v2;sill=",
+    )
+}
+
+#[test]
+fn window_sill_v2_preserves_shared_defaults_inherited_and_equal_or_different_overrides() {
+    let mut m = hosted(OpeningKind::Window, true, DoorHinge::Start, DoorSwing::Left);
+    let ids: Vec<_> = m.openings.keys().copied().collect();
+    for (id, value) in ids.iter().zip([None, Some(0.9), Some(1.1), Some(0.0)]) {
+        m.openings.get_mut(id).unwrap().parameters.sill_override = value;
+    }
+    let text = exported_v2(&m);
+    assert_ne!(args(&text, rows(&text, "IFCWINDOWTYPE")[0])[3], "$");
+    let mut imported = WallIfc.import(text.as_bytes()).unwrap();
+    assert_eq!(imported.opening_types, m.opening_types);
+    assert_eq!(imported.openings, m.openings);
+    let ty = *imported.opening_types.keys().next().unwrap();
+    imported.opening_types.get_mut(&ty).unwrap().parameters.sill = 0.7;
+    for (id, expected) in ids.iter().zip([0.7, 0.9, 1.1, 0.0]) {
+        assert_eq!(
+            imported
+                .resolve_opening(&imported.openings[id].parameters)
+                .unwrap()
+                .sill,
+            expected
+        );
+    }
+    let again = WallIfc.import(exported(&imported).as_bytes()).unwrap();
+    assert_eq!(again.openings, imported.openings);
+    assert_eq!(again.opening_types, imported.opening_types);
+    // All instances can be pinned: the default must not come from the first one.
+    imported
+        .openings
+        .get_mut(&ids[0])
+        .unwrap()
+        .parameters
+        .sill_override = Some(1.0);
+    let again = WallIfc.import(exported(&imported).as_bytes()).unwrap();
+    assert_eq!(again.opening_types, imported.opening_types);
+    assert_eq!(again.openings, imported.openings);
+}
+
+#[test]
+fn window_sill_v2_rejects_missing_malformed_and_mixed_metadata() {
+    let m = hosted(OpeningKind::Window, true, DoorHinge::Start, DoorSwing::Left);
+    let text = exported_v2(&m);
+    let ty = rows(&text, "IFCWINDOWTYPE")[0];
+    for description in [
+        "$",
+        "'OpenStructure.WindowType.v2;default_sill=NaN'",
+        "'OpenStructure.WindowType.v2;default_sill=-1.0'",
+        "'OpenStructure.WindowType.v2;default_sill=0.0005'",
+        "'OpenStructure.WindowType.v2;default_sill=0.9;extra=true'",
+        "'OpenStructure.WindowType.v2;default_sill=0.8'",
+    ] {
+        assert!(
+            WallIfc
+                .import(change(&text, ty, |a| a[3] = description.into()).as_bytes())
+                .is_err()
+        );
+    }
+    let window = rows(&text, "IFCWINDOW")[0];
+    for description in [
+        "$",
+        "'OpenStructure.Typed.v1'",
+        "'OpenStructure.Typed.v2;sill=unknown'",
+    ] {
+        assert!(
+            WallIfc
+                .import(change(&text, window, |a| a[3] = description.into()).as_bytes())
+                .is_err()
+        );
+    }
+    let door = exported(&hosted(
+        OpeningKind::Door,
+        true,
+        DoorHinge::Start,
+        DoorSwing::Left,
+    ));
+    assert!(
+        WallIfc
+            .import(
+                door.replace(
+                    "OpenStructure.Typed.v3;width=inherit;height=inherit",
+                    "OpenStructure.Typed.v2;sill=override"
+                )
+                .as_bytes()
+            )
+            .is_err()
+    );
+}
+
+#[test]
+fn typed_window_v1_fixture_imports_inherited_and_upgrades_to_v3() {
+    let m = WallIfc
+        .import(include_bytes!("../../../fixtures/window-sill-v1.ifc"))
+        .unwrap();
+    assert!(!m.openings.is_empty());
+    assert!(
+        m.openings
+            .values()
+            .all(|o| o.parameters.type_id().is_some() && o.parameters.sill_override.is_none())
+    );
+    let text = exported(&m);
+    assert!(text.contains("OpenStructure.Typed.v3;width=inherit;height=inherit;sill=inherit"));
+    let again = WallIfc.import(text.as_bytes()).unwrap();
+    assert_eq!(again.openings, m.openings);
+    assert_eq!(again.opening_types, m.opening_types);
+}
+
+#[test]
+fn typed_dimensions_v3_roundtrip_preserves_inheritance_different_pins_and_equal_defaults() {
+    for kind in [OpeningKind::Door, OpeningKind::Window] {
+        let mut m = hosted(kind, true, DoorHinge::Start, DoorSwing::Left);
+        let ids: Vec<_> = m.openings.keys().copied().collect();
+        let ty = *m.opening_types.keys().next().unwrap();
+        let default_height = m.opening_types[&ty].parameters.height;
+        for (i, id) in ids.iter().enumerate() {
+            let p = &mut m.openings.get_mut(id).unwrap().parameters;
+            p.width_override = [None, Some(0.8), Some(0.6), Some(1.0)][i];
+            p.height_override = [None, Some(default_height), Some(1.0), Some(2.2)][i];
+            if kind == OpeningKind::Window {
+                p.sill_override = [None, Some(0.9), Some(1.1), Some(0.0)][i];
+            }
+        }
+        let mut imported = WallIfc.import(exported(&m).as_bytes()).unwrap();
+        assert_eq!(imported.openings, m.openings);
+        assert_eq!(imported.opening_types, m.opening_types);
+        let t = &mut imported.opening_types.get_mut(&ty).unwrap().parameters;
+        t.width = 0.7;
+        t.height = 1.3;
+        if kind == OpeningKind::Window {
+            t.sill = 0.7;
+        }
+        for (i, id) in ids.iter().enumerate() {
+            let p = imported
+                .resolve_opening(&imported.openings[id].parameters)
+                .unwrap();
+            assert_eq!(p.width, [0.7, 0.8, 0.6, 1.0][i]);
+            assert_eq!(p.height, [1.3, default_height, 1.0, 2.2][i]);
+            if kind == OpeningKind::Window {
+                assert_eq!(p.sill, [0.7, 0.9, 1.1, 0.0][i]);
+            }
+        }
+        // Defaults survive even when every occurrence overrides all dimensions.
+        let p = &mut imported.openings.get_mut(&ids[0]).unwrap().parameters;
+        p.width_override = Some(1.0);
+        p.height_override = Some(1.7);
+        if kind == OpeningKind::Window {
+            p.sill_override = Some(0.4);
+        }
+        let again = WallIfc.import(exported(&imported).as_bytes()).unwrap();
+        assert_eq!(again.openings, imported.openings);
+        assert_eq!(again.opening_types, imported.opening_types);
+    }
+}
+
+#[test]
+fn typed_dimensions_v3_rejects_malformed_mixed_missing_and_inconsistent_metadata() {
+    for kind in [OpeningKind::Door, OpeningKind::Window] {
+        let m = hosted(kind, true, DoorHinge::Start, DoorSwing::Left);
+        let text = exported(&m);
+        let (fill_kind, type_kind) = if kind == OpeningKind::Door {
+            ("IFCDOOR", "IFCDOORTYPE")
+        } else {
+            ("IFCWINDOW", "IFCWINDOWTYPE")
+        };
+        let ty = rows(&text, type_kind)[0];
+        for description in [
+            "$",
+            "'OpenStructure.WindowType.v2;default_sill=0.9'",
+            "'OpenStructure.Type.v3;width=0.8'",
+            "'OpenStructure.Type.v3;width=NaN;height=1.2'",
+            "'OpenStructure.Type.v3;width=0.0005;height=1.2'",
+            "'OpenStructure.Type.v3;height=1.2;width=0.8'",
+            "'OpenStructure.Type.v3;width=0.8;height=1.2;sill=0.9;extra=true'",
+        ] {
+            assert!(
+                WallIfc
+                    .import(change(&text, ty, |a| a[3] = description.into()).as_bytes())
+                    .is_err()
+            );
+        }
+        let fill = rows(&text, fill_kind)[0];
+        for description in [
+            "$",
+            "'OpenStructure.Typed.v1'",
+            "'OpenStructure.Typed.v2;sill=inherit'",
+            "'OpenStructure.Typed.v3;width=inherit'",
+            "'OpenStructure.Typed.v3;width=unknown;height=inherit'",
+            "'OpenStructure.Typed.v3;width=inherit;width=inherit'",
+            "'OpenStructure.Typed.v3;width=inherit;height=inherit;sill=inherit;extra=true'",
+        ] {
+            assert!(
+                WallIfc
+                    .import(change(&text, fill, |a| a[3] = description.into()).as_bytes())
+                    .is_err()
+            );
+        }
+        for field in ["width", "height", "sill"] {
+            if field == "sill" && kind == OpeningKind::Door {
+                continue;
+            }
+            let mut pinned = m.clone();
+            let p = &mut pinned.openings.values_mut().next().unwrap().parameters;
+            match field {
+                "width" => p.width_override = Some(1.),
+                "height" => p.height_override = Some(1.5),
+                _ => p.sill_override = Some(0.6),
+            }
+            let text = exported(&pinned)
+                .replace(&format!("{field}=override"), &format!("{field}=inherit"));
+            assert!(WallIfc.import(text.as_bytes()).is_err());
+        }
+    }
+}
+
+#[test]
+fn frozen_v2_window_imports_and_upgrades_all_properties_to_v3() {
+    let m = WallIfc
+        .import(include_bytes!("../../../fixtures/window-sill-v2.ifc"))
+        .unwrap();
+    for o in m.openings.values() {
+        assert_eq!(
+            (
+                o.parameters.width_override,
+                o.parameters.height_override,
+                o.parameters.sill_override
+            ),
+            (None, None, None)
+        );
+    }
+    let again = WallIfc.import(exported(&m).as_bytes()).unwrap();
+    assert_eq!(again.openings, m.openings);
+    assert_eq!(again.opening_types, m.opening_types);
 }
 
 // Small test-only STEP row editor. It operates on exported one-line entities,
@@ -745,11 +1119,32 @@ fn unsupported_void_fill_transforms_and_second_invalid_opening_are_atomic() {
         a[0] = "(0.,1.,0.)".into()
     }));
     rejected(&change(&text, window, |a| a[8] = "2.5".into()));
-    // A geometry-valid sill change on one shared instance cannot redefine its type.
+    // A changed occurrence is accepted when explicitly marked as overridden.
     let old = args(&text, origin)[0].clone();
-    rejected(&change(&text, origin, |a| {
-        a[0] = old.replace("0.9)", "1.0)")
-    }));
+    let changed = change(&text, origin, |a| a[0] = old.replace("0.9)", "1.0)"));
+    rejected(&changed); // An inherited placement must still match the default.
+    let changed = change(&changed, window, |a| {
+        a[3] = "'OpenStructure.Typed.v3;width=inherit;height=inherit;sill=override'".into();
+    });
+    let imported = WallIfc.import(changed.as_bytes()).unwrap();
+    assert_eq!(
+        imported
+            .openings
+            .values()
+            .filter(|o| o.parameters.sill_override == Some(1.0))
+            .count(),
+        1
+    );
+    assert_eq!(
+        imported
+            .opening_types
+            .values()
+            .next()
+            .unwrap()
+            .parameters
+            .sill,
+        0.9
+    );
     // Overlap passes the geometry/relationship readers and is rejected by the
     // final whole-model validation, after all openings have been reconstructed.
     let rels = rows(&text, "IFCRELVOIDSELEMENT");

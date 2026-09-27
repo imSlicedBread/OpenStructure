@@ -8,7 +8,12 @@ fn schema_26() -> Value {
     let mut model = Model::new("Schema 26");
     model.schema_version = 26;
     let mut value = serde_json::to_value(model).unwrap();
+    remove_phase_fields_from_legacy_fixture(&mut value);
+    // This helper models a pre-stair file, not a schema downgrade of today.
+    value.as_object_mut().unwrap().remove("stairs");
+    value.as_object_mut().unwrap().remove("roofs");
     value.as_object_mut().unwrap().remove("columns");
+    value.as_object_mut().unwrap().remove("opening_tags");
     value
         .as_object_mut()
         .unwrap()

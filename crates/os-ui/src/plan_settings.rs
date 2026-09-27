@@ -27,6 +27,8 @@ pub(super) struct PlanDraft {
     values: [String; 12],
     crop: bool,
     visibility: PlanVisibility,
+    target_phase: Option<Id>,
+    phase_filter: os_model::PhaseFilter,
     graphics: graphics::GraphicsDraft,
     error: Option<String>,
 }
@@ -73,6 +75,8 @@ impl PlanDraft {
             .map(|v| v.to_string()),
             crop: s.crop.is_some(),
             visibility: s.visibility,
+            target_phase: s.target_phase,
+            phase_filter: s.phase_filter,
             graphics: graphics::GraphicsDraft::begin(editor.document.model(), id),
             error: None,
         })
@@ -104,6 +108,14 @@ impl PlanDraft {
             )?;
         }
         let s = PlanSettings {
+            view_type: editor.document.model().views[&self.view]
+                .parameters
+                .plan
+                .ok_or_else(|| Error::Invalid("plan settings missing".into()))?
+                .view_type,
+            schema_version: os_model::PLAN_SETTINGS_VERSION,
+            target_phase: self.target_phase,
+            phase_filter: self.phase_filter,
             range: PlanViewRange {
                 top: numbers[0],
                 cut: numbers[1],
@@ -120,7 +132,6 @@ impl PlanDraft {
                 max: Point2::new(numbers[10], numbers[11]),
             }),
             visibility: self.visibility,
-            ..Default::default()
         };
         let mut parameters = editor.document.model().views[&self.view].parameters.clone();
         parameters.name = self.name.clone();
@@ -146,7 +157,18 @@ impl DesktopApp {
         let mut close = false;
         egui::Modal::new(egui::Id::new("plan_settings_dialog")).show(ctx, |ui| {
             ui.set_width(410.0);
-            ui.heading("Plan settings");
+            let view_type = self
+                .editor
+                .document
+                .model()
+                .views
+                .get(&draft.view)
+                .and_then(|view| view.parameters.plan)
+                .map(|settings| settings.view_type);
+            ui.heading(match view_type {
+                Some(os_model::PlanViewType::ReflectedCeilingPlan) => "Reflected ceiling plan settings",
+                _ => "Floor plan settings",
+            });
             ui.label("Apply changes as one undoable edit. Cancel keeps the saved settings.");
             egui::ScrollArea::vertical().id_salt("plan_settings_scroll")
                 .max_height((ctx.content_rect().height()-230.0).max(120.0)).show(ui, |ui| {
@@ -162,6 +184,31 @@ impl DesktopApp {
                                 ui.selectable_value(&mut draft.level,Some(*id),&level.parameters.name);
                             }
                         }); ui.end_row();
+                    ui.label("Target phase");
+                    egui::ComboBox::from_id_salt("plan_target_phase")
+                        .selected_text(draft.target_phase.and_then(|id| self.editor.document.model().phases.get(&id))
+                            .map_or("Latest phase", |phase| phase.parameters.name.as_str()))
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut draft.target_phase, None, "Latest phase");
+                            for phase in self.editor.document.model().ordered_phases() {
+                                ui.selectable_value(&mut draft.target_phase, Some(phase.id()), &phase.parameters.name);
+                            }
+                        }); ui.end_row();
+                    ui.label("Phase filter");
+                    egui::ComboBox::from_id_salt("plan_phase_filter")
+                        .selected_text(match draft.phase_filter {
+                            os_model::PhaseFilter::ShowAll => "Show all",
+                            os_model::PhaseFilter::ShowExisting => "Existing",
+                            os_model::PhaseFilter::ShowNew => "New",
+                            os_model::PhaseFilter::ShowDemolished => "Demolished",
+                            os_model::PhaseFilter::ShowTemporary => "Temporary",
+                        })
+                        .show_ui(ui, |ui| {
+                            use os_model::PhaseFilter::*;
+                            for (filter, label) in [(ShowAll,"Show all"),(ShowExisting,"Existing"),(ShowNew,"New"),(ShowDemolished,"Demolished"),(ShowTemporary,"Temporary")] {
+                                ui.selectable_value(&mut draft.phase_filter, filter, label);
+                            }
+                        }); ui.end_row();
                     for (i,label) in LABELS.iter().enumerate().take(8) {
                         ui.label(*label);
                         ui.add(egui::TextEdit::singleline(&mut draft.values[i]).char_limit(128).desired_width(220.0)); ui.end_row();
@@ -172,6 +219,7 @@ impl DesktopApp {
                     draft.graphics.ui(ui, self.editor.document.model(), draft.view);
                 });
                 ui.checkbox(&mut draft.visibility.walls,"Show native walls");
+                ui.checkbox(&mut draft.visibility.ceilings,"Show ceilings in reflected views");
                 ui.checkbox(&mut draft.visibility.extensions,"Show extension elements / unavailable warnings");
                 ui.checkbox(&mut draft.crop,"Enable rectangular crop");
                 if draft.crop {
@@ -286,6 +334,9 @@ mod tests {
         let door = os_model::Opening::new(
             "core.opening",
             os_model::OpeningParams {
+                width_override: None,
+                height_override: None,
+                sill_override: None,
                 name: "Graphics door".into(),
                 host: wall_id,
                 offset: 0.5,
@@ -306,6 +357,9 @@ mod tests {
         let window = os_model::Opening::new(
             "core.opening",
             os_model::OpeningParams {
+                width_override: None,
+                height_override: None,
+                sill_override: None,
                 name: "Graphics window".into(),
                 host: wall_id,
                 offset: 3.0,
@@ -335,6 +389,7 @@ mod tests {
                     os_core::Point2::new(3.0, 2.0),
                     os_core::Point2::new(-3.0, 2.0),
                 ],
+                holes: Vec::new(),
                 thickness: 0.2,
                 top_offset: 0.0,
             },
@@ -400,15 +455,15 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .color,
-            [30, 60, 90]
+            [35, 65, 88]
         );
         let door_style = os_render::plan::PlanStroke {
-            color: [140, 20, 30],
+            color: [35, 65, 88],
             weight_mm: 0.65,
-            dashed: true,
+            dashed: false,
         };
         let window_style = os_render::plan::PlanStroke {
-            color: [30, 140, 20],
+            color: [35, 65, 88],
             weight_mm: 0.55,
             dashed: false,
         };
@@ -421,14 +476,14 @@ mod tests {
         assert!(!door_lines.is_empty());
         assert!(!window_lines.is_empty());
         let door_cut_style = os_render::plan::PlanStroke {
-            color: [120, 60, 10],
+            color: [35, 65, 88],
             weight_mm: 0.75,
             dashed: false,
         };
         let window_cut_style = os_render::plan::PlanStroke {
-            color: [10, 60, 120],
+            color: [35, 65, 88],
             weight_mm: 0.45,
-            dashed: true,
+            dashed: false,
         };
         assert!(door_lines.iter().all(|line| {
             let expected = match line.role {
@@ -451,9 +506,9 @@ mod tests {
                 .appearance(context, slab_id, os_geometry::plan::PlanRole::Projected)
                 .unwrap(),
             Some(os_render::plan::PlanStroke {
-                color: [20, 30, 140],
+                color: [35, 65, 88],
                 weight_mm: 0.25,
-                dashed: true,
+                dashed: false,
             })
         );
 

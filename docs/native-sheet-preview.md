@@ -1,5 +1,12 @@
 # Native sheet preview and vector PDF
 
+Room Finish table cells share the live schedule text: assigned catalog name plus
+independent code (`Oak · F-01`), name alone, or an unassigned finish's code.
+Material renames reach preview and PDF; color edits leave text unchanged. The
+eight existing columns, placement limits and explicit fit checks are unchanged.
+Floor finish RGB fills belong to the active plan display; this slice does not
+qualify physical print output.
+
 Open a named Plan or configured Section view and choose **New sheet from view**.
 The app creates a persisted A3 landscape sheet (420 × 297 mm), assigns the next
 unused A-series number starting at A101, and places one viewport linked to the
@@ -27,6 +34,37 @@ asks for an explicit path and confirmation; existing files require explicit
 replacement consent. A same-directory temporary file is synced and atomically
 persisted, and export does not save the native project or alter its dirty state.
 
+## Linked Plan and Section on one sheet
+
+On a Plan-only sheet, choose a configured Section and **Add linked Section**.
+This undoable edit retains both source links and creates two 184 × 220 mm
+viewports centered at (110,128) and (310,128). The Section starts centered on its
+authored bounds, with a scale large enough to fit those bounds. Each viewport
+has independent scale and paper-center controls. **Apply layout** commits that
+viewport's draft; **Reset layout draft** discards its uncommitted numeric edits.
+Overlapping viewports and placements crossing the frame/title block are rejected.
+Plan-only and Section-only sheets remain supported.
+
+**Edit source plan** and **Edit source section** open the corresponding linked
+view. Return through the sheet picker. Opening a combined sheet activates its
+Plan, preserving the checked asynchronous native/provider drawing path. One
+additional background worker caches the Section snapshot; it is bound to the
+document session/revision, source identity/settings and current sheet. Obsolete
+work drains before replacement and cannot publish after cancellation.
+
+Both preview and PDF consume one composed `SheetPage`, with independent clipping,
+one page frame/title block and two source titles/scales. Pending PDF confirmation
+is invalidated by a changed sheet, document or checked page. Combined sheets
+reject schedule placement atomically with an explanation. Remove an existing
+schedule before adding a Section. No schedule is silently omitted or overlapped.
+
+Automated evidence: `sheet_tests::combined` exercises both display profiles,
+independent layout, history, source navigation, live wall edits, save/reopen and
+prepared PDF equality; `sheet_sources::tests` controls worker cancellation and
+checks revision/session rejection; `sheet::tests::two_drawings_have_independent_scales_clips_and_one_page_frame`
+checks exact 1:50/1:100 mapping, clipping and overlap/stale rejection. Independent
+native-window and external PDF-viewer/physical-print qualification remain open.
+
 ## Saved schedule table (bounded slice)
 
 In paper preview, choose a saved schedule and **Add saved schedule to sheet**.
@@ -36,6 +74,20 @@ viewport 384 × 124 mm centered at (210,80), table 384 × 84 mm with top-left at
 **Remove schedule table** removes the placement and retains the smaller viewport.
 Rows, columns, order and heading resolve from the current saved definition on
 each page build. Preview and vector PDF share the resulting searchable paper marks.
+
+Saved Room Finish schedules use this same placement and output path. Their rows
+carry room identity and optional floor/wall/ceiling finish codes. Area derives
+from current room topology whenever the page is built, so moving a partition
+updates both plan area and table output. Unresolved enclosures keep identity and
+finish codes, leave Area blank, and show the Enclosure Status diagnostic when
+that column is included. No resolved areas or table rows are stored in the model.
+The existing eight-column, width, height and text limits also apply to room
+schedules; reducing selected columns remains available in the schedule editor.
+
+`room_finish_sheet_live_area_preview_pdf_and_explicit_overflow_at_both_dpis`
+in `crates/os-ui/src/plan_workspace/sheet_tests.rs` exercises placement, live
+partition edits, preview/vector-PDF text, unresolved blank/status output,
+save/reopen and overflow rejection at 1280×800/100% and 1000×650/150%.
 
 All rows/cells must fit. Height, column/heading width, unsupported WinAnsi text,
 page and output budgets fail explicitly; composition errors disable export.
@@ -52,8 +104,8 @@ independent native visual, viewer and physical print checks remain open.
 
 This is an early workflow, not a complete sheet/print system. Current limits:
 
-- One fixed A3 landscape size, one Plan or Section viewport per sheet, and one
-  PDF page. Persisted multiple viewports are not yet composed or rendered.
+- One fixed A3 landscape size and one PDF page, with one Plan, one Section, or
+  one of each. Other multi-viewport configurations fail explicitly.
 - No viewport rotation, independent viewport crop, custom title blocks, sheet
   sets, revision/issue workflow, batch export, or native printing.
 - PDF uses vector paths and searchable standard Helvetica/WinAnsi text. Fonts are

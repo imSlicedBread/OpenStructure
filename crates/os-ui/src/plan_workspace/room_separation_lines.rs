@@ -369,8 +369,19 @@ pub(super) fn paint(
         .clamp(1.0, 8.0) as f32;
     for line in drawing.room_separation_lines(context).unwrap_or_default() {
         if let (Some(a), Some(b)) = (screen(line.start), screen(line.end)) {
-            painter.line_segment(
-                [a, b],
+            let appearance = if selected == Some(line.entity) {
+                None
+            } else {
+                drawing
+                    .appearance(context, line.entity, os_geometry::plan::PlanRole::Projected)
+                    .ok()
+                    .flatten()
+            };
+            let _ = super::paint_plan_line(
+                painter,
+                a,
+                b,
+                appearance,
                 egui::Stroke::new(
                     width,
                     if selected == Some(line.entity) {
@@ -379,6 +390,8 @@ pub(super) fn paint(
                         egui::Color32::from_rgb(140, 75, 160)
                     },
                 ),
+                (camera.pixels_per_metre * context.scale_denominator / 1000.0) as f32,
+                &mut 0.0,
             );
         }
     }

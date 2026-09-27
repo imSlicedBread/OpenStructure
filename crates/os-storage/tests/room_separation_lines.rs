@@ -1,3 +1,5 @@
+mod common;
+
 use os_core::{Id, Point2};
 use os_document::{Command, Document};
 use os_model::{
@@ -29,6 +31,12 @@ fn schema_eighteen_with_wall_room() -> (Value, Id, Id, Vec<(Id, bool)>, Point2) 
     let room = Room::new(
         "core.room",
         RoomParams {
+            floor_material: None,
+            wall_material: None,
+            ceiling_material: None,
+            floor_finish: None,
+            wall_finish: None,
+            ceiling_finish: None,
             number: "101".into(),
             name: "Office".into(),
             level,
@@ -40,6 +48,21 @@ fn schema_eighteen_with_wall_room() -> (Value, Id, Id, Vec<(Id, bool)>, Point2) 
     model.rooms.insert(room_id, room);
     model.validate().unwrap();
     let mut value = serde_json::to_value(model).unwrap();
+    common::remove_phase_fields(&mut value);
+    value.as_object_mut().unwrap().remove("stairs");
+    value.as_object_mut().unwrap().remove("roofs");
+    for room in value["rooms"].as_object_mut().unwrap().values_mut() {
+        for field in [
+            "floor_finish",
+            "wall_finish",
+            "ceiling_finish",
+            "floor_material",
+            "wall_material",
+            "ceiling_material",
+        ] {
+            room["parameters"].as_object_mut().unwrap().remove(field);
+        }
+    }
     value
         .as_object_mut()
         .unwrap()
@@ -51,6 +74,7 @@ fn schema_eighteen_with_wall_room() -> (Value, Id, Id, Vec<(Id, bool)>, Point2) 
         .unwrap()
         .remove("wall_type_assignments");
     value.as_object_mut().unwrap().remove("columns");
+    value.as_object_mut().unwrap().remove("opening_tags");
     value
         .as_object_mut()
         .unwrap()
@@ -90,6 +114,19 @@ fn schema_eighteen_migration_preserves_wall_room_and_rejects_ambiguity_atomicall
     migrate(&mut migrated, 18).unwrap();
     let mut expected = original.clone();
     expected["schema_version"] = json!(SCHEMA_VERSION);
+    for room in expected["rooms"].as_object_mut().unwrap().values_mut() {
+        for field in [
+            "floor_finish",
+            "wall_finish",
+            "ceiling_finish",
+            "floor_material",
+            "wall_material",
+            "ceiling_material",
+        ] {
+            room["parameters"][field] = Value::Null;
+        }
+    }
+    expected["opening_tags"] = json!({});
     expected["room_separation_lines"] = json!({});
     expected["wall_joins"] = json!({});
     expected["wall_types"] = json!({});
@@ -97,6 +134,11 @@ fn schema_eighteen_migration_preserves_wall_room_and_rejects_ambiguity_atomicall
     expected["columns"] = json!({});
     expected["plan_graphics_templates"] = json!({});
     expected["plan_graphics"] = json!({});
+    expected["stairs"] = json!({});
+    expected["roofs"] = json!({});
+    expected["phases"] = migrated["phases"].clone();
+    expected["element_lifecycles"] = migrated["element_lifecycles"].clone();
+    common::apply_schema_38_defaults(&mut expected);
     expected["project"]["header"]["schema_version"] = json!(SCHEMA_VERSION);
     for collection in [
         "sites",

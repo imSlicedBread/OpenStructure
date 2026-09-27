@@ -28,7 +28,7 @@ invalidate dependent walls and views. Explicit butt/corner/tee joins use the
 resolved compound profile and require compatible joined profiles; arbitrary
 layer termination and compound-profile junction design remain unresolved.
 
-The built-in native Wall plugin path uses API 9 / model schema 28. The older
+The built-in native Wall plugin path uses API 26 / model schema 45. The older
 single-Solid wall export and IFC wall export reject assigned compound walls
 instead of silently flattening or losing their layer data. API-2 generic DTO
 contracts and envelopes are unchanged; this feature does not grant arbitrary
@@ -42,7 +42,9 @@ plan/section/mesh identity, equal-profile joins, save/reopen, migration,
 atomic rejection, UI cancel/stale/save/history, and refusal of lossy exports.
 
 Remaining scope includes curved walls, variable/compound junction semantics,
-material appearance and hatch standards, independent architectural parts,
+textures, transparency, PBR and hatch standards, independent architectural parts,
 wall-type schedules, full IFC layer-set exchange, and visual/production
-qualification. Material identity and density are implemented; rendered material
-textures, colors, and drafting hatch libraries are not.
+qualification. Material identity, density and editable shared RGB are implemented;
+[material-color evidence](native-material-colors.md) covers 3D layers, opening
+panels/frames, family preview, plan/sheet fills, migration and history. Rendered
+textures and drafting hatch libraries remain absent.

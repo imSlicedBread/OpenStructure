@@ -398,6 +398,9 @@ fn invalid_profiles_nodes_ownership_competitors_openings_and_tiny_members_are_at
                     let opening = Opening::new(
                         "core.opening",
                         OpeningParams {
+                            width_override: None,
+                            height_override: None,
+                            sill_override: None,
                             name: "Conflict".into(),
                             host: if case == 8 { a.wall } else { b.wall },
                             offset: if case == 8 {

@@ -6,9 +6,9 @@ use os_model::{
 };
 
 const TYPE_FIELDS: [&str; 4] = [
-    "Width (m)",
-    "Height (m)",
-    "Sill above floor (m)",
+    "Default width (m)",
+    "Default height (m)",
+    "Default sill above floor (m)",
     "Type name",
 ];
 
@@ -21,6 +21,7 @@ pub(super) struct OpeningTypeDraft {
     family: os_model::OpeningFamily,
     selected_vertex: usize,
     editing_cut: bool,
+    editing_materials: bool,
     editing: bool,
     duplicate: bool,
     source_opening: Option<Id>,
@@ -75,6 +76,7 @@ impl OpeningTypeDraft {
             family,
             selected_vertex: 0,
             editing_cut: false,
+            editing_materials: false,
             editing: false,
             duplicate: false,
             source_opening,
@@ -105,6 +107,7 @@ impl OpeningTypeDraft {
             family: p.family.clone(),
             selected_vertex: 0,
             editing_cut: false,
+            editing_materials: false,
             editing: true,
             duplicate: false,
             source_opening: None,
@@ -286,11 +289,19 @@ impl DesktopApp {
             .get(&id)
             .ok_or_else(|| Error::Invalid("opening missing".into()))
             .and_then(|opening| {
-                let resolved = self
+                let mut resolved = self
                     .editor
                     .document
                     .model()
                     .resolve_opening(&opening.parameters)?;
+                if let Some(type_id) = resolved.type_id {
+                    let defaults = &self.editor.document.model().opening_types[&type_id].parameters;
+                    resolved.width = defaults.width;
+                    resolved.height = defaults.height;
+                    resolved.sill = self.editor.document.model().opening_types[&type_id]
+                        .parameters
+                        .sill;
+                }
                 let mut draft =
                     OpeningTypeDraft::new(&self.editor, resolved.kind, Some(resolved), Some(id));
                 draft.values[3] = format!("{} Type", opening.parameters.name);
@@ -357,6 +368,9 @@ impl DesktopApp {
                 })
                 .max_height((ctx.content_rect().height()-170.0).max(150.0))
                 .show(ui, |ui| {
+            if draft.editing_materials {
+                draft.material_editor(ui, &self.editor);
+            } else {
             egui::Grid::new("opening_type_fields")
                 .num_columns(2)
                 .show(ui, |ui| {
@@ -392,12 +406,20 @@ impl DesktopApp {
                 ui.small("Left/right follow the wall's start → end direction. Face positions align the pane's outside surface with the wall face.");
             }
             draft.profile_editor(ui, &self.editor, self.plans.active);
+            }
             });
             if let Some(error) = &draft.error {
                 ui.colored_label(theme::ERROR, error);
             }
             ui.separator();
             ui.horizontal(|ui| {
+                if draft.editing_materials {
+                    if ui.button("Back to profile").clicked() {
+                        draft.editing_materials = false;
+                    }
+                } else if ui.button("Materials…").clicked() {
+                    draft.editing_materials = true;
+                }
                 if ui.button("Cancel type").clicked() {
                     close = true;
                 }
@@ -456,6 +478,95 @@ mod tests {
     use os_model::{Opening, OpeningDefinition, Wall, WallParams};
 
     #[test]
+    fn window_sill_legacy_conversion_and_duplicate_keep_type_default_and_pin() {
+        let mut app = DesktopApp::new().unwrap();
+        let wall = Wall::new(os_walls::WALL_TYPE, default_wall(app.active_level));
+        let host = wall.id();
+        app.editor.command("Host", Command::AddWall(wall)).unwrap();
+        let opening = Opening::new(
+            "core.opening",
+            os_model::OpeningParams {
+                name: "Legacy window".into(),
+                host,
+                offset: 1.,
+                definition: OpeningDefinition::Legacy {
+                    kind: OpeningKind::Window,
+                    width: 1.2,
+                    height: 1.1,
+                    sill: 0.7,
+                },
+                width_override: None,
+                height_override: None,
+                sill_override: None,
+                hinge: Default::default(),
+                swing: Default::default(),
+            },
+        );
+        let id = opening.id();
+        app.editor
+            .command("Window", Command::AddOpening(opening))
+            .unwrap();
+        app.begin_type_from_opening(id);
+        let draft = app.opening_type_draft.take().unwrap();
+        assert_eq!(draft.parameters().unwrap().sill, 0.7);
+        assert_eq!(draft.parameters().unwrap().width, 1.2);
+        assert_eq!(draft.parameters().unwrap().height, 1.1);
+        draft.apply(&mut app.editor).unwrap();
+        let p = &app.editor.document.model().openings[&id].parameters;
+        assert_eq!(p.sill_override, None);
+        assert_eq!(p.width_override, None);
+        assert_eq!(p.height_override, None);
+        let ty = p.type_id().unwrap();
+        assert_eq!(
+            app.editor.document.model().opening_types[&ty]
+                .parameters
+                .sill,
+            0.7
+        );
+        let mut p = p.clone();
+        p.sill_override = Some(1.2);
+        p.width_override = Some(1.4);
+        p.height_override = Some(1.3);
+        app.editor
+            .command("Pin window", Command::UpdateOpening { id, parameters: p })
+            .unwrap();
+        let before = app.editor.document.model().clone();
+        let mut duplicate = OpeningTypeDraft::edit(&app.editor, ty).unwrap();
+        duplicate.duplicate();
+        assert_eq!(duplicate.parameters().unwrap().sill, 0.7);
+        assert_eq!(duplicate.parameters().unwrap().width, 1.2);
+        assert_eq!(duplicate.parameters().unwrap().height, 1.1);
+        let duplicate_id = duplicate.apply(&mut app.editor).unwrap();
+        assert_eq!(
+            app.editor.document.model().opening_types[&duplicate_id]
+                .parameters
+                .sill,
+            0.7
+        );
+        assert_eq!(app.editor.document.model().openings, before.openings);
+        app.begin_type_from_opening(id);
+        let draft = app.opening_type_draft.take().unwrap();
+        assert_eq!(draft.parameters().unwrap().sill, 0.7);
+        draft.apply(&mut app.editor).unwrap();
+        let p = &app.editor.document.model().openings[&id].parameters;
+        assert_eq!(p.sill_override, Some(1.2));
+        assert_eq!(p.width_override, Some(1.4));
+        assert_eq!(p.height_override, Some(1.3));
+        let defaults = &app.editor.document.model().opening_types[&p.type_id().unwrap()].parameters;
+        assert_eq!((defaults.width, defaults.height), (1.2, 1.1));
+        assert_eq!(
+            app.editor.document.model().resolve_opening(p).unwrap().sill,
+            1.2
+        );
+        assert_eq!(
+            app.editor.document.model().opening_types[&p.type_id().unwrap()]
+                .parameters
+                .sill,
+            0.7
+        );
+    }
+
+    #[test]
     fn shared_type_edit_updates_instances_once_and_rolls_back_invalid_dimensions() {
         let mut editor = Editor::new().unwrap();
         let level = *editor.document.model().levels.keys().next().unwrap();
@@ -482,6 +593,9 @@ mod tests {
             Opening::new(
                 "core.opening",
                 os_model::OpeningParams {
+                    width_override: None,
+                    height_override: None,
+                    sill_override: None,
                     hinge: Default::default(),
                     swing: Default::default(),
                     name: "Door instance".into(),

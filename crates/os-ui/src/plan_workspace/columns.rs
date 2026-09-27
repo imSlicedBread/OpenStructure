@@ -42,6 +42,7 @@ impl DesktopApp {
             self.plans.detail_line_draft = None;
             self.plans.room_separation_line_draft = None;
             self.plans.room_tag_draft = None;
+            self.plans.opening_tag_draft = None;
             self.plans.room_placement_active = false;
             self.plans.crop.mode = None;
             self.plans.crop.cancel();

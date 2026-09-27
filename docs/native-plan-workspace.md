@@ -19,6 +19,37 @@ update both representations. **Fit plan**, drag-to-pan and cursor-anchored scrol
 zoom affect navigation only. Cameras are independent per plan within a document
 session, and reset on opening a document. Persisted paper scale is not screen zoom.
 
+Hold **Shift** while dragging to make a transient selection marquee; an ordinary
+drag continues to pan. Drag left-to-right to select displayed geometry fully contained in
+the rectangle; drag right-to-left to select geometry it crosses. Native wall and
+opening footprints/symbols, columns, floors, reflected ceilings and valid rooms
+participate, clipped to the current plan crop and canvas. Multi-selection is
+highlighted and counted in the plan, while Properties and edit tools target only
+a singleton. Selection does not modify the document or history. Escape exits the
+current marquee; a stationary click retains the existing single-pick behavior.
+Provider-only graphics, annotation marquee selection and group editing are not
+included.
+
+When an overlap is hard to pick, click the plan to focus it, move the pointer over
+the overlap, then press **Tab** for the next candidate or **Shift+Tab** for the
+previous one. Click to select the highlighted candidate. Door/window symbols
+cycle independently from their host wall. Preview changes neither selection nor
+document/history; Escape, pointer movement, stale drawing/document context, or an
+active tool cancels it. The candidate list follows existing plan-pick priority,
+including crop-clipped annotations, native symbols, polygon footprints, provider
+lines and grids.
+
+Open **Snaps → Selection filters** to limit what new plan clicks, overlap cycling,
+and marquee selection can select. Walls, doors, windows, floors, ceilings,
+columns, roofs, stairs, rooms, grids, annotations, and other/provider hits have
+independent toggles; a disabled foreground hit does not block an enabled hit
+behind it. All categories start enabled. The settings persist across plan views
+in the current document session and reset for a new document. Changing a filter
+cancels any marquee or overlap preview without changing the current selection.
+Filters do not hide geometry or affect snapping, editing, browser selection, or
+3D selection. Marquee coverage remains the existing crop-clipped native geometry
+set; annotations and generic provider graphics are not added to marquee here.
+
 ## Background derivation and failure behavior
 
 `os-ui/src/plan_workspace.rs` retains at most one native plan worker, including
