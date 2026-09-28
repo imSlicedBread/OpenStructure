@@ -1,7 +1,11 @@
 //! Headless real-egui desktop frames; no native-window inspection implied.
 use super::*;
+#[path = "arc_tests.rs"]
+mod arc_tests;
 #[path = "crop_tests.rs"]
 mod crop_tests;
+#[path = "face_tests.rs"]
+mod face_tests;
 #[path = "junction_tests.rs"]
 mod junction_tests;
 #[path = "split_tests.rs"]
@@ -19,12 +23,12 @@ fn dimension_repair_fixture(
     use os_model::DimensionLayout::*;
     let mut model = h.app.editor.document.model().clone();
     let mut wall = model.walls[&h.wall].parameters.clone();
-    wall.start = if layout == Angular {
+    *wall.path.straight_start_mut().unwrap() = if layout == Angular {
         Point2::new(0.0, -1.0)
     } else {
         Point2::new(2.0, 0.0)
     };
-    wall.end = if layout == Angular {
+    *wall.path.straight_end_mut().unwrap() = if layout == Angular {
         Point2::new(0.0, 1.0)
     } else {
         Point2::new(3.0, 0.0)
@@ -376,7 +380,9 @@ fn dimension_repair_invalid_targets_leave_model_and_history_unchanged() {
                         .get_mut(&target.entity())
                         .unwrap()
                         .parameters
-                        .start
+                        .path
+                        .straight_start_mut()
+                        .unwrap()
                         .x = 0.0;
                     point.x = 0.0;
                 }
@@ -386,14 +392,16 @@ fn dimension_repair_invalid_targets_leave_model_and_history_unchanged() {
                         .get_mut(&target.entity())
                         .unwrap()
                         .parameters
-                        .start
+                        .path
+                        .straight_start_mut()
+                        .unwrap()
                         .y = 0.5;
                     point.y = 0.5;
                 }
                 "parallel" => {
                     let wall = &mut model.walls.get_mut(&target.entity()).unwrap().parameters;
-                    wall.start = Point2::new(-1.0, 0.7);
-                    wall.end = Point2::new(1.0, 0.7);
+                    *wall.path.straight_start_mut().unwrap() = Point2::new(-1.0, 0.7);
+                    *wall.path.straight_end_mut().unwrap() = Point2::new(1.0, 0.7);
                     point = Point2::new(0.0, 0.7);
                 }
                 "hidden" => {
@@ -612,8 +620,8 @@ fn angular_authoring_preview_cancel_and_single_transaction_at_both_dpis() {
         let mut params = h.app.editor.document.model().walls[&h.wall]
             .parameters
             .clone();
-        params.start = Point2::new(0.0, -1.0);
-        params.end = Point2::new(0.0, 1.0);
+        *params.path.straight_start_mut().unwrap() = Point2::new(0.0, -1.0);
+        *params.path.straight_end_mut().unwrap() = Point2::new(0.0, 1.0);
         let wall = os_model::Wall::new(
             &h.app.editor.document.model().walls[&h.wall].header.type_id,
             params,
@@ -711,13 +719,15 @@ impl Harness {
         let mut model = app.editor.document.model().clone();
         model.materials.insert(material.id(), material);
         app.editor.document = Document::from_model(model).unwrap();
-        app.draft.start = Point2::new(-1.0, 0.0);
-        app.draft.end = Point2::new(1.0, 0.0);
+        *app.draft.path.straight_start_mut().unwrap() = Point2::new(-1.0, 0.0);
+        *app.draft.path.straight_end_mut().unwrap() = Point2::new(1.0, 0.0);
         app.draft.name = "Endpoint fixture".into();
         app.draft.height = 3.7;
         app.draft.thickness = 0.27;
         app.apply_wall();
-        let wall = app.selected.unwrap();
+        let wall = app
+            .selected
+            .unwrap_or_else(|| panic!("fixture wall failed: {}", app.status));
         let view = app
             .editor
             .create_floor_plan("Endpoint plan", app.active_level)
@@ -943,9 +953,9 @@ fn endpoint_drag_preview_commit_identity_properties_and_history() {
             let camera = h.app.plans.cameras[&h.view];
             let original = &before.walls[&h.wall];
             let moving = if mode == WallEdit::ResizeStart {
-                original.parameters.start
+                original.parameters.start()
             } else {
-                original.parameters.end
+                original.parameters.end()
             };
             h.press(h.point(moving));
             assert_eq!(
@@ -973,12 +983,12 @@ fn endpoint_drag_preview_commit_identity_properties_and_history() {
             assert_eq!(expected.material, original.parameters.material);
             assert_eq!(expected.level, original.parameters.level);
             if mode == WallEdit::ResizeStart {
-                assert_eq!(expected.end, original.parameters.end);
+                assert_eq!(expected.end(), original.parameters.end());
             } else {
-                assert_eq!(expected.start, original.parameters.start);
+                assert_eq!(expected.start(), original.parameters.start());
             }
-            let a = h.point(expected.start);
-            let b = h.point(expected.end);
+            let a = h.point(expected.start());
+            let b = h.point(expected.end());
             let preview_lines: Vec<_> = h
                 .output
                 .shapes
@@ -1185,8 +1195,8 @@ fn endpoint_drag_reuses_snapping_and_exact_input_precedence() {
             let mut target = h.app.editor.document.model().walls[&h.wall]
                 .parameters
                 .clone();
-            target.start = Point2::new(0.0, 1.0);
-            target.end = Point2::new(1.0, 1.0);
+            *target.path.straight_start_mut().unwrap() = Point2::new(0.0, 1.0);
+            *target.path.straight_end_mut().unwrap() = Point2::new(1.0, 1.0);
             h.app
                 .editor
                 .wall_command("Snap target", Request::CreateWall(target))
@@ -1205,13 +1215,13 @@ fn endpoint_drag_reuses_snapping_and_exact_input_precedence() {
             h.release(near);
             h.clean();
             let wall = &h.app.editor.document.model().walls[&h.wall].parameters;
-            assert_eq!(wall.start, before.walls[&h.wall].parameters.start);
+            assert_eq!(wall.start(), before.walls[&h.wall].parameters.start());
             let expected = if exact {
                 Point2::new(-1.0, 3.0)
             } else {
                 Point2::new(0.0, 1.0)
             };
-            assert!(wall.end.distance(expected) < 1e-10, "{:?}", wall.end);
+            assert!(wall.end().distance(expected) < 1e-10, "{:?}", wall.end());
             h.app.history(false);
             assert_eq!(h.app.editor.document.model(), &before);
         }
@@ -1373,7 +1383,7 @@ fn aligned_dimension_offset_is_editable_and_measurement_follows_wall_edits() {
     let mut wall = h.app.editor.document.model().walls[&h.wall]
         .parameters
         .clone();
-    wall.end = Point2::new(2.0, 0.0);
+    *wall.path.straight_end_mut().unwrap() = Point2::new(2.0, 0.0);
     h.app
         .editor
         .command(
@@ -1428,6 +1438,7 @@ fn add_dimension_test_opening(h: &mut Harness, kind: os_model::OpeningKind) -> (
     let opening_type = OpeningType::new(
         "core.opening_type",
         OpeningTypeParams {
+            window_operation: Default::default(),
             family: Default::default(),
             name: format!("Dimension {kind:?}"),
             kind,
@@ -1453,6 +1464,8 @@ fn add_dimension_test_opening(h: &mut Harness, kind: os_model::OpeningKind) -> (
             width_override: None,
             height_override: None,
             sill_override: None,
+            pane_position_override: None,
+            lite_side_override: None,
             hinge: Default::default(),
             swing: Default::default(),
         },
@@ -1764,14 +1777,14 @@ fn chain_and_baseline_dimensions_collect_ordered_anchors_and_commit_once() {
             let wall_type = source.header.type_id.clone();
             let mut params = source.parameters.clone();
             params.name = "Dimension continuation".into();
-            params.start = Point2::new(2.0, 0.0);
-            params.end = Point2::new(3.0, 0.0);
+            *params.path.straight_start_mut().unwrap() = Point2::new(2.0, 0.0);
+            *params.path.straight_end_mut().unwrap() = Point2::new(3.0, 0.0);
             let continuation = os_model::Wall::new(&wall_type, params);
             let continuation_id = continuation.id();
             let mut off_axis_params = source.parameters.clone();
             off_axis_params.name = "Off-axis dimension test wall".into();
-            off_axis_params.start = Point2::new(2.0, 1.0);
-            off_axis_params.end = Point2::new(3.0, 1.0);
+            *off_axis_params.path.straight_start_mut().unwrap() = Point2::new(2.0, 1.0);
+            *off_axis_params.path.straight_end_mut().unwrap() = Point2::new(3.0, 1.0);
             let off_axis = os_model::Wall::new(&wall_type, off_axis_params);
             h.app
                 .editor
@@ -2049,9 +2062,9 @@ fn endpoint_installed_drag_submits_and_worker_owns_completion() {
                     h.frame(vec![]);
                 } else {
                     let moving = if mode == WallEdit::ResizeStart {
-                        before.walls[&h.wall].parameters.start
+                        before.walls[&h.wall].parameters.start()
                     } else {
-                        before.walls[&h.wall].parameters.end
+                        before.walls[&h.wall].parameters.end()
                     };
                     h.press(h.point(moving));
                 }
@@ -2245,6 +2258,7 @@ fn install_transform_openings(
     let door_type = OpeningType::new(
         "core.opening_type",
         OpeningTypeParams {
+            window_operation: Default::default(),
             family: Default::default(),
             name: "Transform door".into(),
             kind: OpeningKind::Door,
@@ -2259,6 +2273,7 @@ fn install_transform_openings(
     let window_type = OpeningType::new(
         "core.opening_type",
         OpeningTypeParams {
+            window_operation: Default::default(),
             family: Default::default(),
             name: "Transform window".into(),
             kind: OpeningKind::Window,
@@ -2282,6 +2297,8 @@ fn install_transform_openings(
             width_override: None,
             height_override: None,
             sill_override: None,
+            pane_position_override: None,
+            lite_side_override: None,
             hinge: os_model::DoorHinge::End,
             swing: os_model::DoorSwing::Left,
         },
@@ -2300,6 +2317,8 @@ fn install_transform_openings(
             width_override: None,
             height_override: None,
             sill_override: None,
+            pane_position_override: None,
+            lite_side_override: None,
             hinge: Default::default(),
             swing: Default::default(),
         },
@@ -2353,8 +2372,8 @@ fn add_trim_boundary(h: &mut Harness, x: f64) -> Id {
     let mut model = h.app.editor.document.model().clone();
     let mut parameters = model.walls[&h.wall].parameters.clone();
     parameters.name = "Trim boundary".into();
-    parameters.start = Point2::new(x, -1.0);
-    parameters.end = Point2::new(x, 1.0);
+    *parameters.path.straight_start_mut().unwrap() = Point2::new(x, -1.0);
+    *parameters.path.straight_end_mut().unwrap() = Point2::new(x, 1.0);
     let boundary = os_model::Wall::new(os_walls::WALL_TYPE, parameters);
     let id = boundary.id();
     model.walls.insert(id, boundary);
@@ -2400,22 +2419,22 @@ fn trim_extend_start_and_end_keep_hosted_openings_and_commit_once_at_both_dpis()
             let door_before = before.openings[&door].clone();
             let window_before = before.openings[&window].clone();
             let door_world_start = Point2::new(
-                wall_before.parameters.start.x
-                    + (wall_before.parameters.end.x - wall_before.parameters.start.x)
+                wall_before.parameters.start().x
+                    + (wall_before.parameters.end().x - wall_before.parameters.start().x)
                         / wall_before.parameters.length()
                         * door_before.parameters.offset,
-                wall_before.parameters.start.y
-                    + (wall_before.parameters.end.y - wall_before.parameters.start.y)
+                wall_before.parameters.start().y
+                    + (wall_before.parameters.end().y - wall_before.parameters.start().y)
                         / wall_before.parameters.length()
                         * door_before.parameters.offset,
             );
             let window_world_start = Point2::new(
-                wall_before.parameters.start.x
-                    + (wall_before.parameters.end.x - wall_before.parameters.start.x)
+                wall_before.parameters.start().x
+                    + (wall_before.parameters.end().x - wall_before.parameters.start().x)
                         / wall_before.parameters.length()
                         * window_before.parameters.offset,
-                wall_before.parameters.start.y
-                    + (wall_before.parameters.end.y - wall_before.parameters.start.y)
+                wall_before.parameters.start().y
+                    + (wall_before.parameters.end().y - wall_before.parameters.start().y)
                         / wall_before.parameters.length()
                         * window_before.parameters.offset,
             );
@@ -2451,8 +2470,8 @@ fn trim_extend_start_and_end_keep_hosted_openings_and_commit_once_at_both_dpis()
             assert_eq!(wall.parameters.material, wall_before.parameters.material);
             assert_eq!(wall.parameters.thickness, wall_before.parameters.thickness);
             assert_eq!(wall.parameters.height, wall_before.parameters.height);
-            assert!(wall.parameters.start.distance(expected_start) < 1e-9);
-            assert!(wall.parameters.end.distance(expected_end) < 1e-9);
+            assert!(wall.parameters.start().distance(expected_start) < 1e-9);
+            assert!(wall.parameters.end().distance(expected_end) < 1e-9);
             assert!(edited.walls.contains_key(&boundary));
             assert_eq!(edited.openings[&door].id(), door);
             assert_eq!(edited.openings[&window].id(), window);
@@ -2470,16 +2489,18 @@ fn trim_extend_start_and_end_keep_hosted_openings_and_commit_once_at_both_dpis()
                 );
             }
             let direction = Point2::new(
-                (wall.parameters.end.x - wall.parameters.start.x) / wall.parameters.length(),
-                (wall.parameters.end.y - wall.parameters.start.y) / wall.parameters.length(),
+                (wall.parameters.end().x - wall.parameters.start().x) / wall.parameters.length(),
+                (wall.parameters.end().y - wall.parameters.start().y) / wall.parameters.length(),
             );
             let door_world_after = Point2::new(
-                wall.parameters.start.x + direction.x * edited.openings[&door].parameters.offset,
-                wall.parameters.start.y + direction.y * edited.openings[&door].parameters.offset,
+                wall.parameters.start().x + direction.x * edited.openings[&door].parameters.offset,
+                wall.parameters.start().y + direction.y * edited.openings[&door].parameters.offset,
             );
             let window_world_after = Point2::new(
-                wall.parameters.start.x + direction.x * edited.openings[&window].parameters.offset,
-                wall.parameters.start.y + direction.y * edited.openings[&window].parameters.offset,
+                wall.parameters.start().x
+                    + direction.x * edited.openings[&window].parameters.offset,
+                wall.parameters.start().y
+                    + direction.y * edited.openings[&window].parameters.offset,
             );
             assert!(door_world_after.distance(door_world_start) < 1e-9);
             assert!(window_world_after.distance(window_world_start) < 1e-9);
@@ -2552,12 +2573,12 @@ fn wall_rotate_pointer_preview_commit_preserves_openings_and_history_at_both_dpi
                 .unwrap()
                 .model
         };
-        assert!((exact.walls[&h.wall].parameters.start.x).abs() < 1e-12);
-        assert!((exact.walls[&h.wall].parameters.start.y + 1.0).abs() < 1e-12);
-        assert!((exact.walls[&h.wall].parameters.end.x).abs() < 1e-12);
-        assert!((exact.walls[&h.wall].parameters.end.y - 1.0).abs() < 1e-12);
+        assert!((exact.walls[&h.wall].parameters.start().x).abs() < 1e-12);
+        assert!((exact.walls[&h.wall].parameters.start().y + 1.0).abs() < 1e-12);
+        assert!((exact.walls[&h.wall].parameters.end().x).abs() < 1e-12);
+        assert!((exact.walls[&h.wall].parameters.end().y - 1.0).abs() < 1e-12);
         h.app.plans.transform.as_mut().unwrap().degrees.clear();
-        let origin = h.point(original_wall.parameters.end);
+        let origin = h.point(original_wall.parameters.end());
         let destination = h.point(Point2::new(0.0, 1.0));
         h.press(origin);
         h.frame(vec![egui::Event::PointerMoved(destination)]);
@@ -2594,10 +2615,10 @@ fn wall_rotate_pointer_preview_commit_preserves_openings_and_history_at_both_dpi
             edited_wall.parameters.material,
             original_wall.parameters.material
         );
-        assert!((edited_wall.parameters.start.x).abs() < 1e-12);
-        assert!((edited_wall.parameters.start.y + 1.0).abs() < 1e-12);
-        assert!((edited_wall.parameters.end.x).abs() < 1e-12);
-        assert!((edited_wall.parameters.end.y - 1.0).abs() < 1e-12);
+        assert!((edited_wall.parameters.start().x).abs() < 1e-12);
+        assert!((edited_wall.parameters.start().y + 1.0).abs() < 1e-12);
+        assert!((edited_wall.parameters.end().x).abs() < 1e-12);
+        assert!((edited_wall.parameters.end().y - 1.0).abs() < 1e-12);
         assert_eq!(edited.openings[&door], original_door);
         assert_eq!(edited.openings[&window], original_window);
         assert_eq!(edited.wall_type_assignments, before.wall_type_assignments);
@@ -2609,6 +2630,110 @@ fn wall_rotate_pointer_preview_commit_preserves_openings_and_history_at_both_dpi
         assert!(!h.app.editor.document.can_undo());
         h.app.history(true);
         assert_eq!(h.app.editor.document.model(), &edited);
+    }
+}
+
+#[test]
+fn wall_mirror_window_panes_preserve_reflected_geometry_and_siblings_both_dpis() {
+    use crate::plan_workspace::transforms::{Draft, Mode};
+    use os_model::WindowPanePosition::{Center, LeftFace, RightFace};
+    for (size, scale) in PROFILES {
+        for pane in [LeftFace, RightFace, Center] {
+            for pinned in [false, true] {
+                let mut h = Harness::new(size, scale);
+                let (_, window, _) =
+                    install_transform_openings(&mut h, if pinned { Center } else { pane }, false);
+                let mut model = h.app.editor.document.model().clone();
+                let window_type = model.openings[&window].parameters.type_id().unwrap();
+                model
+                    .opening_types
+                    .get_mut(&window_type)
+                    .unwrap()
+                    .parameters
+                    .family
+                    .side_lite = Some(os_model::SideLite {
+                    side: os_model::LiteSide::Start,
+                    width_fraction: 0.25,
+                    mullion_width: 0.04,
+                    material: None,
+                });
+                model
+                    .openings
+                    .get_mut(&window)
+                    .unwrap()
+                    .parameters
+                    .lite_side_override = Some(os_model::LiteSide::End);
+                if pinned {
+                    model
+                        .openings
+                        .get_mut(&window)
+                        .unwrap()
+                        .parameters
+                        .pane_position_override = Some(pane);
+                }
+                let mut wall = model.walls[&h.wall].clone();
+                wall.header.id = Id::new();
+                wall.parameters.path.straight_start_mut().unwrap().y += 2.;
+                wall.parameters.path.straight_end_mut().unwrap().y += 2.;
+                let mut sibling = model.openings[&window].clone();
+                sibling.header.id = Id::new();
+                sibling.parameters.host = wall.id();
+                let sibling_id = sibling.id();
+                model.walls.insert(wall.id(), wall);
+                model.openings.insert(sibling_id, sibling);
+                h.app.editor.document = Document::from_model(model).unwrap();
+                h.app.editor.regenerate().unwrap();
+                h.app.plans.poll(&h.app.editor);
+                h.app.focus_plan(Some(h.view));
+                h.app.select(Some(h.wall));
+                h.settle();
+                let before = h.app.editor.document.model().clone();
+                let scene = h.app.editor.scene.clone();
+                let revision = h.app.editor.document.revision();
+                let context = h.app.editor.native_plan_context(h.view).unwrap();
+                let mut draft = Draft::begin(&h.app, Mode::Mirror).unwrap();
+                draft.axis = Some(context.basis.world_to_plane(Point2::new(0., -0.5)).unwrap());
+                let end = context.basis.world_to_plane(Point2::new(0., 0.5)).unwrap();
+                let candidate = draft.candidate(end).unwrap();
+                assert_eq!(h.app.editor.document.model(), &before);
+                assert_eq!(h.app.editor.scene, scene);
+                assert_eq!(h.app.editor.document.revision(), revision);
+                assert!(!h.app.editor.document.can_undo());
+                let old = crate::opening_tools::panel_mesh(&before, window).unwrap();
+                let new = crate::opening_tools::panel_mesh(&candidate.model, window).unwrap();
+                for v in &old.vertices {
+                    assert!(new.vertices.iter().any(|n| (n.x + v.x).abs() < 1e-10
+                        && (n.y - v.y).abs() < 1e-10
+                        && (n.z - v.z).abs() < 1e-10));
+                }
+                let expected = match pane {
+                    LeftFace => Some(RightFace),
+                    RightFace => Some(LeftFace),
+                    Center => before.openings[&window].parameters.pane_position_override,
+                };
+                let mut opening = before.openings[&window].clone();
+                opening.parameters.pane_position_override = expected;
+                assert_eq!(
+                    opening.parameters.lite_side_override,
+                    Some(os_model::LiteSide::End),
+                    "mirror preserves endpoint-relative lite handedness"
+                );
+                assert_eq!(candidate.model.openings[&window], opening);
+                assert_eq!(
+                    candidate.model.openings[&sibling_id],
+                    before.openings[&sibling_id]
+                );
+                assert_eq!(candidate.model.opening_types, before.opening_types);
+                draft.commit(&mut h.app, end).unwrap();
+                assert_eq!(h.app.editor.document.model(), &candidate.model);
+                assert_eq!(h.app.editor.document.revision(), revision + 1);
+                assert_eq!(h.app.editor.document.history_stats().undo_entries, 1);
+                h.app.history(false);
+                assert_eq!(h.app.editor.document.model(), &before);
+                h.app.history(true);
+                assert_eq!(h.app.editor.document.model(), &candidate.model);
+            }
+        }
     }
 }
 
@@ -2646,10 +2771,10 @@ fn wall_mirror_preview_commits_door_and_layer_handedness_once() {
         let edited = h.app.editor.document.model().clone();
         let wall = &edited.walls[&h.wall];
         assert_eq!(wall.header, before.walls[&h.wall].header);
-        assert!((wall.parameters.start.x - 1.0).abs() < 1e-12);
-        assert!(wall.parameters.start.y.abs() < 1e-12);
-        assert!((wall.parameters.end.x + 1.0).abs() < 1e-12);
-        assert!(wall.parameters.end.y.abs() < 1e-12);
+        assert!((wall.parameters.start().x - 1.0).abs() < 1e-12);
+        assert!(wall.parameters.start().y.abs() < 1e-12);
+        assert!((wall.parameters.end().x + 1.0).abs() < 1e-12);
+        assert!(wall.parameters.end().y.abs() < 1e-12);
         assert_eq!(
             edited.wall_type_assignments[&h.wall].type_id,
             wall_type.unwrap()
@@ -2683,8 +2808,24 @@ fn wall_mirror_reflects_across_horizontal_and_diagonal_axes() {
 
     let mut h = Harness::new(PROFILES[0].0, PROFILES[0].1);
     let mut model = h.app.editor.document.model().clone();
-    model.walls.get_mut(&h.wall).unwrap().parameters.start.y = 0.5;
-    model.walls.get_mut(&h.wall).unwrap().parameters.end.y = 0.5;
+    model
+        .walls
+        .get_mut(&h.wall)
+        .unwrap()
+        .parameters
+        .path
+        .straight_start_mut()
+        .unwrap()
+        .y = 0.5;
+    model
+        .walls
+        .get_mut(&h.wall)
+        .unwrap()
+        .parameters
+        .path
+        .straight_end_mut()
+        .unwrap()
+        .y = 0.5;
     h.app.editor.document = Document::from_model(model).unwrap();
     h.app.editor.regenerate().unwrap();
     h.app.plans.poll(&h.app.editor);
@@ -2713,19 +2854,19 @@ fn wall_mirror_reflects_across_horizontal_and_diagonal_axes() {
             .candidate(context.basis.world_to_plane(axis_end).unwrap())
             .unwrap();
         let wall = &candidate.model.walls[&h.wall].parameters;
-        assert!(wall.start.distance(expected_start) < 1e-12);
-        assert!(wall.end.distance(expected_end) < 1e-12);
+        assert!(wall.start().distance(expected_start) < 1e-12);
+        assert!(wall.end().distance(expected_end) < 1e-12);
         assert_eq!(
             h.app.editor.document.model().walls[&h.wall]
                 .parameters
-                .start
+                .start()
                 .y,
             0.5
         );
         assert_eq!(
             h.app.editor.document.model().walls[&h.wall]
                 .parameters
-                .end
+                .end()
                 .y,
             0.5
         );
@@ -2741,8 +2882,8 @@ fn wall_rotation_uses_rotated_plan_basis_at_large_coordinates() {
     let base = 100_000_000.0;
     let mut model = h.app.editor.document.model().clone();
     let wall = &mut model.walls.get_mut(&h.wall).unwrap().parameters;
-    wall.start = Point2::new(base - 1.0, base);
-    wall.end = Point2::new(base + 1.0, base);
+    *wall.path.straight_start_mut().unwrap() = Point2::new(base - 1.0, base);
+    *wall.path.straight_end_mut().unwrap() = Point2::new(base + 1.0, base);
     let view = model.views.get_mut(&h.view).unwrap();
     let mut settings = view.parameters.plan.unwrap();
     settings.basis = PlanViewBasis {
@@ -2760,7 +2901,7 @@ fn wall_rotation_uses_rotated_plan_basis_at_large_coordinates() {
     let before = h.app.editor.document.model().clone();
     h.app.begin_wall_transform(Mode::Rotate);
     h.frame(vec![]);
-    let origin = h.point(before.walls[&h.wall].parameters.end);
+    let origin = h.point(before.walls[&h.wall].parameters.end());
     let destination = h.point(Point2::new(base, base + 1.0));
     h.press(origin);
     h.frame(vec![egui::Event::PointerMoved(destination)]);
@@ -2769,8 +2910,8 @@ fn wall_rotation_uses_rotated_plan_basis_at_large_coordinates() {
     h.frame(vec![]);
     assert!(!h.app.status_error, "{}", h.app.status);
     let edited = &h.app.editor.document.model().walls[&h.wall].parameters;
-    assert!(edited.start.distance(Point2::new(base, base - 1.0)) < 1e-6);
-    assert!(edited.end.distance(Point2::new(base, base + 1.0)) < 1e-6);
+    assert!(edited.start().distance(Point2::new(base, base - 1.0)) < 1e-6);
+    assert!(edited.end().distance(Point2::new(base, base + 1.0)) < 1e-6);
     assert!((edited.length() - 2.0).abs() < 1e-7);
 }
 
@@ -2797,15 +2938,15 @@ fn wall_transform_actions_open_from_existing_snaps_menu_without_resizing_canvas(
 }
 
 #[test]
-fn wall_transform_rejects_joined_walls_asymmetric_windows_and_degenerate_axes() {
+fn wall_transform_rejects_joined_walls_and_degenerate_axes() {
     use crate::plan_workspace::transforms::{Draft, Mode};
     use os_model::{WallAnchor, WallEndpoint, WallJoin, WallJoinParams, WindowPanePosition};
 
     let mut h = Harness::new(PROFILES[0].0, PROFILES[0].1);
     let mut model = h.app.editor.document.model().clone();
     let mut peer = model.walls[&h.wall].parameters.clone();
-    peer.start = Point2::new(1.0, 0.0);
-    peer.end = Point2::new(3.0, 0.0);
+    *peer.path.straight_start_mut().unwrap() = Point2::new(1.0, 0.0);
+    *peer.path.straight_end_mut().unwrap() = Point2::new(3.0, 0.0);
     let peer = os_model::Wall::new(os_walls::WALL_TYPE, peer);
     let peer_id = peer.id();
     model.walls.insert(peer_id, peer);
@@ -2835,13 +2976,7 @@ fn wall_transform_rejects_joined_walls_asymmetric_windows_and_degenerate_axes() 
 
     let mut h = Harness::new(PROFILES[0].0, PROFILES[0].1);
     install_transform_openings(&mut h, WindowPanePosition::LeftFace, false);
-    assert!(
-        Draft::begin(&h.app, Mode::Mirror)
-            .err()
-            .expect("asymmetric window blocks mirror")
-            .to_string()
-            .contains("centered window panes")
-    );
+    assert!(Draft::begin(&h.app, Mode::Mirror).is_ok());
 
     let mut h = Harness::new(PROFILES[0].0, PROFILES[0].1);
     h.app.begin_wall_transform(Mode::Mirror);
@@ -2948,8 +3083,8 @@ fn add_align_reference(h: &mut Harness) -> Id {
     let mut model = h.app.editor.document.model().clone();
     let mut parameters = model.walls[&h.wall].parameters.clone();
     // Short antiparallel target: its infinite centerline defines the alignment.
-    parameters.start = Point2::new(0.5, 0.8);
-    parameters.end = Point2::new(-0.5, 0.8);
+    *parameters.path.straight_start_mut().unwrap() = Point2::new(0.5, 0.8);
+    *parameters.path.straight_end_mut().unwrap() = Point2::new(-0.5, 0.8);
     let wall = os_model::Wall::new(os_walls::WALL_TYPE, parameters);
     let id = wall.id();
     model.walls.insert(id, wall);
@@ -3007,8 +3142,8 @@ fn wall_align_menu_preview_commit_openings_and_pan_at_both_dpis() {
         assert!(h.app.plans.transform.is_none());
         let mut expected = before.clone();
         let wall = &mut expected.walls.get_mut(&h.wall).unwrap().parameters;
-        wall.start.y = 0.8;
-        wall.end.y = 0.8;
+        wall.path.straight_start_mut().unwrap().y = 0.8;
+        wall.path.straight_end_mut().unwrap().y = 0.8;
         // Entire model equality includes reference wall, all wall properties,
         // type assignment, and every hosted door/window ID and parameter.
         assert_eq!(h.app.editor.document.model(), &expected);
@@ -3044,7 +3179,15 @@ fn wall_align_rejects_invalid_targets_without_history() {
             "self" => point = Point2::new(0.8, 0.0),
             "empty" => point = Point2::new(0.0, -0.8),
             "skew" => {
-                model.walls.get_mut(&target).unwrap().parameters.end.y = 0.5;
+                model
+                    .walls
+                    .get_mut(&target)
+                    .unwrap()
+                    .parameters
+                    .path
+                    .straight_end_mut()
+                    .unwrap()
+                    .y = 0.5;
                 point = Point2::new(0.0, 0.65);
             }
             "level" => {
@@ -3077,8 +3220,8 @@ fn wall_align_rejects_invalid_targets_without_history() {
             }
             "zero" => {
                 let wall = &mut model.walls.get_mut(&target).unwrap().parameters;
-                wall.start.y = 0.0;
-                wall.end.y = 0.0;
+                wall.path.straight_start_mut().unwrap().y = 0.0;
+                wall.path.straight_end_mut().unwrap().y = 0.0;
                 point = Point2::new(0.0, 0.0);
             }
             _ => unreachable!(),
@@ -3114,10 +3257,10 @@ fn wall_align_rotated_basis_at_large_coordinates() {
     let base = 100_000_000.0;
     let mut model = h.app.editor.document.model().clone();
     for wall in model.walls.values_mut() {
-        wall.parameters.start.x += base;
-        wall.parameters.start.y += base;
-        wall.parameters.end.x += base;
-        wall.parameters.end.y += base;
+        wall.parameters.path.straight_start_mut().unwrap().x += base;
+        wall.parameters.path.straight_start_mut().unwrap().y += base;
+        wall.parameters.path.straight_end_mut().unwrap().x += base;
+        wall.parameters.path.straight_end_mut().unwrap().y += base;
     }
     model
         .views
@@ -3148,8 +3291,8 @@ fn wall_align_rotated_basis_at_large_coordinates() {
         )
         .unwrap();
     let wall = &candidate.model.walls[&h.wall].parameters;
-    assert!(wall.start.distance(Point2::new(base - 1.0, base + 0.8)) < 1e-6);
-    assert!(wall.end.distance(Point2::new(base + 1.0, base + 0.8)) < 1e-6);
+    assert!(wall.start().distance(Point2::new(base - 1.0, base + 0.8)) < 1e-6);
+    assert!(wall.end().distance(Point2::new(base + 1.0, base + 0.8)) < 1e-6);
 }
 
 #[cfg(feature = "external-plugins")]

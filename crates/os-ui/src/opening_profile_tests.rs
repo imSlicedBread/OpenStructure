@@ -18,6 +18,181 @@ fn concave() -> Vec<Point2> {
 }
 
 #[test]
+fn two_bay_preview_all_instances_history_host_cut_and_leaf_hinges() {
+    for reversed in [false, true] {
+        for side in [os_model::LiteSide::Start, os_model::LiteSide::End] {
+            let (mut e, host, view, types, ids) = fixture();
+            if reversed {
+                let mut parameters = e.document.model().walls[&host].parameters.clone();
+                parameters.path = os_model::WallPath::Straight {
+                    start: parameters.end(),
+                    end: parameters.start(),
+                };
+                e.command(
+                    "Reverse host",
+                    Command::UpdateWall {
+                        id: host,
+                        parameters,
+                    },
+                )
+                .unwrap();
+            }
+            for type_id in types {
+                let before = e.document.model().clone();
+                let scene = e.scene.clone();
+                let stats = e.document.history_stats();
+                let mut draft = OpeningTypeDraft::edit(&e, type_id).unwrap();
+                draft.family.frame_width = 0.05;
+                draft.family.side_lite = Some(os_model::SideLite {
+                    side,
+                    width_fraction: 0.25,
+                    mullion_width: 0.05,
+                    material: None,
+                });
+                let preview = draft.preview_model(&e).unwrap();
+                let (mesh, lines) = draft.preview_geometry(&e, Some(view)).unwrap();
+                assert!(!lines.is_empty());
+                mesh.validate().unwrap();
+                assert_eq!(e.document.model(), &before);
+                assert_eq!(e.document.history_stats(), stats);
+                draft.apply(&mut e).unwrap();
+                assert_eq!(e.document.model(), &preview);
+                assert_eq!(e.scene[&host], scene[&host]);
+                assert_eq!(e.document.model().openings, before.openings);
+                assert!(draft.apply(&mut e).is_err(), "stale draft");
+                for id in ids {
+                    let outer = e
+                        .document
+                        .model()
+                        .resolve_opening(&e.document.model().openings[&id].parameters)
+                        .unwrap();
+                    if outer.type_id != Some(type_id) {
+                        continue;
+                    }
+                    let bays = outer.family.bays(outer.width).unwrap().unwrap();
+                    let leaf = os_geometry::openings::primary_bay(&outer).unwrap();
+                    let wall = &e.document.model().walls[&host].parameters;
+                    for (jamb, station) in [
+                        (os_model::DimensionJamb::Start, outer.offset),
+                        (os_model::DimensionJamb::End, outer.offset + outer.width),
+                    ] {
+                        let reference =
+                            os_model::DimensionReference::OpeningJamb { opening: id, jamb };
+                        let point = reference.resolve(e.document.model(), wall.level).unwrap();
+                        assert!(
+                            point.distance(os_geometry::openings::world(wall, station, 0.)) < 1e-10
+                        );
+                    }
+                    let context = e.native_plan_context(view).unwrap();
+                    let symbol =
+                        super::super::opening_tools::plan_symbol(id, &outer, wall, 0., context)
+                            .unwrap();
+                    let plane = |x, y| {
+                        context
+                            .basis
+                            .world_to_plane(os_geometry::openings::world(wall, outer.offset + x, y))
+                            .unwrap()
+                    };
+                    let has_line = |a: Point2, b: Point2| {
+                        symbol
+                            .iter()
+                            .any(|l| l.start.distance(a) < 1e-9 && l.end.distance(b) < 1e-9)
+                    };
+                    let pane_y = os_geometry::openings::pane_offset(&outer, wall);
+                    assert!(
+                        has_line(plane(bays.lite.0, pane_y), plane(bays.lite.1, pane_y)),
+                        "fixed lite visible in plan"
+                    );
+                    if outer.kind == OpeningKind::Window {
+                        assert!(
+                            has_line(plane(bays.primary.0, pane_y), plane(bays.primary.1, pane_y)),
+                            "primary pane aligned with lite"
+                        );
+                    }
+                    let frame_y = os_geometry::openings::frame_offset(&outer, wall);
+                    let half_depth = os_geometry::openings::frame_thickness(&outer, wall) / 2.;
+                    assert!(
+                        has_line(
+                            plane(bays.mullion.0, frame_y - half_depth),
+                            plane(bays.mullion.1, frame_y - half_depth)
+                        ),
+                        "mullion visible in plan"
+                    );
+                    if outer.kind == OpeningKind::Door {
+                        let hinge = os_geometry::openings::component_point(&leaf, wall, 0.);
+                        assert!(
+                            (hinge.x
+                                - outer.offset
+                                - if outer.hinge == DoorHinge::Start {
+                                    bays.primary.0
+                                } else {
+                                    bays.primary.1
+                                })
+                            .abs()
+                                < 1e-10
+                        );
+                        let hinge = os_geometry::openings::world(wall, hinge.x, hinge.y);
+                        let hinge = context.basis.world_to_plane(hinge).unwrap();
+                        // Two outer jamb lines, leaf line, then the sixteen arc segments.
+                        for line in &symbol[3..19] {
+                            assert!((line.start.distance(hinge) - leaf.width).abs() < 1e-8);
+                            assert!((line.end.distance(hinge) - leaf.width).abs() < 1e-8);
+                        }
+                    }
+                    let mut narrowed = e.document.model().openings[&id].parameters.clone();
+                    narrowed.width_override = Some(0.18);
+                    assert!(preview.resolve_opening(&narrowed).is_err());
+                    narrowed.width_override = Some(1.5);
+                    let resolved = preview.resolve_opening(&narrowed).unwrap();
+                    assert!(
+                        (resolved
+                            .family
+                            .bays(resolved.width)
+                            .unwrap()
+                            .unwrap()
+                            .lite
+                            .1
+                            - resolved
+                                .family
+                                .bays(resolved.width)
+                                .unwrap()
+                                .unwrap()
+                                .lite
+                                .0
+                            - 0.375)
+                            .abs()
+                            < 1e-10
+                    );
+                }
+                e.undo().unwrap();
+                assert_eq!(e.document.model(), &before);
+                e.redo().unwrap();
+                assert_eq!(e.document.model(), &preview);
+            }
+            // A narrow pinned instance must prevent changing the shared type, atomically.
+            let mut p = e.document.model().openings[&ids[1]].parameters.clone();
+            p.width_override = Some(0.3);
+            e.command(
+                "Pin narrow leaf",
+                Command::UpdateOpening {
+                    id: ids[1],
+                    parameters: p,
+                },
+            )
+            .unwrap();
+            let before = e.document.model().clone();
+            let stats = e.document.history_stats();
+            let mut draft = OpeningTypeDraft::edit(&e, types[0]).unwrap();
+            draft.family.side_lite.as_mut().unwrap().width_fraction = 0.6;
+            assert!(draft.preview_model(&e).is_err());
+            assert!(draft.apply(&mut e).is_err());
+            assert_eq!(e.document.model(), &before);
+            assert_eq!(e.document.history_stats(), stats);
+        }
+    }
+}
+
+#[test]
 fn material_color_shared_wall_opening_render_preview_geometry_and_history() {
     use os_model::{
         LayerFunction, Material, MaterialParams, WallLayer, WallType, WallTypeAssignment,
@@ -344,8 +519,10 @@ fn fixture() -> (Editor, Id, Id, [Id; 2], [Id; 4]) {
         os_walls::WALL_TYPE,
         WallParams {
             name: "Family host".into(),
-            start: Point2::new(2., 3.),
-            end: Point2::new(2., 17.),
+            path: os_model::WallPath::Straight {
+                start: Point2::new(2., 3.),
+                end: Point2::new(2., 17.),
+            },
             thickness: 0.2,
             height: 3.,
             level,
@@ -373,6 +550,8 @@ fn fixture() -> (Editor, Id, Id, [Id; 2], [Id; 4]) {
                 width_override: None,
                 height_override: None,
                 sill_override: None,
+                pane_position_override: None,
+                lite_side_override: None,
                 name: "Shared instance".into(),
                 host,
                 offset,
@@ -542,7 +721,7 @@ fn opening_family_invalid_profiles_are_atomic_in_preview_and_commands() {
                     .map(|(x, y)| Point2::new(x, y))
                     .to_vec()
             }
-            11 => draft.family.version = 5,
+            11 => draft.family.version = 6,
             12 => draft.family.depth = f64::NAN,
             13 => draft.family.frame_width = 0.0005,
             14 => draft.family.frame_depth = f64::NAN,

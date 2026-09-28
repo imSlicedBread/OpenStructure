@@ -710,6 +710,11 @@ fn build_import_plan(
     if let Some(id) = parameters.family.frame_material {
         parameters.family.frame_material = remapped.get(&id).copied();
     }
+    if let Some(lite) = &mut parameters.family.side_lite
+        && let Some(id) = lite.material
+    {
+        lite.material = remapped.get(&id).copied();
+    }
     parameters.validate()?;
     if update_selected {
         candidate

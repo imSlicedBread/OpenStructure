@@ -11,6 +11,8 @@ not the implementation used by the CLI. This is not a general IFC importer.
   containment and standard compressed UUID GlobalIds.
 - SI metres, zero site/building origins, storey elevations, planar wall positions
   and yaw, rectangular profiles, positive vertical extrusions and IfcWall bodies.
+- Circular native wall paths are explicitly outside the IFC subset; export rejects
+  them rather than exporting endpoint chords or a flattened rectangular profile.
 - UTF-16 STEP string escaping, including quotes, backslashes and Unicode names.
 - Native wall name, identity, endpoints, length, thickness, height and level are
   reconstructed from actual IFC entities; there is no hidden native JSON payload.
@@ -109,6 +111,11 @@ reported by `export_report`; ordinary `IfcAdapter::export` requires loss
 acknowledgement. Import reports regeneration of the native default family.
 This increment is a restricted bidirectional exchange, not general third-party
 IFC import or new viewer qualification.
+
+The schema-50 fixed side-lite/two-bay door and window family is not representable
+in this bounded exchange. Export rejects it rather than dropping the lite,
+mullion or lite-material assignment; `two_bay_ifc_export_fails_without_partial_output_or_model_mutation`
+verifies the rejection leaves both output and model unchanged.
 
 ## Data loss and commands
 

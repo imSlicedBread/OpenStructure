@@ -382,8 +382,10 @@ fn stair_snaps_to_existing_wall_endpoint_and_upper_level_selection_is_valid() {
             WallParams {
                 name: "Snap target".into(),
                 level: lower,
-                start: Point2::new(-2.0, 0.0),
-                end: Point2::new(2.0, 0.0),
+                path: os_model::WallPath::Straight {
+                    start: Point2::new(-2.0, 0.0),
+                    end: Point2::new(2.0, 0.0),
+                },
                 height: 3.0,
                 thickness: 0.2,
                 material: None,

@@ -12,8 +12,10 @@ fn new_elements_use_latest_phase_and_lifecycle_edits_are_atomic_and_undoable() {
         "org.openstructure.walls.wall",
         WallParams {
             name: "Partition".into(),
-            start: Point2::new(0.0, 0.0),
-            end: Point2::new(4.0, 0.0),
+            path: os_model::WallPath::Straight {
+                start: Point2::new(0.0, 0.0),
+                end: Point2::new(4.0, 0.0),
+            },
             thickness: 0.2,
             height: 3.0,
             level,
@@ -91,8 +93,10 @@ fn editing_implicit_existing_elements_does_not_reclassify_them_as_new() {
         "org.openstructure.walls.wall",
         WallParams {
             name: "Legacy wall".into(),
-            start: Point2::new(0.0, 0.0),
-            end: Point2::new(4.0, 0.0),
+            path: os_model::WallPath::Straight {
+                start: Point2::new(0.0, 0.0),
+                end: Point2::new(4.0, 0.0),
+            },
             thickness: 0.2,
             height: 3.0,
             level,

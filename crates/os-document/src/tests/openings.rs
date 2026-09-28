@@ -2,6 +2,46 @@ use super::*;
 use os_core::Point2;
 
 #[test]
+fn two_bay_lite_only_material_removal_is_atomic() {
+    let (mut doc, type_id, _, _, _) = fixture();
+    let material = Material::new(
+        "core.material",
+        MaterialParams {
+            name: "Lite".into(),
+            density_kg_m3: 2500.,
+            color: [100, 150, 190],
+        },
+    );
+    let id = material.id();
+    let mut p = doc.model().opening_types[&type_id].parameters.clone();
+    p.family.side_lite = Some(os_model::SideLite {
+        side: os_model::LiteSide::Start,
+        width_fraction: 0.25,
+        mullion_width: 0.05,
+        material: Some(id),
+    });
+    doc.execute(
+        "Lite",
+        vec![
+            Command::AddMaterial(material),
+            Command::UpdateOpeningType {
+                id: type_id,
+                parameters: p,
+            },
+        ],
+    )
+    .unwrap();
+    let before = doc.model().clone();
+    let history = doc.history_stats();
+    assert!(
+        doc.execute("Remove lite material", vec![Command::RemoveMaterial(id)])
+            .is_err()
+    );
+    assert_eq!(doc.model(), &before);
+    assert_eq!(doc.history_stats(), history);
+}
+
+#[test]
 fn opening_materials_references_are_validated_atomically_with_history() {
     let (mut doc, type_id, _, _, _) = fixture();
     let material = Material::new(
@@ -65,6 +105,7 @@ fn fixture() -> (Document, Id, Vec<Id>, Vec<Id>, Id) {
     let ty = OpeningType::new(
         "core.opening_type",
         OpeningTypeParams {
+            window_operation: Default::default(),
             family: Default::default(),
             name: "Door 900".into(),
             pane_position: Default::default(),
@@ -83,8 +124,10 @@ fn fixture() -> (Document, Id, Vec<Id>, Vec<Id>, Id) {
             "org.openstructure.walls.wall",
             WallParams {
                 name: "Host".into(),
-                start: Point2::new(0.0, y),
-                end: Point2::new(10.0, y),
+                path: os_model::WallPath::Straight {
+                    start: Point2::new(0.0, y),
+                    end: Point2::new(10.0, y),
+                },
                 thickness: 0.2,
                 height: 3.0,
                 level,
@@ -101,6 +144,8 @@ fn fixture() -> (Document, Id, Vec<Id>, Vec<Id>, Id) {
                     width_override: None,
                     height_override: None,
                     sill_override: None,
+                    pane_position_override: None,
+                    lite_side_override: None,
                     hinge: Default::default(),
                     swing: Default::default(),
                     name: "Door".into(),
@@ -507,6 +552,7 @@ fn conversion_assignment_and_type_removal_are_atomic_and_undoable() {
     let new_type = OpeningType::new(
         "core.opening_type",
         OpeningTypeParams {
+            window_operation: Default::default(),
             family: Default::default(),
             name: "New type".into(),
             ..original.opening_types[&old_type].parameters.clone()

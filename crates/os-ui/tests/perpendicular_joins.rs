@@ -9,8 +9,10 @@ fn add_wall(e: &mut Editor, n: u8, start: Point2, end: Point2, reverse: bool) ->
         os_walls::WALL_TYPE,
         WallParams {
             name: format!("Wall {n}"),
-            start: if reverse { end } else { start },
-            end: if reverse { start } else { end },
+            path: os_model::WallPath::Straight {
+                start: if reverse { end } else { start },
+                end: if reverse { start } else { end },
+            },
             thickness: 0.2,
             height: 3.,
             level: *e.document.model().levels.keys().next().unwrap(),
@@ -313,7 +315,7 @@ fn four_corner_cycle_atomic_edit_room_identity_and_reopen() {
         2.8,
     );
     let mut moved = joined.walls[&walls[0].wall].parameters.clone();
-    moved.end.x += 1.;
+    moved.path.straight_end_mut().unwrap().x += 1.;
     let revision = e.document.revision();
     assert!(
         e.document
@@ -333,8 +335,8 @@ fn four_corner_cycle_atomic_edit_room_identity_and_reopen() {
         .values()
         .map(|w| {
             let mut p = w.parameters.clone();
-            p.start.x += 1.;
-            p.end.x += 1.;
+            p.path.straight_start_mut().unwrap().x += 1.;
+            p.path.straight_end_mut().unwrap().x += 1.;
             Command::UpdateWall {
                 id: w.id(),
                 parameters: p,
@@ -374,9 +376,39 @@ fn invalid_profiles_nodes_ownership_competitors_openings_and_tiny_members_are_at
             match case {
                 0 => model.walls.get_mut(&b.wall).unwrap().parameters.height += 0.1,
                 1 => model.walls.get_mut(&b.wall).unwrap().parameters.thickness += 0.1,
-                2 => model.walls.get_mut(&b.wall).unwrap().parameters.start.x += 1e-8,
-                3 => model.walls.get_mut(&b.wall).unwrap().parameters.end.x += 0.1,
-                4 => model.walls.get_mut(&b.wall).unwrap().parameters.end.y = 0.1005,
+                2 => {
+                    model
+                        .walls
+                        .get_mut(&b.wall)
+                        .unwrap()
+                        .parameters
+                        .path
+                        .straight_start_mut()
+                        .unwrap()
+                        .x += 1e-8
+                }
+                3 => {
+                    model
+                        .walls
+                        .get_mut(&b.wall)
+                        .unwrap()
+                        .parameters
+                        .path
+                        .straight_end_mut()
+                        .unwrap()
+                        .x += 0.1
+                }
+                4 => {
+                    model
+                        .walls
+                        .get_mut(&b.wall)
+                        .unwrap()
+                        .parameters
+                        .path
+                        .straight_end_mut()
+                        .unwrap()
+                        .y = 0.1005
+                }
                 5 => {
                     if let WallJoinParams::Tee { station, .. } = &mut join {
                         *station = f64::INFINITY;
@@ -387,7 +419,7 @@ fn invalid_profiles_nodes_ownership_competitors_openings_and_tiny_members_are_at
                 6 => {
                     let mut third = model.walls[&b.wall].clone();
                     third.header.id = Id::new();
-                    third.parameters.end.y = -3.;
+                    third.parameters.path.straight_end_mut().unwrap().y = -3.;
                     model.walls.insert(third.id(), third);
                 }
                 7 => {
@@ -401,6 +433,8 @@ fn invalid_profiles_nodes_ownership_competitors_openings_and_tiny_members_are_at
                             width_override: None,
                             height_override: None,
                             sill_override: None,
+                            pane_position_override: None,
+                            lite_side_override: None,
                             name: "Conflict".into(),
                             host: if case == 8 { a.wall } else { b.wall },
                             offset: if case == 8 {

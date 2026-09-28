@@ -86,6 +86,13 @@ impl NativeWall {
 
     /// Closed convex regions for sectioning; callers reduce shared contours.
     pub fn layer_mesh_regions(&self) -> Result<Vec<(os_model::ResolvedWallLayer, Vec<Mesh>)>> {
+        if !self.parameters.path.is_straight() {
+            return self
+                .layers
+                .iter()
+                .map(|layer| Ok((layer.clone(), vec![self.arc_layer_mesh(layer)?])))
+                .collect();
+        }
         if !self.has_profile_cuts() {
             return self
                 .layer_cells()?
@@ -178,6 +185,9 @@ impl NativeWall {
         basis: HorizontalBasis,
         crop: Option<PlanCrop>,
     ) -> Result<Vec<(os_model::ResolvedWallLayer, Vec<PlanFootprint>)>> {
+        if !self.parameters.path.is_straight() {
+            return self.arc_plan_footprints(range, basis, crop);
+        }
         range.validate()?;
         if !self.has_profile_cuts() {
             return self

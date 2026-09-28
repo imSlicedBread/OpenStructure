@@ -16,8 +16,10 @@ fn schema_eighteen_with_wall_room() -> (Value, Id, Id, Vec<(Id, bool)>, Point2) 
         "org.openstructure.walls.wall",
         WallParams {
             name: "Boundary".into(),
-            start: Point2::new(0.0, 0.0),
-            end: Point2::new(8.0, 0.0),
+            path: os_model::WallPath::Straight {
+                start: Point2::new(0.0, 0.0),
+                end: Point2::new(8.0, 0.0),
+            },
             height: 3.0,
             thickness: 0.2,
             level,
@@ -113,6 +115,7 @@ fn schema_eighteen_migration_preserves_wall_room_and_rejects_ambiguity_atomicall
     let mut migrated = original.clone();
     migrate(&mut migrated, 18).unwrap();
     let mut expected = original.clone();
+    common::apply_wall_paths(&mut expected);
     expected["schema_version"] = json!(SCHEMA_VERSION);
     for room in expected["rooms"].as_object_mut().unwrap().values_mut() {
         for field in [

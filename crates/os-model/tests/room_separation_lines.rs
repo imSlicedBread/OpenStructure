@@ -97,8 +97,10 @@ fn room_boundary_segments_include_same_level_walls_and_lines_in_uuid_order() {
         "org.openstructure.walls.wall",
         WallParams {
             name: "Physical edge".into(),
-            start: Point2::new(0.0, 0.0),
-            end: Point2::new(4.0, 0.0),
+            path: os_model::WallPath::Straight {
+                start: Point2::new(0.0, 0.0),
+                end: Point2::new(4.0, 0.0),
+            },
             thickness: 0.2,
             height: 3.0,
             level,

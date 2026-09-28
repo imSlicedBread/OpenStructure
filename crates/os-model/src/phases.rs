@@ -261,8 +261,10 @@ mod tests {
             "org.openstructure.walls.wall",
             WallParams {
                 name: "Partition".into(),
-                start: Point2::new(0.0, 0.0),
-                end: Point2::new(4.0, 0.0),
+                path: crate::WallPath::Straight {
+                    start: Point2::new(0.0, 0.0),
+                    end: Point2::new(4.0, 0.0),
+                },
                 thickness: 0.2,
                 height: 3.0,
                 level: model.levels.keys().next().copied().unwrap(),
@@ -339,8 +341,10 @@ mod tests {
             "org.openstructure.walls.wall",
             WallParams {
                 name: "Existing host".into(),
-                start: Point2::new(0.0, 0.0),
-                end: Point2::new(4.0, 0.0),
+                path: crate::WallPath::Straight {
+                    start: Point2::new(0.0, 0.0),
+                    end: Point2::new(4.0, 0.0),
+                },
                 thickness: 0.2,
                 height: 3.0,
                 level: model.levels.keys().next().copied().unwrap(),
@@ -362,6 +366,8 @@ mod tests {
                 width_override: None,
                 height_override: None,
                 sill_override: None,
+                pane_position_override: None,
+                lite_side_override: None,
                 name: "New door".into(),
                 host: wall_id,
                 offset: 1.0,

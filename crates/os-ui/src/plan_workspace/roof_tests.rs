@@ -299,8 +299,10 @@ fn roof_sketch_uses_existing_wall_endpoint_snaps() {
         os_walls::WALL_TYPE,
         WallParams {
             name: "Roof snap target".into(),
-            start: Point2::new(10.0, 10.0),
-            end: Point2::new(14.0, 10.0),
+            path: os_model::WallPath::Straight {
+                start: Point2::new(10.0, 10.0),
+                end: Point2::new(14.0, 10.0),
+            },
             thickness: 0.2,
             height: 3.0,
             level: h.app.active_level,

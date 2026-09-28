@@ -374,7 +374,7 @@ impl JunctionDrag {
         if let WallJoinParams::Tee { host, .. } = self.parameters {
             let wall = &self.original.walls[&host].parameters;
             let station =
-                (point.x - wall.start.x) * self.axis.x + (point.y - wall.start.y) * self.axis.y;
+                (point.x - wall.start().x) * self.axis.x + (point.y - wall.start().y) * self.axis.y;
             point = os_model::wall_point(wall, station, 0.0);
         }
         os_core::ensure(
@@ -477,17 +477,17 @@ impl JunctionDrag {
             .map(|id| {
                 let mut wall = self.original.walls[id].parameters.clone();
                 let i = indices[id];
-                wall.start = Point2::new(
-                    wall.start.x + displacement[i],
-                    wall.start.y + displacement[i + 1],
+                *wall.path.straight_start_mut()? = Point2::new(
+                    wall.start().x + displacement[i],
+                    wall.start().y + displacement[i + 1],
                 );
-                wall.end = Point2::new(
-                    wall.end.x + displacement[i + 2],
-                    wall.end.y + displacement[i + 3],
+                *wall.path.straight_end_mut()? = Point2::new(
+                    wall.end().x + displacement[i + 2],
+                    wall.end().y + displacement[i + 3],
                 );
-                (*id, wall)
+                Ok((*id, wall))
             })
-            .collect();
+            .collect::<Result<_>>()?;
         // Each anchor belongs to at most one join. Assign shared nodes once to
         // remove roundoff without a sequential geometry propagation walk.
         for id in &self.joins {
@@ -495,7 +495,7 @@ impl JunctionDrag {
                 self.original.wall_joins[id].parameters
             {
                 let node = a.endpoint.point(&walls[&a.wall]);
-                set_endpoint(walls.get_mut(&b.wall).unwrap(), b.endpoint, node);
+                set_endpoint(walls.get_mut(&b.wall).unwrap(), b.endpoint, node)?;
             }
         }
         let mut joins = Vec::new();
@@ -508,7 +508,8 @@ impl JunctionDrag {
                 let wall = &walls[&host];
                 let axis = os_model::axis(wall);
                 let node = branch.endpoint.point(&walls[&branch.wall]);
-                let station = (node.x - wall.start.x) * axis.x + (node.y - wall.start.y) * axis.y;
+                let station =
+                    (node.x - wall.start().x) * axis.x + (node.y - wall.start().y) * axis.y;
                 joins.push((
                     *id,
                     WallJoinParams::Tee {
@@ -522,7 +523,7 @@ impl JunctionDrag {
         }
         for (_, join, node) in &joins {
             if let WallJoinParams::Tee { branch, .. } = join {
-                set_endpoint(walls.get_mut(&branch.wall).unwrap(), branch.endpoint, *node);
+                set_endpoint(walls.get_mut(&branch.wall).unwrap(), branch.endpoint, *node)?;
             }
         }
         let mut commands = Vec::new();
@@ -530,7 +531,7 @@ impl JunctionDrag {
             let original = &self.original.walls[id].parameters;
             let axis = os_model::axis(original);
             os_core::ensure(
-                (wall.end.x - wall.start.x) * axis.x + (wall.end.y - wall.start.y) * axis.y
+                (wall.end().x - wall.start().x) * axis.x + (wall.end().y - wall.start().y) * axis.y
                     >= 0.001,
                 "Junction drag would collapse or reverse a wall",
             )?;
@@ -548,10 +549,13 @@ impl JunctionDrag {
                 parameters: wall.clone(),
             });
             let start = Point2::new(
-                wall.start.x - original.start.x,
-                wall.start.y - original.start.y,
+                wall.start().x - original.start().x,
+                wall.start().y - original.start().y,
             );
-            let end = Point2::new(wall.end.x - original.end.x, wall.end.y - original.end.y);
+            let end = Point2::new(
+                wall.end().x - original.end().x,
+                wall.end().y - original.end().y,
+            );
             // Rigid motion carries hosted openings. Resizing preserves their
             // original axial position while carrying perpendicular translation.
             if start.distance(end) > 1e-10 {
@@ -609,7 +613,7 @@ impl JunctionDrag {
         };
         for wall in walls {
             painter.line_segment(
-                [screen(wall.start)?, screen(wall.end)?],
+                [screen(wall.start())?, screen(wall.end())?],
                 egui::Stroke::new(2.0, theme::ACCENT),
             );
         }
@@ -622,11 +626,12 @@ impl JunctionDrag {
     }
 }
 
-fn set_endpoint(wall: &mut WallParams, endpoint: WallEndpoint, node: Point2) {
+fn set_endpoint(wall: &mut WallParams, endpoint: WallEndpoint, node: Point2) -> Result<()> {
     match endpoint {
-        WallEndpoint::Start => wall.start = node,
-        WallEndpoint::End => wall.end = node,
+        WallEndpoint::Start => *wall.path.straight_start_mut()? = node,
+        WallEndpoint::End => *wall.path.straight_end_mut()? = node,
     }
+    Ok(())
 }
 
 /// Reorthogonalized row-space solve. Dependent rows detect incompatible cycles;

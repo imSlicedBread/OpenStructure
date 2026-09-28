@@ -170,6 +170,7 @@ mod tests {
             let ty = OpeningType::new(
                 "core.opening_type",
                 OpeningTypeParams {
+                    window_operation: Default::default(),
                     family: Default::default(),
                     name: "Test type".into(),
                     kind,
@@ -200,6 +201,8 @@ mod tests {
                 width_override: None,
                 height_override: None,
                 sill_override: None,
+                pane_position_override: None,
+                lite_side_override: None,
                 hinge: Default::default(),
                 swing: Default::default(),
             },

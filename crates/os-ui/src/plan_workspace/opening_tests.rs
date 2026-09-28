@@ -4,11 +4,362 @@ use super::*;
 #[path = "opening_array_tests.rs"]
 mod array_tests;
 
+#[path = "window_pane_tests.rs"]
+mod window_pane_tests;
+
+#[path = "lite_handedness_tests.rs"]
+mod lite_handedness_tests;
+
+#[path = "opening_spacing_tests.rs"]
+mod opening_spacing_tests;
+
+#[path = "opening_visibility_tests.rs"]
+mod opening_visibility_tests;
+
 const PROFILES: [(egui::Vec2, f32); 2] = [
     (egui::vec2(1280.0, 800.0), 1.0),
     (egui::vec2(1000.0, 650.0), 1.5),
 ];
 const KINDS: [OpeningKind; 2] = [OpeningKind::Door, OpeningKind::Window];
+
+impl Harness {
+    fn width_point(&self, station: f64) -> egui::Pos2 {
+        self.point(os_geometry::openings::world(
+            &self.app.editor.document.model().walls[&self.wall].parameters,
+            station,
+            0.0,
+        ))
+    }
+
+    fn begin_width(&mut self, kind: OpeningKind) {
+        self.begin(kind);
+        assert!(
+            !self
+                .app
+                .plans
+                .opening_placement
+                .as_ref()
+                .unwrap()
+                .draw_width
+        );
+        self.text_click("Draw opening width");
+        assert!(
+            self.app
+                .plans
+                .opening_placement
+                .as_ref()
+                .unwrap()
+                .draw_width
+        );
+    }
+}
+
+#[test]
+fn draw_opening_width_preview_commit_history_and_apertures() {
+    for (size, scale) in PROFILES {
+        for kind in KINDS {
+            for reversed in [false, true] {
+                for typed_rotated in [false, true] {
+                    for backwards in [false, true] {
+                        let mut h = if typed_rotated {
+                            Harness::movable(kind, reversed, false, size, scale).0
+                        } else {
+                            let mut h = Harness::new(size, scale);
+                            if reversed {
+                                let mut model = h.app.editor.document.model().clone();
+                                let wall = &mut model.walls.get_mut(&h.wall).unwrap().parameters;
+                                wall.path = os_model::WallPath::Straight {
+                                    start: wall.end(),
+                                    end: wall.start(),
+                                };
+                                h.app.editor.document = Document::from_model(model).unwrap();
+                                h.app.editor.pending_geometry.insert(h.wall);
+                                h.app.editor.regenerate().unwrap();
+                                h.app.plans.poll(&h.app.editor);
+                                h.app.focus_plan(Some(h.view));
+                                h.settle();
+                            }
+                            h
+                        };
+                        h.app.plans.split = true;
+                        h.app.plans.cameras.insert(
+                            h.view,
+                            PlanCamera {
+                                center: Point2::new(0.0, 0.0),
+                                pixels_per_metre: 20.0,
+                            },
+                        );
+                        h.frame(vec![]);
+                        h.begin_width(kind);
+                        h.app.plans.snaps.enabled = false;
+                        let before = h.app.editor.document.model().clone();
+                        let scene = h.app.editor.scene.clone();
+                        let history = h.app.editor.document.history_stats();
+                        let drawing = h.app.plans.drawing.as_ref().unwrap().identity();
+                        let camera = h.app.plans.cameras[&h.view];
+                        let (a, b) = if backwards { (6.1, 4.7) } else { (4.7, 6.1) };
+                        let from = h.width_point(a);
+                        let to = h.width_point(b);
+                        h.hover(from);
+                        h.frame(vec![button(from, true)]);
+                        h.hover(to);
+                        assert!(h.app.plans.opening_width_claimed);
+                        assert!(h.app.plans.opening_move.is_none());
+                        assert_eq!(h.app.editor.document.model(), &before);
+                        assert_eq!(h.app.editor.scene, scene);
+                        assert_eq!(h.app.editor.document.history_stats(), history);
+                        assert_eq!(h.app.plans.drawing.as_ref().unwrap().identity(), drawing);
+                        assert_eq!(h.app.plans.cameras[&h.view], camera);
+                        assert!(h.has_text(&format!("{kind:?} · 1.40 m wide")));
+                        assert!(h.preview_lines() > 0);
+                        let context = h.app.editor.native_plan_context(h.view).unwrap();
+                        let rect = h.app.plans.canvas_rect.unwrap();
+                        let preview = opening_placement_preview(
+                            &before,
+                            h.app.plans.drawing.as_ref().unwrap(),
+                            context,
+                            camera,
+                            [f64::from(rect.width()), f64::from(rect.height())],
+                            Point2::new(
+                                f64::from(to.x - rect.left()),
+                                f64::from(to.y - rect.top()),
+                            ),
+                            h.app.plans.opening_placement.as_ref().unwrap(),
+                        )
+                        .unwrap()
+                        .unwrap();
+                        let mut candidate = before.clone();
+                        let opening = Opening::new("core.opening", preview.parameters);
+                        let preview_id = opening.id();
+                        candidate.openings.insert(preview_id, opening);
+                        let plan = crate::opening_tools::opening_edit_preview(
+                            &candidate,
+                            preview_id,
+                            &[h.wall],
+                            context,
+                        )
+                        .unwrap();
+                        for item in plan.items(context).unwrap() {
+                            let points: Vec<_> = item
+                                .footprint
+                                .vertices()
+                                .iter()
+                                .map(|p| h.point(*p))
+                                .collect();
+                            assert!(h.output.shapes.iter().any(|s| matches!(&s.shape,
+                                egui::Shape::Path(path) if path.closed && path.points == points)));
+                        }
+                        h.frame(vec![button(to, false)]);
+                        h.settle();
+                        let after = h.app.editor.document.model().clone();
+                        assert_eq!(after.openings.len(), before.openings.len() + 1);
+                        let id = h.app.selected.unwrap();
+                        let p = &after.openings[&id].parameters;
+                        let resolved = after.resolve_opening(p).unwrap();
+                        assert!((resolved.width - 1.4).abs() < 1e-5);
+                        assert!((p.offset - 4.7).abs() < 1e-5);
+                        assert_eq!(p.width_override, Some(resolved.width));
+                        assert_eq!(resolved.kind, kind);
+                        if typed_rotated {
+                            assert_eq!(after.opening_types, before.opening_types);
+                        } else {
+                            assert_eq!(after.opening_types.len(), 1);
+                            assert_eq!(
+                                after.opening_types[&p.type_id().unwrap()].parameters.width,
+                                if kind == OpeningKind::Door { 0.9 } else { 1.2 }
+                            );
+                        }
+                        assert_eq!(
+                            h.app.editor.document.history_stats().undo_entries,
+                            history.undo_entries + 1
+                        );
+                        let current = h.app.editor.native_plan_context(h.view).unwrap();
+                        let committed = h.app.editor.native_wall_plan(h.view).unwrap();
+                        assert_eq!(
+                            plan.items(context).unwrap(),
+                            committed.items(current).unwrap()
+                        );
+                        assert_ne!(h.app.editor.scene[&h.wall], scene[&h.wall]);
+                        assert_eq!(
+                            h.app.editor.scene[&h.wall],
+                            crate::opening_tools::host_mesh(&after, h.wall).unwrap()
+                        );
+                        assert_eq!(
+                            h.app.editor.scene[&id],
+                            crate::opening_tools::panel_mesh(&after, id).unwrap()
+                        );
+                        let after_scene = h.app.editor.scene.clone();
+                        h.app.history(false);
+                        h.settle();
+                        assert_eq!(h.app.editor.document.model(), &before);
+                        assert_eq!(h.app.editor.scene, scene);
+                        h.app.history(true);
+                        h.settle();
+                        assert_eq!(h.app.editor.document.model(), &after);
+                        assert_eq!(h.app.editor.scene, after_scene);
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn draw_opening_width_invalid_release_and_stale_press_ownership() {
+    for (size, scale) in PROFILES {
+        for kind in KINDS {
+            for reason in [
+                "short",
+                "collision",
+                "clearance",
+                "off_host",
+                "escape",
+                "lost",
+                "revision",
+                "session",
+                "view",
+                "settings",
+                "provider",
+                "drawing",
+                "camera",
+                "canvas",
+            ] {
+                let (mut h, _) = Harness::movable(kind, false, false, size, scale);
+                h.begin_width(kind);
+                h.app.plans.snaps.enabled = false;
+                let from = h.width_point(4.7);
+                let mut to = h.width_point(6.1);
+                h.hover(from);
+                h.frame(vec![button(from, true)]);
+                h.hover(to);
+                match reason {
+                    "short" => to = from,
+                    "collision" => to = h.width_point(2.0),
+                    "clearance" => to = h.width_point(8.0),
+                    "off_host" => to += egui::vec2(0.0, 70.0),
+                    "escape" => h.frame(vec![escape()]),
+                    "lost" => h.frame(vec![egui::Event::PointerGone]),
+                    "revision" => h
+                        .app
+                        .editor
+                        .command("Other edit", Command::RenameProject("Changed".into()))
+                        .unwrap(),
+                    "session" => {
+                        h.app.editor.document =
+                            Document::from_model(h.app.editor.document.model().clone()).unwrap()
+                    }
+                    "view" => h.app.focus_plan(None),
+                    "settings" => {
+                        let mut settings = h.app.editor.document.model().views[&h.view]
+                            .parameters
+                            .plan
+                            .unwrap();
+                        settings.visibility.walls = false;
+                        h.app
+                            .editor
+                            .update_floor_plan(h.view, "Hidden", h.app.active_level, settings)
+                            .unwrap();
+                    }
+                    "provider" => {
+                        h.app.editor.host.unload(os_walls::PLUGIN_ID).unwrap();
+                    }
+                    "drawing" => {
+                        h.app.plans.drawing = Some(h.app.editor.native_wall_plan(h.view).unwrap())
+                    }
+                    "camera" => {
+                        h.app
+                            .plans
+                            .cameras
+                            .get_mut(&h.view)
+                            .unwrap()
+                            .pixels_per_metre += 1.0;
+                    }
+                    "canvas" => h.size.x += 120.0,
+                    _ => unreachable!(),
+                }
+                let before = h.app.editor.document.model().clone();
+                let scene = h.app.editor.scene.clone();
+                let history = h.app.editor.document.history_stats();
+                let selection = h.app.selected;
+                let camera = h.app.plans.cameras[&h.view];
+                // Move after cancellation before releasing: the press must not become a pan.
+                h.hover(to);
+                h.frame(vec![button(to, false)]);
+                h.frame(vec![]);
+                assert_eq!(h.app.editor.document.model(), &before, "{reason}");
+                assert_eq!(h.app.editor.scene, scene, "{reason}");
+                assert_eq!(h.app.editor.document.history_stats(), history, "{reason}");
+                assert_eq!(h.app.selected, selection, "{reason}");
+                if let Some(current) = h.app.plans.cameras.get(&h.view) {
+                    assert_eq!(*current, camera, "{reason}");
+                }
+                assert!(!h.app.plans.opening_width_claimed);
+            }
+        }
+    }
+}
+
+#[test]
+fn draw_opening_width_visibility_snapping_and_return_to_pan() {
+    for (size, scale) in PROFILES {
+        for kind in KINDS {
+            for hidden in [false, true] {
+                let mut h = Harness::new(size, scale);
+                let mut settings = h.app.editor.document.model().views[&h.view]
+                    .parameters
+                    .plan
+                    .unwrap();
+                if hidden {
+                    settings.visibility.walls = false;
+                } else {
+                    settings.crop = Some(os_model::PlanViewCrop {
+                        min: Point2::new(0.0, -1.0),
+                        max: Point2::new(4.0, 1.0),
+                    });
+                }
+                h.app
+                    .editor
+                    .update_floor_plan(h.view, "Visibility", h.app.active_level, settings)
+                    .unwrap();
+                h.settle();
+                h.begin_width(kind);
+                let before = h.app.editor.document.model().clone();
+                let history = h.app.editor.document.history_stats();
+                let camera = h.app.plans.cameras[&h.view];
+                h.drag(h.width_point(2.0), h.width_point(5.5));
+                h.frame(vec![]);
+                assert_eq!(h.app.editor.document.model(), &before);
+                assert_eq!(h.app.editor.document.history_stats(), history);
+                assert_eq!(h.app.plans.cameras[&h.view], camera);
+                // A valid start with a cropped/hidden end cannot reuse a valid hover.
+                h.drag(h.width_point(5.5), h.width_point(2.0));
+                assert_eq!(h.app.editor.document.model(), &before);
+            }
+            let mut h = Harness::new(size, scale);
+            h.begin_width(kind);
+            h.app.plans.snaps.enabled = true;
+            h.app.plans.snaps.midpoints = true;
+            h.drag(h.width_point(4.08), h.width_point(5.5));
+            h.settle();
+            let model = h.app.editor.document.model();
+            let p = &model.openings[&h.app.selected.unwrap()].parameters;
+            assert!(
+                (p.offset - 4.0).abs() < 1e-5,
+                "first jamb snaps to midpoint"
+            );
+            assert!((model.resolve_opening(p).unwrap().width - 1.5).abs() < 1e-5);
+            h.frame(vec![escape()]);
+            h.frame(vec![]);
+            let camera = h.app.plans.cameras[&h.view];
+            let a = h.point(Point2::new(-2.0, -1.0));
+            h.drag(a, a + egui::vec2(25.0, 12.0));
+            assert_ne!(
+                h.app.plans.cameras[&h.view], camera,
+                "ordinary drag pans after exit"
+            );
+        }
+    }
+}
 
 // These tests acquire controls from painted text, then drive real pointer frames.
 impl Harness {
@@ -186,8 +537,8 @@ fn direct_plan_door_independent_toggles_preserve_model_and_regenerate_with_histo
                     let a = context.basis.plane_to_world(leaf.start).unwrap();
                     let b = context.basis.plane_to_world(leaf.end).unwrap();
                     let wall = &expected.walls[&h.wall].parameters;
-                    let along = ((a.x - wall.start.x) * (wall.end.x - wall.start.x)
-                        + (a.y - wall.start.y) * (wall.end.y - wall.start.y))
+                    let along = ((a.x - wall.start().x) * (wall.end().x - wall.start().x)
+                        + (a.y - wall.start().y) * (wall.end().y - wall.start().y))
                         / wall.length();
                     let p = &expected.openings[&id].parameters;
                     let resolved = expected.resolve_opening(p).unwrap();
@@ -198,8 +549,8 @@ fn direct_plan_door_independent_toggles_preserve_model_and_regenerate_with_histo
                             0.0
                         };
                     assert!((along - station).abs() < 1e-9);
-                    let cross = (wall.end.x - wall.start.x) * (b.y - a.y)
-                        - (wall.end.y - wall.start.y) * (b.x - a.x);
+                    let cross = (wall.end().x - wall.start().x) * (b.y - a.y)
+                        - (wall.end().y - wall.start().y) * (b.x - a.x);
                     assert_eq!(cross > 0.0, p.swing == os_model::DoorSwing::Left);
                     assert_eq!(
                         drawing
@@ -576,8 +927,8 @@ struct Harness {
 impl Harness {
     fn new(size: egui::Vec2, scale: f32) -> Self {
         let mut app = DesktopApp::new().unwrap();
-        app.draft.start = Point2::new(-4.0, 0.0);
-        app.draft.end = Point2::new(4.0, 0.0);
+        *app.draft.path.straight_start_mut().unwrap() = Point2::new(-4.0, 0.0);
+        *app.draft.path.straight_end_mut().unwrap() = Point2::new(4.0, 0.0);
         app.draft.height = 3.0;
         app.draft.thickness = 0.25;
         app.draft.name = "Opening host".into();
@@ -783,23 +1134,51 @@ impl Harness {
         kind: OpeningKind,
         legacy: bool,
         reversed: bool,
+        lite_override: bool,
         size: egui::Vec2,
         scale: f32,
     ) -> (Self, Id, Id) {
         let (mut h, id) = Self::movable(kind, false, legacy, size, scale);
         let mut model = h.app.editor.document.model().clone();
+        if lite_override {
+            let opening = model.openings.get_mut(&id).unwrap();
+            let type_id = opening.parameters.type_id().unwrap();
+            opening.parameters.lite_side_override = Some(os_model::LiteSide::End);
+            model
+                .opening_types
+                .get_mut(&type_id)
+                .unwrap()
+                .parameters
+                .family
+                .side_lite = Some(os_model::SideLite {
+                side: os_model::LiteSide::Start,
+                width_fraction: 0.25,
+                mullion_width: 0.04,
+                material: None,
+            });
+        }
         let mut parameters = model.walls[&h.wall].parameters.clone();
         parameters.name = "New host".into();
-        parameters.start = Point2::new(-4.0, 2.0);
-        parameters.end = Point2::new(4.0, 2.0);
+        *parameters.path.straight_start_mut().unwrap() = Point2::new(-4.0, 2.0);
+        *parameters.path.straight_end_mut().unwrap() = Point2::new(4.0, 2.0);
         if reversed {
-            std::mem::swap(&mut parameters.start, &mut parameters.end);
+            parameters.path = os_model::WallPath::Straight {
+                start: parameters.end(),
+                end: parameters.start(),
+            };
         }
         let target = os_model::Wall::new(os_walls::WALL_TYPE, parameters);
         let target_id = target.id();
         model.walls.insert(target_id, target);
         h.app.editor.document = Document::from_model(model).unwrap();
-        h.app.editor.pending_geometry.insert(target_id);
+        if lite_override {
+            h.app
+                .editor
+                .pending_geometry
+                .extend([id, h.wall, target_id]);
+        } else {
+            h.app.editor.pending_geometry.insert(target_id);
+        }
         h.app.editor.regenerate().unwrap();
         h.app.plans.poll(&h.app.editor);
         h.app.focus_plan(Some(h.view));
@@ -830,7 +1209,7 @@ fn opening_rehost_preview_commit_history_and_both_host_regeneration() {
             for legacy in [false, true] {
                 for reversed in [false, true] {
                     let (mut h, id, target) =
-                        Harness::rehostable(kind, legacy, reversed, size, scale);
+                        Harness::rehostable(kind, legacy, reversed, !legacy, size, scale);
                     let before = h.app.editor.document.model().clone();
                     let scene = h.app.editor.scene.clone();
                     let camera = h.app.plans.cameras[&h.view];
@@ -959,7 +1338,7 @@ fn opening_rehost_preview_commit_history_and_both_host_regeneration() {
 fn opening_rehost_invalid_absent_target_and_final_click_revalidation() {
     for (size, scale) in PROFILES {
         for kind in KINDS {
-            let (mut h, id, target) = Harness::rehostable(kind, false, false, size, scale);
+            let (mut h, id, target) = Harness::rehostable(kind, false, false, false, size, scale);
             let mut neighbor = Opening::new(
                 "core.opening",
                 h.app.editor.document.model().openings[&id]
@@ -1033,7 +1412,7 @@ fn opening_rehost_cancel_stale_and_pointer_ownership() {
                 "outside",
                 "lost",
             ] {
-                let (mut h, id, _) = Harness::rehostable(kind, false, false, size, scale);
+                let (mut h, id, _) = Harness::rehostable(kind, false, false, false, size, scale);
                 let camera = h.app.plans.cameras[&h.view];
                 h.app.begin_opening_rehost();
                 let mut to = h.point(Point2::new(-1.0, 2.0));
@@ -1103,7 +1482,8 @@ fn opening_rehost_target_visibility_level_crop_and_fit() {
     for (size, scale) in PROFILES {
         for kind in KINDS {
             for reason in ["hidden", "crop", "level", "height", "same_host"] {
-                let (mut h, id, target) = Harness::rehostable(kind, false, false, size, scale);
+                let (mut h, id, target) =
+                    Harness::rehostable(kind, false, false, false, size, scale);
                 let mut model = h.app.editor.document.model().clone();
                 match reason {
                     "hidden" => {
@@ -1209,10 +1589,13 @@ impl Harness {
         let mut model = h.app.editor.document.model().clone();
         // A rotated host catches projection errors that horizontal-only tests miss.
         let wall = &mut model.walls.get_mut(&h.wall).unwrap().parameters;
-        wall.start = Point2::new(-3.2, -2.4);
-        wall.end = Point2::new(3.2, 2.4);
+        *wall.path.straight_start_mut().unwrap() = Point2::new(-3.2, -2.4);
+        *wall.path.straight_end_mut().unwrap() = Point2::new(3.2, 2.4);
         if reversed {
-            std::mem::swap(&mut wall.start, &mut wall.end);
+            wall.path = os_model::WallPath::Straight {
+                start: wall.end(),
+                end: wall.start(),
+            };
         }
         let (width, height, sill) = if kind == OpeningKind::Door {
             (0.9, 2.1, 0.0)
@@ -1222,6 +1605,7 @@ impl Harness {
         let ty = OpeningType::new(
             "core.opening_type",
             OpeningTypeParams {
+                window_operation: Default::default(),
                 family: Default::default(),
                 name: "Drag type".into(),
                 kind,
@@ -1248,6 +1632,8 @@ impl Harness {
                 width_override: None,
                 height_override: None,
                 sill_override: None,
+                pane_position_override: None,
+                lite_side_override: None,
                 name: "Keep this name".into(),
                 host: h.wall,
                 offset: 1.5,
@@ -2359,7 +2745,7 @@ fn opening_copy_preserves_instance_and_type_on_another_wall() {
         for kind in KINDS {
             for legacy in [false, true] {
                 let (mut h, source_id, target_wall) =
-                    Harness::rehostable(kind, legacy, false, size, scale);
+                    Harness::rehostable(kind, legacy, false, false, size, scale);
                 let mut model = h.app.editor.document.model().clone();
                 let source = &mut model.openings.get_mut(&source_id).unwrap().parameters;
                 source.name = "Preserved instance name".into();
@@ -2367,6 +2753,20 @@ fn opening_copy_preserves_instance_and_type_on_another_wall() {
                     source.width_override = Some(if kind == OpeningKind::Door { 1.0 } else { 1.3 });
                     source.height_override =
                         Some(if kind == OpeningKind::Door { 2.0 } else { 1.1 });
+                    source.lite_side_override = Some(os_model::LiteSide::End);
+                    let type_id = source.type_id().unwrap();
+                    model
+                        .opening_types
+                        .get_mut(&type_id)
+                        .unwrap()
+                        .parameters
+                        .family
+                        .side_lite = Some(os_model::SideLite {
+                        side: os_model::LiteSide::Start,
+                        width_fraction: 0.25,
+                        mullion_width: 0.04,
+                        material: None,
+                    });
                     if kind == OpeningKind::Window {
                         source.sill_override = Some(0.75);
                     }
@@ -2442,6 +2842,13 @@ fn opening_copy_preserves_instance_and_type_on_another_wall() {
                 assert_eq!(copied_resolved.height, source_resolved.height);
                 assert_eq!(copied_resolved.sill, source_resolved.sill);
                 assert_eq!(copied_resolved.type_id, source_resolved.type_id);
+                if !legacy {
+                    assert_eq!(
+                        copied_resolved.family.side_lite.as_ref().unwrap().side,
+                        os_model::LiteSide::End,
+                        "copy retains the pinned per-instance lite end"
+                    );
+                }
                 assert_eq!(after.openings.len(), before.openings.len() + 1);
                 assert!(h.app.editor.scene.contains_key(&copy_id));
                 h.frame(vec![]);

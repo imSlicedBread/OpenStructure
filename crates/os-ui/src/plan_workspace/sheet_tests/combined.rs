@@ -124,7 +124,7 @@ fn combined_sheet_scales_history_navigation_live_edit_reopen_and_pdf() {
         let wall = *app.editor.document.model().walls.keys().next().unwrap();
         let mut parameters = app.editor.document.model().walls[&wall].parameters.clone();
         parameters.height = 2.0;
-        parameters.end.x = 6.0;
+        parameters.path.straight_end_mut().unwrap().x = 6.0;
         app.editor
             .command(
                 "Change source wall",

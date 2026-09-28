@@ -19,10 +19,22 @@ fn reverse_schema_29_to_32_opening_changes(value: &mut Value) {
                     family.insert("version".into(), json!(3));
                 }
             }
+            ty["parameters"]
+                .as_object_mut()
+                .unwrap()
+                .remove("window_operation");
         }
     }
     value.as_object_mut().unwrap().remove("opening_tags");
     for opening in value["openings"].as_object_mut().unwrap().values_mut() {
+        opening["parameters"]
+            .as_object_mut()
+            .unwrap()
+            .remove("pane_position_override");
+        opening["parameters"]
+            .as_object_mut()
+            .unwrap()
+            .remove("lite_side_override");
         for field in ["width_override", "height_override"] {
             assert_eq!(
                 opening["parameters"].as_object_mut().unwrap().remove(field),
@@ -232,7 +244,7 @@ fn schema_24_frame_family_migration_is_lossless_atomic_and_persistent() {
     model.validate().unwrap();
     assert_eq!(model.schema_version, SCHEMA_VERSION);
     let ty = model.opening_types.values().next().unwrap();
-    assert_eq!(ty.parameters.family.version, 4);
+    assert_eq!(ty.parameters.family.version, 5);
     assert_eq!(ty.parameters.family.frame_width, 0.0);
     assert_eq!(ty.parameters.family.frame_depth, 0.05);
     assert_eq!(migrated["extensions"], original["extensions"]);
@@ -328,7 +340,7 @@ fn schema_25_host_cut_profile_migration_is_lossless_atomic_and_persistent() {
     model.validate().unwrap();
     assert_eq!(model.schema_version, SCHEMA_VERSION);
     let ty = model.opening_types.values().next().unwrap();
-    assert_eq!(ty.parameters.family.version, 4);
+    assert_eq!(ty.parameters.family.version, 5);
     assert_eq!(
         ty.parameters.family.host_cut,
         os_model::OpeningHostCut::Rectangular
@@ -628,6 +640,56 @@ fn schema_nine_openings_migrate_only_orientation_and_native_headers_and_roundtri
         assert_eq!(ZipJsonStorage.open(&saved).unwrap().model(), &model);
         assert_eq!(std::fs::read(&source).unwrap(), bytes);
     }
+}
+
+#[test]
+fn frozen_schema_51_window_operation_migration_is_defaulted_atomic_and_persistent() {
+    let original: Value = serde_json::from_str(include_str!(
+        "../../tests/fixtures/schema-51-window-operation.json"
+    ))
+    .unwrap();
+    let mut migrated = original.clone();
+    migrate(&mut migrated, 51).unwrap();
+    let model: Model = serde_json::from_value(migrated.clone()).unwrap();
+    model.validate().unwrap();
+    assert_eq!(model.schema_version, os_model::SCHEMA_VERSION);
+    let type_id = id("00000000-0000-4000-8000-000000000011");
+    assert_eq!(
+        model.opening_types[&type_id].parameters.window_operation,
+        os_model::WindowOperation::Fixed
+    );
+    assert_eq!(
+        model.opening_types[&type_id].header.schema_version,
+        os_model::SCHEMA_VERSION
+    );
+    assert_eq!(
+        model.project.header.schema_version,
+        os_model::SCHEMA_VERSION
+    );
+    assert_eq!(migrated["extensions"], original["extensions"]);
+
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("window-operation.osb");
+    ZipJsonStorage
+        .save(
+            &os_document::Document::from_model(model.clone()).unwrap(),
+            &path,
+        )
+        .unwrap();
+    assert_eq!(ZipJsonStorage.open(&path).unwrap().model(), &model);
+
+    let mut ambiguous = original.clone();
+    ambiguous["opening_types"][type_id.to_string()]["parameters"]["window_operation"] =
+        json!("Sliding");
+    let before = ambiguous.clone();
+    assert!(migrate(&mut ambiguous, 51).is_err());
+    assert_eq!(ambiguous, before);
+
+    let mut malformed_header = original;
+    malformed_header["opening_types"][type_id.to_string()]["header"]["schema_version"] = json!(50);
+    let before = malformed_header.clone();
+    assert!(migrate(&mut malformed_header, 51).is_err());
+    assert_eq!(malformed_header, before);
 }
 
 #[test]
@@ -938,6 +1000,7 @@ fn legacy_and_shared_types_survive_archive_migration_and_save_reopen() {
     let ty = OpeningType::new(
         "core.opening_type",
         OpeningTypeParams {
+            window_operation: Default::default(),
             family: Default::default(),
             name: "Door type".into(),
             pane_position: Default::default(),
@@ -999,6 +1062,7 @@ fn type_map_is_included_in_serialized_model_limits() {
     let ty = OpeningType::new(
         "core.opening_type",
         OpeningTypeParams {
+            window_operation: Default::default(),
             family: Default::default(),
             name: "x".repeat(256),
             pane_position: Default::default(),

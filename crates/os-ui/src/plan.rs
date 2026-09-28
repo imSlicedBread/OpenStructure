@@ -21,12 +21,12 @@ pub(crate) fn opening_tag_graphic(
         let host = &model.walls.get(&opening.host)?.parameters;
         opening.validate_host(host).ok()?;
         let distance = opening.offset + opening.width * 0.5;
-        let length = host.start.distance(host.end);
+        let length = host.start().distance(host.end());
         context
             .basis
             .world_to_plane(Point2::new(
-                host.start.x + (host.end.x - host.start.x) * distance / length,
-                host.start.y + (host.end.y - host.start.y) * distance / length,
+                host.start().x + (host.end().x - host.start().x) * distance / length,
+                host.start().y + (host.end().y - host.start().y) * distance / length,
             ))
             .ok()
     });
@@ -641,6 +641,13 @@ impl Editor {
             })
             .collect();
         let mut ceiling_resolver = os_geometry::ceilings::CeilingResolver::default();
+        // Category visibility affects symbols and references, not the physical
+        // apertures already resolved from the phase-filtered wall source above.
+        for (id, kind) in &opening_kinds {
+            if !settings.visibility.shows_opening(*kind) {
+                excluded.insert(*id);
+            }
+        }
         Ok(PlanSnapshot {
             phase_statuses,
             excluded: excluded.clone(),
@@ -739,13 +746,17 @@ impl Editor {
             dimension_walls: model
                 .walls
                 .values()
+                .filter(|wall| wall.parameters.path.is_straight())
                 .filter(|wall| !excluded.contains(&wall.id()))
                 .map(|wall| {
                     (
                         wall.id(),
                         wall.parameters.level,
-                        wall.parameters.start,
-                        wall.parameters.end,
+                        wall.parameters.start(),
+                        wall.parameters.end(),
+                        model
+                            .resolve_wall(wall.id())
+                            .map_or(f64::NAN, |wall| wall.parameters.thickness),
                     )
                 })
                 .collect(),
@@ -844,6 +855,8 @@ impl Editor {
 }
 
 #[cfg(test)]
+mod opening_visibility_tests;
+#[cfg(test)]
 pub(crate) mod phase_tests;
 
 pub(crate) struct PlanSnapshot {
@@ -864,7 +877,7 @@ pub(crate) struct PlanSnapshot {
     room_segments: Vec<os_geometry::rooms::BoundarySegment>,
     rooms: Vec<(Id, os_model::RoomParams)>,
     dimensions: Vec<(Id, DimensionParams)>,
-    dimension_walls: Vec<(Id, Id, os_core::Point2, os_core::Point2)>,
+    dimension_walls: Vec<(Id, Id, os_core::Point2, os_core::Point2, f64)>,
     plan_level: Id,
     floors: Vec<(Id, os_model::FloorParams, f64)>,
     ceilings: Vec<(Id, os_model::CeilingParams, f64)>,
@@ -898,10 +911,10 @@ impl PlanSnapshot {
             .filter(|(_, p)| p.layout == os_model::DimensionLayout::Angular)
             .map(|(id, p)| {
                 let resolved = p.resolve_angular_with(|wall| {
-                    let (_, level, start, end) = self
+                    let (_, level, start, end, _) = self
                         .dimension_walls
                         .iter()
-                        .find(|(id, _, _, _)| *id == wall)
+                        .find(|(id, _, _, _, _)| *id == wall)
                         .ok_or(os_model::DimensionDiagnostic::MissingWall)?;
                     if *level != self.plan_level {
                         return Err(os_model::DimensionDiagnostic::WrongLevel);
@@ -1046,6 +1059,7 @@ impl PlanSnapshot {
                     .collect(),
             );
         }
+        let mut arcs = Vec::new();
         for wall in self.walls {
             let id = wall.entity;
             let parameters = &wall.parameters;
@@ -1087,12 +1101,28 @@ impl PlanSnapshot {
                     )?,
                 );
             }
-            segments.push(os_render::snapping::SnapSegment {
-                entity: id,
-                feature: 0,
-                start: parameters.start,
-                end: parameters.end,
-            });
+            if let os_model::WallPath::CircularArc {
+                center,
+                radius,
+                start_angle_rad,
+                signed_sweep_rad,
+            } = parameters.path
+            {
+                arcs.push(os_render::snapping::SnapArc {
+                    entity: id,
+                    center: self.context.basis.world_to_plane(center)?,
+                    radius,
+                    start_angle_rad: start_angle_rad - self.context.basis.rotation,
+                    signed_sweep_rad,
+                });
+            } else {
+                segments.push(os_render::snapping::SnapSegment {
+                    entity: id,
+                    feature: 0,
+                    start: parameters.start(),
+                    end: parameters.end(),
+                });
+            }
         }
         for (entity, settings) in self.section_markers {
             native_lines.insert(
@@ -1110,6 +1140,7 @@ impl PlanSnapshot {
             .map(|item| item.entity)
             .collect();
         segments.retain(|segment| visible.contains(&segment.entity));
+        arcs.retain(|arc| visible.contains(&arc.entity));
         for segment in &mut segments {
             segment.start = self.context.basis.world_to_plane(segment.start)?;
             segment.end = self.context.basis.world_to_plane(segment.end)?;
@@ -1143,6 +1174,7 @@ impl PlanSnapshot {
             .with_detail_lines(self.detail_lines)?
             .with_room_separation_lines(self.plan_level, self.room_separation_lines)?
             .with_snap_segments(segments)?
+            .with_snap_arcs(arcs)?
             .with_room_faces(room_faces)?
             .with_rooms(room_items)?
             .with_dimensions(dimension_items)?
@@ -1907,13 +1939,13 @@ mod stair_section_tests {
 fn derive_dimension_graphics(
     context: PlanContext,
     plan_level: Id,
-    walls: &[(Id, Id, os_core::Point2, os_core::Point2)],
+    walls: &[(Id, Id, os_core::Point2, os_core::Point2, f64)],
     openings: &[(Id, os_model::ResolvedOpening)],
     dimensions: &[(Id, DimensionParams)],
 ) -> Result<Vec<PlanDimensionItem>> {
     let walls: BTreeMap<_, _> = walls
         .iter()
-        .map(|(id, level, start, end)| (*id, (*level, *start, *end)))
+        .map(|(id, level, start, end, thickness)| (*id, (*level, *start, *end, *thickness)))
         .collect();
     let openings: BTreeMap<_, _> = openings.iter().map(|(id, p)| (*id, p)).collect();
     let mut output = Vec::new();

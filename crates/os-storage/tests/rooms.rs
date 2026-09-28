@@ -28,8 +28,10 @@ fn existing_model() -> Model {
         "org.openstructure.walls.wall",
         WallParams {
             name: "Boundary".into(),
-            start: Point2::new(0., 0.),
-            end: Point2::new(10., 0.),
+            path: os_model::WallPath::Straight {
+                start: Point2::new(0., 0.),
+                end: Point2::new(10., 0.),
+            },
             height: 3.,
             thickness: 0.2,
             level: *model.levels.keys().next().unwrap(),
@@ -42,6 +44,8 @@ fn existing_model() -> Model {
             width_override: None,
             height_override: None,
             sill_override: None,
+            pane_position_override: None,
+            lite_side_override: None,
             hinge: Default::default(),
             swing: Default::default(),
             name: "Door".into(),

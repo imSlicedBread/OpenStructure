@@ -9,8 +9,10 @@ fn fixture(kind: OpeningKind, typed: bool) -> (Model, Id, Id, DimensionParams) {
         "org.openstructure.walls.wall",
         WallParams {
             name: "Host".into(),
-            start: Point2::new(1.0, 2.0),
-            end: Point2::new(11.0, 2.0),
+            path: os_model::WallPath::Straight {
+                start: Point2::new(1.0, 2.0),
+                end: Point2::new(11.0, 2.0),
+            },
             thickness: 0.2,
             height: 3.0,
             level,
@@ -20,6 +22,7 @@ fn fixture(kind: OpeningKind, typed: bool) -> (Model, Id, Id, DimensionParams) {
     let ty = OpeningType::new(
         "core.opening_type",
         OpeningTypeParams {
+            window_operation: Default::default(),
             family: Default::default(),
             name: "Type".into(),
             kind,
@@ -48,6 +51,8 @@ fn fixture(kind: OpeningKind, typed: bool) -> (Model, Id, Id, DimensionParams) {
             width_override: None,
             height_override: None,
             sill_override: None,
+            pane_position_override: None,
+            lite_side_override: None,
             hinge: DoorHinge::Start,
             swing: DoorSwing::Left,
         },
@@ -135,7 +140,10 @@ fn dimension_jambs_follow_effective_width_current_host_and_void_direction() {
                 Point2::new(4.2, 2.0),
             );
             let wall = &mut model.walls.get_mut(&host).unwrap().parameters;
-            std::mem::swap(&mut wall.start, &mut wall.end);
+            wall.path = os_model::WallPath::Straight {
+                start: wall.end(),
+                end: wall.start(),
+            };
             points(
                 &params,
                 &model,
@@ -144,8 +152,8 @@ fn dimension_jambs_follow_effective_width_current_host_and_void_direction() {
             );
             let mut new_host = model.walls[&host].clone();
             new_host.header.id = Id::new();
-            new_host.parameters.start = Point2::new(5.0, 10.0);
-            new_host.parameters.end = Point2::new(5.0, 0.0);
+            *new_host.parameters.path.straight_start_mut().unwrap() = Point2::new(5.0, 10.0);
+            *new_host.parameters.path.straight_end_mut().unwrap() = Point2::new(5.0, 0.0);
             let new_id = new_host.id();
             model.walls.insert(new_id, new_host);
             model.openings.get_mut(&opening).unwrap().parameters.host = new_id;
@@ -173,8 +181,8 @@ fn dimension_jamb_diagnostics_chain_validation_and_strict_angular_syntax() {
     chain.validate_creation(&model).unwrap();
     let mut other = model.walls[&host].clone();
     other.header.id = Id::new();
-    other.parameters.start.y += 1.0;
-    other.parameters.end.y += 1.0;
+    other.parameters.path.straight_start_mut().unwrap().y += 1.0;
+    other.parameters.path.straight_end_mut().unwrap().y += 1.0;
     let other_id = other.id();
     model.walls.insert(other_id, other);
     model.openings.get_mut(&opening).unwrap().parameters.host = other_id;

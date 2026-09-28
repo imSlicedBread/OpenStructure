@@ -11,7 +11,7 @@ use std::{
 };
 
 pub const OPENING_TYPE_PACKAGE_FORMAT: &str = "OpenStructure.OpeningTypePackage";
-pub const OPENING_TYPE_PACKAGE_VERSION: u32 = 1;
+pub const OPENING_TYPE_PACKAGE_VERSION: u32 = 3;
 pub const MAX_OPENING_TYPE_PACKAGE_BYTES: usize = 1024 * 1024;
 
 /// Source identities are references for import remapping, not destination identities.
@@ -83,7 +83,7 @@ impl OpeningTypePackage {
             "nil opening material reference",
         )?;
         ensure(
-            self.materials.len() <= 2,
+            self.materials.len() <= 3,
             "too many opening material snapshots",
         )?;
         let mut supplied = BTreeSet::new();
@@ -113,10 +113,18 @@ impl OpeningTypePackage {
 }
 
 fn material_references(params: &OpeningTypeParams) -> BTreeSet<Id> {
-    [params.family.panel_material, params.family.frame_material]
-        .into_iter()
-        .flatten()
-        .collect()
+    [
+        params.family.panel_material,
+        params.family.frame_material,
+        params
+            .family
+            .side_lite
+            .as_ref()
+            .and_then(|lite| lite.material),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
 }
 
 /// Snapshot one native type and only its referenced materials, deduplicated and
@@ -183,7 +191,32 @@ pub fn parse_opening_type_package(bytes: &[u8]) -> Result<OpeningTypePackage> {
     )?;
     let raw = std::str::from_utf8(bytes).map_err(storage)?;
     json_guard::validate(raw).map_err(storage)?;
-    let wire: WirePackage = serde_json::from_str(raw).map_err(storage)?;
+    let mut value: serde_json::Value = serde_json::from_str(raw).map_err(storage)?;
+    if value["version"] == 1 {
+        let family = value["parameters"]["family"]
+            .as_object_mut()
+            .ok_or_else(|| storage("invalid v1 family"))?;
+        ensure(
+            family.get("version") == Some(&serde_json::json!(4))
+                && !family.contains_key("side_lite"),
+            "v1 packages require an unambiguous version 4 family",
+        )?;
+        family.insert("version".into(), 5.into());
+        family.insert("side_lite".into(), serde_json::Value::Null);
+        value["version"] = 2.into();
+    }
+    if value["version"] == 2 {
+        let parameters = value["parameters"]
+            .as_object_mut()
+            .ok_or_else(|| storage("invalid v2 opening type parameters"))?;
+        ensure(
+            !parameters.contains_key("window_operation"),
+            "ambiguous legacy package window operation",
+        )?;
+        parameters.insert("window_operation".into(), "Fixed".into());
+        value["version"] = 3.into();
+    }
+    let wire: WirePackage = serde_json::from_value(value).map_err(storage)?;
     ensure(
         wire.format == OPENING_TYPE_PACKAGE_FORMAT,
         "unsupported opening type package format",

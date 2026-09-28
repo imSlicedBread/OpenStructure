@@ -1,5 +1,44 @@
 # Native wall dimensions
 
+## Associative outer wall faces (schema 53)
+
+Wall-face station anchors remain straight-wall-only. Circular walls retain
+analytic endpoint anchors, but tangent/curved outer-face dimensions are not
+implemented; such anchors remain unresolved rather than being measured on a
+chord.
+
+Aligned, Chain and Baseline dimensions accept `WallFace { wall, side, station_m }`.
+`side` is `DimensionWallSide::Left` or `Right` relative to the stored Start→End
+wall axis. `station_m` is a metric distance from Start, not a normalized fraction.
+The resolved point is the centerline station plus or minus half the current
+effective thickness. Typed walls use the compound layer total from
+`Model::resolve_wall`; changing a type, wall position, direction or thickness
+updates the dimension. Reversing Start/End intentionally changes side/station
+meaning. Angular dimensions still accept only endpoint references.
+
+Placement and Properties reference replacement use the same 12 logical-pixel
+picker. Endpoint and opening-jamb candidates take priority. Face candidates must
+lie on a displayed clipped wall body, so hidden/cropped faces and opening voids
+cannot be acquired. Foreground objects block picking through their geometry.
+Distance, wall UUID and Left-before-Right break face ties deterministically.
+Preview leaves model, history and scene unchanged; creation or replacement is
+one transaction. Existing Escape and stale-context cancellation applies.
+
+Missing walls, wrong levels, degenerate axes and stations beyond a shortened
+wall remain orphan diagnostics. Non-finite or negative stations are invalid
+persistent syntax. Out-of-range positive stations remain saveable for repair.
+The snapshot resolver carries effective thickness into the common plan graphics
+used by viewport, sheets and PDF. No resolved coordinates are stored.
+
+Evidence: `os-model/tests/dimension_faces.rs`,
+`os-storage/tests/dimension_faces.rs` with frozen schema-52 fixture, and
+`os-ui/src/plan_workspace/face_tests.rs`. UI coverage uses real egui frames at
+1280×800/100% and 1000×650/150%; native-window visual inspection and dedicated
+sheet/PDF face-output comparisons are not yet qualified. Curved walls,
+material-layer faces, linked/plugin geometry and driving constraints are out of
+scope. Wall split does not remap face stations to a new child wall; shortened
+hosts can leave an orphan to repair.
+
 Model schema 7 introduced `core.dimension`, a view-owned reporting annotation
 between native straight-wall endpoints. Schema 11 adds **Chain** and
 **Baseline** layouts. Aligned takes two anchor clicks and one offset click;
@@ -29,16 +68,18 @@ DimensionParams {
 enum DimensionReference {
     WallEndpoint { wall: Id, endpoint: DimensionEndpoint },
     OpeningJamb { opening: Id, jamb: DimensionJamb },
+    WallFace { wall: Id, side: DimensionWallSide, station_m: f64 },
 }
 DimensionEndpoint::{Start, End}
 DimensionJamb::{Start, End}
+DimensionWallSide::{Left, Right}
 DimensionLayout::{Aligned, Chain, Baseline, Angular}
 // Dimension = Entity<DimensionParams>; Model.dimensions is keyed by stable UUID.
 ```
 
 `additional` stores later references in click order. Aligned requires no
 additional references; Chain/Baseline require at least one. Linear dimensions
-may mix wall endpoints and native opening jambs. An opening's Start jamb is
+may mix wall endpoints, outer wall faces and native opening jambs. An opening's Start jamb is
 derived from its current host start plus instance offset; End uses the current
 effective width (type value or instance override). Jamb identity follows the
 host's stored start-to-end direction and is independent of door hinge/swing or
@@ -55,7 +96,7 @@ Swapping anchor order flips the normal; side preservation is not implemented.
 
 `DimensionParams::validate_creation(&Model) -> os_core::Result<()>` is the public
 preflight API used by `Command::AddDimension`. It checks syntax then requires two
-resolvable native wall endpoints or opening jambs on the owning plan's level, with finite distance
+resolvable native wall endpoints, faces or opening jambs on the owning plan's level, with finite distance
 greater than one micrometre. Use the candidate document model at commit time;
 preflight results are not a substitute for document revision checks in the UI.
 
@@ -234,9 +275,13 @@ undo/redo. The frozen `fixtures/schema-11-aligned-dimension.json` proves migrati
 preserves the previous annotation and all IDs/header metadata; storage tests also
 save/reopen an Angular annotation. The schema-10 fixture remains unchanged.
 
-Only straight-wall endpoints and native opening jambs, metric lengths and degree reporting are represented.
-Wall-face references, linked/plugin anchors, material references, radial dimensions, driving
-constraints, text overrides, style controls, and
+Straight-wall endpoints, associative outer wall faces and native opening jambs
+support metric lengths; Angular dimensions report degrees using endpoints only.
+Face evidence is in `os-model/tests/dimension_faces.rs`,
+`os-storage/tests/dimension_faces.rs` and `os-ui/src/plan_workspace/face_tests.rs`.
+The all-feature endpoint suite ran with 64 passed and 3 installed-guest tests
+ignored. Curved walls, material-layer faces, linked/plugin anchors, radial dimensions,
+driving constraints, text overrides, style controls, and
 print-faithful annotation remain unimplemented. Baseline spacing is model-space,
 not paper-scale. Dimension lines and tags respect plan crop in the on-screen
 view; paper-accurate text/tick sizing and export remain future work.

@@ -340,6 +340,10 @@ pub fn export(m: &Model) -> Result<Exchange<Vec<u8>>> {
     }
     for e in m.walls.values() {
         let v = &e.parameters;
+        ensure(
+            v.path.is_straight(),
+            "IFC export of circular walls is not supported; native save preserves the analytic path",
+        )?;
         let derived = os_geometry::walls::NativeWall::from_model(m, e.id())?;
         // IFC void relationships subtract from the complete, uncut wall body.
         let len = v.length();
@@ -349,8 +353,11 @@ pub fn export(m: &Model) -> Result<Exchange<Vec<u8>>> {
         )?;
         let p = w.placement(
             Some(placements[&v.level]),
-            [v.start.x, v.start.y, 0.],
-            [(v.end.x - v.start.x) / len, (v.end.y - v.start.y) / len],
+            [v.start().x, v.start().y, 0.],
+            [
+                (v.end().x - v.start().x) / len,
+                (v.end().y - v.start().y) / len,
+            ],
         );
         placements.insert(e.id(), p);
         let cp = w.add("IFCCARTESIANPOINT", format!("({:?},0.)", len / 2.));

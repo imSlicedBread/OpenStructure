@@ -18,8 +18,10 @@ impl Harness {
             os_walls::WALL_TYPE,
             WallParams {
                 name: "Section fixture".into(),
-                start: Point2::new(18.0, 20.0),
-                end: Point2::new(22.0, 20.0),
+                path: os_model::WallPath::Straight {
+                    start: Point2::new(18.0, 20.0),
+                    end: Point2::new(22.0, 20.0),
+                },
                 thickness: 0.2,
                 height: 4.0,
                 level: app.active_level,
@@ -205,8 +207,10 @@ fn escape_and_stale_document_cancel_section_marker_without_partial_view() {
         os_walls::WALL_TYPE,
         WallParams {
             name: "Concurrent model edit".into(),
-            start: Point2::new(0.0, 0.0),
-            end: Point2::new(1.0, 0.0),
+            path: os_model::WallPath::Straight {
+                start: Point2::new(0.0, 0.0),
+                end: Point2::new(1.0, 0.0),
+            },
             thickness: 0.2,
             height: 3.0,
             level: h.app.active_level,
@@ -239,8 +243,10 @@ fn section_elevation_bounds_use_building_wall_and_floor_extents() {
         os_walls::WALL_TYPE,
         WallParams {
             name: "Tall wall".into(),
-            start: Point2::new(0.0, 0.0),
-            end: Point2::new(4.0, 0.0),
+            path: os_model::WallPath::Straight {
+                start: Point2::new(0.0, 0.0),
+                end: Point2::new(4.0, 0.0),
+            },
             thickness: 0.2,
             height: 4.0,
             level: level_id,

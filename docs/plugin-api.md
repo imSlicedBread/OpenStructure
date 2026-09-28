@@ -1,11 +1,48 @@
-# Plugin protocols: native Model API 26 and generic API 2
+# Plugin protocols: native Model API 35 and generic API 2
+
+API 35 requires model schema 54 and carries analytic `WallPath` data in native
+wall requests. Circular paths are never approximated into endpoint chords for
+storage or native geometry. Generic API 2 remains the independent straight-wall
+DTO protocol; installed API-2 Wall commands are explicitly rejected for arc
+authoring. API 34/schema 53 guests must rebuild and reinstall.
+
+API 34 required schema 53 and added outer-wall-face dimension anchors with wall
+UUID, Left/Right side and metric station. The model resolver and plan snapshot
+use current effective thickness; Angular references remain endpoints. Native
+API 33 and older model guests must rebuild and reinstall. Generic API 2 and
+the Wasm buffer ABI are unchanged. Version gates cover API 33 rejection and
+current schema agreement in `os-plugin-api` and `os-plugin-host` tests.
+
+Current native full-model transport uses API 35 with model schema 54. Opening
+types now include required Fixed/Sliding/Casement window-symbol metadata; older
+models migrate existing types to Fixed. Native API 34 and older guests must
+rebuild and reinstall. Generic API 2 and container 2 are unchanged.
+
+API 32 requires model schema 51. It retains required `ScheduleParams.group_by`
+(ordered, at most two distinct Level/Kind/Type/Width/Height/Sill keys),
+`ScheduleParams.phase`, and version-4 plan settings with required independent
+`visibility.doors` / `visibility.windows` booleans. The explicit 48→49 migration
+defaults both category visibilities on and advances native headers. Older
+schema-47 saved schedules still migrate as `LegacyUnphased` through 47→48.
+Door/window schedules own their target/filter; category visibility is per-plan
+and does not remove host cutouts. See [native phases](native-phases.md) and
+[opening schedules](native-hosted-openings.md). API 32 and older native guests
+must rebuild; generic API 2 and container 2 are unchanged.
+
+The schema also retains the explicit nullable opening
+`pane_position_override` and `lite_side_override` fields. Only typed windows may
+store Center/LeftFace/RightFace pane positions; only typed two-bay doors/windows
+may pin a Start/End lite side. Null inherits from the assigned type. API 32 and
+older native guests must rebuild.
+Generic API 2 and container 2 are unchanged. Native mirrors use atomic companion
+opening edits; installed Wall providers that cannot express them reject safely.
 
 The host remains proprietary. [LICENSE](../LICENSE) permits use of the plugin
 API and independent examples to develop and distribute compatible plugins.
 Plugin authors retain ownership of their independently authored code.
 
 Current compatibility boundary: native Wall guests that receive the full model
-must use API 26 with model schema 45. API-25 and older native guests are rejected and must be
+must use API 35 with model schema 54. API-34 and older native guests are rejected and must be
 rebuilt/reinstalled; API 2 remains the independent generic DTO protocol. The
 [B/C baseline audit](bc-baseline-audit.md) verifies independently
 installed Wall/column commands, descriptor forms, checked geometry, workers,
@@ -20,7 +57,7 @@ independent plan services acceptance remain required implementation work in D.
 
 Contract metadata can now be consumed with `default-features = false`, without
 host/model/document/kernel dependencies. The Cargo feature named `legacy-v1` is
-historical: it enables the native message structs now transported as API 26. See the separately resolved
+historical: it enables the native message structs now transported as API 35. See the separately resolved
 [contract consumer and compatibility notes](independent-contract.md).
 The independent [API-2 command service](generic-plugin-commands.md) now supports
 registered extension create/edit/delete with descriptors and scoped transactions.
@@ -36,7 +73,7 @@ private model pointers, document mutation handles or database connections cross
 the boundary. `plugins/walls` is the working reference plugin.
 
 A manifest declares its ID, display name, numeric major.minor.patch version,
-numeric `api_version = 26` for native Model guests or `api_version = 2` for
+numeric `api_version = 32` for native Model guests or `api_version = 2` for
 generic DTO guests, dependencies with exact versions, entrypoint,
 capabilities, requested permissions and registrations. The prototype master
 prompt used a string API version; the implemented TOML protocol uses an integer
@@ -115,8 +152,12 @@ required schema 40, including live room-bound ceiling sources. API 22 required
 schema 41 for persisted opening-tag label presets. API 23 required schema 42
 with typed `ScheduleParams.filters`. API 24 required schema 43 with tagged
 wall-endpoint and opening-jamb dimension references; API 25 required schema 44
-with project phases and element lifecycles. Current API 26 requires schema 45
-with version-3 plan phase settings. Native API 25 and
+with project phases and element lifecycles. API 27 required schema 46 with nullable
+window pane overrides and version-3 plan phase settings. API 32 required schema
+51 with saved schedule phase, independent door/window plan visibility, version-5
+opening families with required nullable `side_lite`, and required nullable
+instance `lite_side_override`. API 33 required schema 52 and added
+type-level window operation metadata that affects plan symbols only. Native API 33 and
 older guests must rebuild and reinstall. Generic API 2, native container 2 and the Wasm
 buffer ABI are unchanged. There is no stable independent model
 DTO compatibility promise in this wall-specific v1 protocol. The Wasm buffer ABI
@@ -127,7 +168,7 @@ Native opening type consumers use the schema-8 host model API:
 
 ```rust,ignore
 // Persisted instance intent; all fields are public.
-OpeningParams { name: String, host: Id, offset: f64, definition: OpeningDefinition, width_override: Option<f64>, height_override: Option<f64>, sill_override: Option<f64>, hinge: DoorHinge, swing: DoorSwing }
+OpeningParams { name: String, host: Id, offset: f64, definition: OpeningDefinition, width_override: Option<f64>, height_override: Option<f64>, sill_override: Option<f64>, pane_position_override: Option<WindowPanePosition>, lite_side_override: Option<LiteSide>, hinge: DoorHinge, swing: DoorSwing }
 OpeningDefinition::Legacy { kind: OpeningKind, width: f64, height: f64, sill: f64 }
 OpeningDefinition::Typed { type_id: Id }
 // Project-owned Entity<OpeningTypeParams>, with header type core.opening_type.

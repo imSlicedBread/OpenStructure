@@ -10,8 +10,10 @@ fn setup() -> (Document, Dimension, Wall) {
         "org.openstructure.walls.wall",
         WallParams {
             name: "Wall".into(),
-            start: Point2::new(0., 0.),
-            end: Point2::new(4., 0.),
+            path: os_model::WallPath::Straight {
+                start: Point2::new(0., 0.),
+                end: Point2::new(4., 0.),
+            },
             height: 3.,
             thickness: 0.2,
             level,
@@ -191,8 +193,8 @@ fn live_measurements_and_orphans_follow_edits_and_undo_without_blocking_walls() 
     let (mut doc, mut dimension, wall) = setup();
     let mut second_wall = wall.clone();
     second_wall.header.id = Id::new();
-    second_wall.parameters.start = Point2::new(4., 0.);
-    second_wall.parameters.end = Point2::new(8., 0.);
+    *second_wall.parameters.path.straight_start_mut().unwrap() = Point2::new(4., 0.);
+    *second_wall.parameters.path.straight_end_mut().unwrap() = Point2::new(8., 0.);
     dimension.parameters.second = DimensionReference::WallEndpoint {
         wall: second_wall.id(),
         endpoint: DimensionEndpoint::Start,
@@ -214,7 +216,7 @@ fn live_measurements_and_orphans_follow_edits_and_undo_without_blocking_walls() 
         4.
     );
     let mut resized = wall.parameters.clone();
-    resized.start.x = -2.;
+    resized.path.straight_start_mut().unwrap().x = -2.;
     doc.execute(
         "Resize",
         vec![Command::UpdateWall {
@@ -256,7 +258,7 @@ fn live_measurements_and_orphans_follow_edits_and_undo_without_blocking_walls() 
         let expected = match case {
             0 => {
                 let mut parameters = second_wall.parameters.clone();
-                parameters.start = wall.parameters.start;
+                *parameters.path.straight_start_mut().unwrap() = wall.parameters.start();
                 doc.execute(
                     "Coincide",
                     vec![Command::UpdateWall {

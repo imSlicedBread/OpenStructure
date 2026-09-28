@@ -139,8 +139,8 @@ impl Draft {
             if let Some(tag) = tag {
                 let mut parameters = tag.parameters.clone();
                 parameters.opening = opening.id();
-                parameters.position.x += (wall.end.x - wall.start.x) / wall.length() * delta;
-                parameters.position.y += (wall.end.y - wall.start.y) / wall.length() * delta;
+                parameters.position.x += (wall.end().x - wall.start().x) / wall.length() * delta;
+                parameters.position.y += (wall.end().y - wall.start().y) / wall.length() * delta;
                 if let Err(e) = parameters.validate_creation(&candidate) {
                     preview
                         .error

@@ -2,6 +2,7 @@ use os_document::Document;
 use os_model::*;
 use os_storage::{StorageBackend, ZipJsonStorage, migrate};
 use serde_json::{Value, json};
+mod common;
 
 fn frozen() -> Value {
     serde_json::from_str(include_str!("fixtures/schema-42-dimension-anchors.json")).unwrap()
@@ -14,12 +15,33 @@ fn schema_42_dimension_anchors_frozen_migration_and_roundtrip() {
     migrate(&mut value, 42).unwrap();
     assert_eq!(value["schema_version"], SCHEMA_VERSION);
     let mut expected = original.clone();
+    common::apply_wall_paths(&mut expected);
+    for ty in expected["opening_types"]
+        .as_object_mut()
+        .unwrap()
+        .values_mut()
+    {
+        ty["parameters"]["window_operation"] = json!("Fixed");
+        ty["parameters"]["family"]["version"] = 5.into();
+        ty["parameters"]["family"]["side_lite"] = Value::Null;
+    }
+    for schedule in expected["schedules"].as_object_mut().unwrap().values_mut() {
+        schedule["parameters"]["group_by"] = json!([]);
+        schedule["parameters"]["phase"] = json!({"mode": "legacy_unphased"});
+        schedule["parameters"]["phase"] = json!({"mode": "legacy_unphased"});
+    }
+    for opening in expected["openings"].as_object_mut().unwrap().values_mut() {
+        opening["parameters"]["pane_position_override"] = Value::Null;
+        opening["parameters"]["lite_side_override"] = Value::Null;
+    }
     for (id, view) in expected["views"].as_object_mut().unwrap() {
         let plan = &mut view["parameters"]["plan"];
         if !plan.is_null() {
             plan["schema_version"] = os_model::PLAN_SETTINGS_VERSION.into();
             plan["target_phase"] = value["views"][id]["parameters"]["plan"]["target_phase"].clone();
             plan["phase_filter"] = "ShowAll".into();
+            plan["visibility"]["doors"] = true.into();
+            plan["visibility"]["windows"] = true.into();
         }
     }
     expected["schema_version"] = SCHEMA_VERSION.into();

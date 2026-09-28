@@ -16,6 +16,7 @@ fn schema_seventeen_migration_is_explicit_and_atomic() {
     let mut migrated = original.clone();
     migrate(&mut migrated, 17).unwrap();
     let mut expected = original.clone();
+    common::apply_wall_paths(&mut expected);
     expected["schema_version"] = json!(SCHEMA_VERSION);
     expected["opening_tags"] = json!({});
     expected["detail_lines"] = json!({});

@@ -22,7 +22,7 @@ pub enum DimensionEndpoint {
     End,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum DimensionReference {
     WallEndpoint {
@@ -33,6 +33,18 @@ pub enum DimensionReference {
         opening: Id,
         jamb: DimensionJamb,
     },
+    WallFace {
+        wall: Id,
+        side: DimensionWallSide,
+        station_m: f64,
+    },
+}
+
+/// Outer face relative to the wall's stored Start → End axis.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DimensionWallSide {
+    Left,
+    Right,
 }
 
 /// Void jamb in the current host's stored start-to-end direction.
@@ -45,7 +57,7 @@ pub enum DimensionJamb {
 impl DimensionReference {
     pub fn entity(self) -> Id {
         match self {
-            Self::WallEndpoint { wall, .. } => wall,
+            Self::WallEndpoint { wall, .. } | Self::WallFace { wall, .. } => wall,
             Self::OpeningJamb { opening, .. } => opening,
         }
     }
@@ -53,19 +65,25 @@ impl DimensionReference {
     pub fn wall_endpoint(self) -> Option<(Id, DimensionEndpoint)> {
         match self {
             Self::WallEndpoint { wall, endpoint } => Some((wall, endpoint)),
-            Self::OpeningJamb { .. } => None,
+            Self::OpeningJamb { .. } | Self::WallFace { .. } => None,
         }
     }
 
     /// Shared by model resolution and revision-bound render snapshots.
+    /// The wall callback returns level, stored axis, and effective total thickness.
+    /// Only face references consume thickness; invalid thickness or geometry
+    /// leaves those references orphaned without changing endpoint/jamb behavior.
     pub fn resolve_with(
         self,
         level: Id,
-        mut wall: impl FnMut(Id) -> Option<(Id, Point2, Point2)>,
+        mut wall: impl FnMut(Id) -> Option<(Id, Point2, Point2, f64)>,
         mut opening: impl FnMut(Id) -> std::result::Result<(Id, f64, f64), DimensionDiagnostic>,
     ) -> std::result::Result<Point2, DimensionDiagnostic> {
         let (host, station) = match self {
             Self::WallEndpoint { wall, .. } => (wall, None),
+            Self::WallFace {
+                wall, station_m, ..
+            } => (wall, Some(station_m)),
             Self::OpeningJamb { opening: id, jamb } => {
                 let (host, offset, width) = opening(id)?;
                 (
@@ -81,16 +99,21 @@ impl DimensionReference {
                 )
             }
         };
-        let (host_level, start, end) = wall(host).ok_or(match self {
-            Self::WallEndpoint { .. } => DimensionDiagnostic::MissingWall,
+        let (host_level, start, end, thickness) = wall(host).ok_or(match self {
+            Self::WallEndpoint { .. } | Self::WallFace { .. } => DimensionDiagnostic::MissingWall,
             Self::OpeningJamb { .. } => DimensionDiagnostic::MissingOpeningHost,
         })?;
         if host_level != level {
             return Err(DimensionDiagnostic::WrongLevel);
         }
-        let point = if let Some(station) = station {
+        let mut point = if let Some(station) = station {
             let length = start.distance(end);
             if !length.is_finite() || length <= 1e-6 {
+                return Err(DimensionDiagnostic::InvalidGeometry);
+            }
+            if matches!(self, Self::WallFace { .. })
+                && (!station.is_finite() || station < 0.0 || station > length)
+            {
                 return Err(DimensionDiagnostic::InvalidGeometry);
             }
             Point2::new(
@@ -108,6 +131,20 @@ impl DimensionReference {
         } else {
             end
         };
+        if let Self::WallFace { side, .. } = self {
+            if !thickness.is_finite() || thickness <= 0.0 {
+                return Err(DimensionDiagnostic::InvalidGeometry);
+            }
+            let offset = thickness / 2.0
+                * if side == DimensionWallSide::Left {
+                    1.0
+                } else {
+                    -1.0
+                };
+            let length = start.distance(end);
+            point.x -= (end.y - start.y) / length * offset;
+            point.y += (end.x - start.x) / length * offset;
+        }
         if !point.is_finite() {
             return Err(DimensionDiagnostic::InvalidGeometry);
         }
@@ -125,7 +162,17 @@ impl DimensionReference {
                 model
                     .walls
                     .get(&id)
-                    .map(|w| (w.parameters.level, w.parameters.start, w.parameters.end))
+                    .filter(|w| w.parameters.path.is_straight())
+                    .map(|w| {
+                        (
+                            w.parameters.level,
+                            w.parameters.start(),
+                            w.parameters.end(),
+                            model
+                                .resolve_wall(id)
+                                .map_or(f64::NAN, |w| w.parameters.thickness),
+                        )
+                    })
             },
             |id| {
                 let p = &model
@@ -290,7 +337,10 @@ impl DimensionParams {
             if wall.parameters.level != level {
                 return Err(DimensionDiagnostic::WrongLevel);
             }
-            Ok((wall.parameters.start, wall.parameters.end))
+            if !wall.parameters.path.is_straight() {
+                return Err(DimensionDiagnostic::InvalidGeometry);
+            }
+            Ok((wall.parameters.start(), wall.parameters.end()))
         })
     }
 
@@ -430,6 +480,14 @@ impl DimensionParams {
         )?;
         let references: Vec<_> = self.references().collect();
         for (i, reference) in references.iter().enumerate() {
+            if let DimensionReference::WallFace { station_m, .. } = reference {
+                ensure(
+                    station_m.is_finite()
+                        && *station_m >= 0.0
+                        && *station_m <= MAX_DIMENSION_METRES,
+                    "wall face station must be finite and within 0-1000000 metres",
+                )?;
+            }
             ensure(
                 !reference.entity().0.is_nil() && !references[..i].contains(reference),
                 "nil or repeated dimension reference",
@@ -526,8 +584,10 @@ mod tests {
                 "org.openstructure.walls.wall",
                 crate::WallParams {
                     name: "Axis".into(),
-                    start: Point2::new(0.0, 0.0),
-                    end,
+                    path: crate::WallPath::Straight {
+                        start: Point2::new(0.0, 0.0),
+                        end,
+                    },
                     thickness: 0.2,
                     height: 3.0,
                     level,
@@ -589,7 +649,14 @@ mod tests {
             (Point2::new(3.0, 1e-7), DimensionDiagnostic::ParallelWalls),
             (Point2::new(0.0, 0.0), DimensionDiagnostic::InvalidGeometry),
         ] {
-            model.walls.get_mut(&bid).unwrap().parameters.end = end;
+            *model
+                .walls
+                .get_mut(&bid)
+                .unwrap()
+                .parameters
+                .path
+                .straight_end_mut()
+                .unwrap() = end;
             assert_eq!(p.resolve_angular(&model), Err(diagnostic));
             assert!(p.validate_creation(&model).is_err());
             p.validate().unwrap();

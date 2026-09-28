@@ -22,7 +22,7 @@ fn native_snaps_follow_semantic_wall_axes_rotated_views_visibility_and_revisions
         .walls
         .iter()
         .next()
-        .map(|(id, w)| (*id, w.parameters.start))
+        .map(|(id, w)| (*id, w.parameters.start()))
         .unwrap();
     let mut settings = editor.document.model().views[&view]
         .parameters
@@ -251,8 +251,10 @@ fn editor() -> (Editor, Id) {
             "Create",
             Request::CreateWall(WallParams {
                 name: "Wall".into(),
-                start: Point2::new(0.0, 0.0),
-                end: Point2::new(5.0, 0.0),
+                path: os_model::WallPath::Straight {
+                    start: Point2::new(0.0, 0.0),
+                    end: Point2::new(5.0, 0.0),
+                },
                 thickness: 0.2,
                 height: 3.0,
                 level,

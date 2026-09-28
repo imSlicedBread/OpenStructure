@@ -154,7 +154,7 @@ impl DesktopApp {
         let Some(mut draft) = self.plan_draft.take() else {
             return;
         };
-        let mut close = false;
+        let mut close = ctx.input(|input| input.key_pressed(egui::Key::Escape));
         egui::Modal::new(egui::Id::new("plan_settings_dialog")).show(ctx, |ui| {
             ui.set_width(410.0);
             let view_type = self
@@ -219,6 +219,8 @@ impl DesktopApp {
                     draft.graphics.ui(ui, self.editor.document.model(), draft.view);
                 });
                 ui.checkbox(&mut draft.visibility.walls,"Show native walls");
+                ui.checkbox(&mut draft.visibility.doors,"Show doors");
+                ui.checkbox(&mut draft.visibility.windows,"Show windows");
                 ui.checkbox(&mut draft.visibility.ceilings,"Show ceilings in reflected views");
                 ui.checkbox(&mut draft.visibility.extensions,"Show extension elements / unavailable warnings");
                 ui.checkbox(&mut draft.crop,"Enable rectangular crop");
@@ -241,6 +243,10 @@ impl DesktopApp {
                         Ok(()) => {
                             close = true;
                             self.focus_plan(Some(draft.view));
+                            self.cancel_opening_placement();
+                            self.cancel_opening_controls();
+                            self.opening_draft = None;
+                            self.discard_hidden_opening_interaction();
                             self.report(Ok(()),"Plan settings applied.");
                             ctx.request_repaint();
                         }
@@ -277,6 +283,8 @@ mod tests {
         .map(str::to_owned);
         draft.crop = true;
         draft.visibility.walls = false;
+        draft.visibility.doors = false;
+        draft.visibility.windows = false;
         draft.apply(&mut editor, Some(view)).unwrap();
         let changed = editor.document.model().clone();
         assert_eq!(changed.views[&view].parameters.name, "Renamed plan");
@@ -305,6 +313,8 @@ mod tests {
         assert_eq!(restored.values, draft.values);
         assert!(restored.crop);
         assert!(!restored.visibility.walls);
+        assert!(!restored.visibility.doors);
+        assert!(!restored.visibility.windows);
         let draft = PlanDraft::begin(&editor, view).unwrap();
         assert!(draft.apply(&mut editor, None).is_err());
         editor.document = Document::from_model(changed).unwrap();
@@ -319,8 +329,10 @@ mod tests {
             os_walls::WALL_TYPE,
             os_model::WallParams {
                 name: "Graphics wall".into(),
-                start: os_core::Point2::new(-4.0, 0.0),
-                end: os_core::Point2::new(4.0, 0.0),
+                path: os_model::WallPath::Straight {
+                    start: os_core::Point2::new(-4.0, 0.0),
+                    end: os_core::Point2::new(4.0, 0.0),
+                },
                 thickness: 0.2,
                 height: 3.0,
                 level,
@@ -337,6 +349,8 @@ mod tests {
                 width_override: None,
                 height_override: None,
                 sill_override: None,
+                pane_position_override: None,
+                lite_side_override: None,
                 name: "Graphics door".into(),
                 host: wall_id,
                 offset: 0.5,
@@ -360,6 +374,8 @@ mod tests {
                 width_override: None,
                 height_override: None,
                 sill_override: None,
+                pane_position_override: None,
+                lite_side_override: None,
                 name: "Graphics window".into(),
                 host: wall_id,
                 offset: 3.0,

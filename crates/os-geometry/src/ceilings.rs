@@ -204,8 +204,7 @@ mod tests {
                     "core.wall",
                     WallParams {
                         name: "Boundary".into(),
-                        start,
-                        end,
+                        path: os_model::WallPath::Straight { start, end },
                         thickness: 0.2,
                         height: 3.0,
                         level,
@@ -295,10 +294,42 @@ mod tests {
             .unwrap();
         assert_eq!(initial.boundary, parameters.boundary);
 
-        model.walls.get_mut(&bottom_wall).unwrap().parameters.end.x = 10.0;
-        model.walls.get_mut(&right_wall).unwrap().parameters.start.x = 10.0;
-        model.walls.get_mut(&right_wall).unwrap().parameters.end.x = 10.0;
-        model.walls.get_mut(&top_wall).unwrap().parameters.start.x = 10.0;
+        model
+            .walls
+            .get_mut(&bottom_wall)
+            .unwrap()
+            .parameters
+            .path
+            .straight_end_mut()
+            .unwrap()
+            .x = 10.0;
+        model
+            .walls
+            .get_mut(&right_wall)
+            .unwrap()
+            .parameters
+            .path
+            .straight_start_mut()
+            .unwrap()
+            .x = 10.0;
+        model
+            .walls
+            .get_mut(&right_wall)
+            .unwrap()
+            .parameters
+            .path
+            .straight_end_mut()
+            .unwrap()
+            .x = 10.0;
+        model
+            .walls
+            .get_mut(&top_wall)
+            .unwrap()
+            .parameters
+            .path
+            .straight_start_mut()
+            .unwrap()
+            .x = 10.0;
         let updated = CeilingResolver::default()
             .effective_parameters(&model, &parameters)
             .unwrap()

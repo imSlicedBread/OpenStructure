@@ -244,8 +244,10 @@ fn escape_stale_context_and_invalid_boundary_never_partially_commit() {
         os_walls::WALL_TYPE,
         WallParams {
             name: "Concurrent edit".into(),
-            start: Point2::new(-3.0, 0.0),
-            end: Point2::new(3.0, 0.0),
+            path: os_model::WallPath::Straight {
+                start: Point2::new(-3.0, 0.0),
+                end: Point2::new(3.0, 0.0),
+            },
             thickness: 0.2,
             height: 3.0,
             level: h.app.active_level,
@@ -284,8 +286,10 @@ fn floor_vertices_use_the_active_plan_endpoint_snaps() {
         os_walls::WALL_TYPE,
         WallParams {
             name: "Snap target".into(),
-            start: Point2::new(10.0, 10.0),
-            end: Point2::new(14.0, 10.0),
+            path: os_model::WallPath::Straight {
+                start: Point2::new(10.0, 10.0),
+                end: Point2::new(14.0, 10.0),
+            },
             thickness: 0.2,
             height: 3.0,
             level: h.app.active_level,
@@ -851,8 +855,10 @@ fn floor_vertex_drag_snaps_to_a_different_native_wall() {
         os_walls::WALL_TYPE,
         WallParams {
             name: "Vertex snap target".into(),
-            start: Point2::new(4.0, 0.0),
-            end: Point2::new(4.0, 2.0),
+            path: os_model::WallPath::Straight {
+                start: Point2::new(4.0, 0.0),
+                end: Point2::new(4.0, 2.0),
+            },
             thickness: 0.2,
             height: 3.0,
             level: h.app.active_level,

@@ -1,5 +1,284 @@
 # Native hosted doors and windows
 
+Doors and windows currently host only on straight native walls. Circular wall
+paths are first-class native geometry, but opening placement and validation
+reject them; curved jamb cuts, frames, panes and symbols are not approximated
+from chords. See [native wall paths](native-wall-types.md#circular-wall-centerlines-schema-54).
+
+## Draw opening width in plan
+
+Activate Door or Window in a native floor plan, then check **Draw opening width**
+beside Fit plan. Press at the first jamb, drag along one visible native straight
+wall, and release at the second jamb. Either drag direction is supported. The
+preview displays the measured width, opening symbol, and replacement wall
+aperture. Both jambs use the existing host-axis opening snap preferences.
+
+Release recomputes the candidate and uses the existing host-fit, family,
+end-clearance, overlap, and atomic creation validation. A typed opening receives
+an instance width override; its shared type remains unchanged. If a default type
+is needed, it and the opening are created in the same undoable transaction.
+The model, history, cached plan, and 3D scene remain unchanged during preview;
+commit regenerates the plan and scene through the existing creation path.
+
+Escape, pointer loss, or stale document/view/provider/drawing context cancels the
+draft. Camera or canvas changes also discard the active drag. The press remains
+owned through release, including invalid acquisition, so cancellation cannot
+turn into canvas panning or selection. An invalid final position creates nothing.
+Unchecking the control restores ordinary click placement; existing jamb resize
+and click-to-copy retain their behavior.
+
+Evidence: `draw_opening_width_preview_commit_history_and_apertures`,
+`draw_opening_width_invalid_release_and_stale_press_ownership`, and
+`draw_opening_width_visibility_snapping_and_return_to_pan` in
+`crates/os-ui/src/plan_workspace/opening_tests.rs`. Real egui frames cover doors
+and windows at 1280×800/100% and 1000×650/150%, horizontal and rotated hosts in
+both axis directions, both drag directions, preview immutability and painted
+apertures, shared-type preservation, default-type atomic creation, one-step
+undo/redo, split-view scene regeneration, short spans, overlap, clearance,
+hidden/cropped hosts, stale cancellation, snapping, and return to ordinary pan.
+
+Limits: native straight walls on one host only; the pointer must remain within
+the existing wall acquisition tolerance and visible crop at the final jamb.
+This is egui interaction evidence, not native-window screenshot or print QA.
+No schema, storage, plugin protocol, or 3D operation geometry changes are involved.
+
+## Window operation plan symbols (schema 52)
+
+Reusable window types carry `Fixed`, `Sliding`, or `Casement` operation metadata.
+The type editor exposes the choice only for windows; legacy windows and migrated
+types default to Fixed. Sliding adds opposing overlap/track marks, while Casement
+adds a diagonal opening mark using the host's stored Start-side convention.
+Fixed retains the existing plan symbol. These are documentation symbols only:
+the generated window pane remains static in 3D, and the selected operation does
+not alter wall cuts, meshes, opening instances, schedules, or export geometry.
+
+Schema 51→52 adds the required type field and advances all native headers.
+`.osot` v3 persists the enum; v1/v2 packages import as Fixed. Native full-model
+plugins require API 33/schema 52, while generic API 2 and container 2 are
+unchanged. Focused model, package, migration, and plan-symbol tests cover the
+default, compatibility, distinct marks, rotated hosts, and unchanged 3D meshes.
+
+## Fixed side-lite two-bay families (schema 50)
+
+Reusable door/window types can optionally split their full rectangular opening
+into a primary panel/pane and a fixed side lite at the type's Start or End. The
+lite width is a normalized fraction of the overall opening width; the physical
+mullion is 1–300 mm. Any outer frame width is reserved first, and validation
+requires at least 1 mm of usable clear width in each bay. Both bays share the
+type's height and the existing rectangular host-wall cut. The authored
+component/cut profiles must remain rectangular while the two-bay option is on.
+
+For doors, only the primary bay is the leaf: the existing Start/End hinge and
+Left/Right swing orient that leaf within its bay, while the lite and mullion
+remain fixed. Windows show both panes and the divider. The lite can reference a
+separate project material; when unset it inherits the panel/pane material.
+Existing frame material behavior is unchanged. The type editor exposes side,
+lite-width, mullion-width and lite-material controls with the production 3D
+preview. Plan symbols include the divider. Editing is draft-only until Apply;
+the shared-type transaction preflights all affected instances, preserves their
+UUIDs and pinned instance dimensions, and regenerates the committed 3D/plan
+representation in one undoable step. The full outer opening width, jambs, host
+cut, schedule/tag dimensions and outer-jamb dimension references do not change.
+
+Schema 49→50 strictly advances each opening family from version 4 to 5 and
+adds required nullable `side_lite`; existing families migrate to null, preserving
+their previous single-panel geometry. Migration validates the whole copy before
+adoption and advances all native headers. At schema 50, native full-model
+plugins used API 31/schema 50; schema 51 used API 32. Current plugins require
+API 33/schema 52. Current native full-model plugins use API 35/schema 54.
+Generic API 2 and container 2 are unchanged. `.osot` package
+version 2 carries the optional lite material dependency; version 3 adds window
+operation metadata; version-1 packages import as single-panel version-5 families.
+Evidence includes `two_bay_families.rs`, `two_bay_packages_v1_v2_upgrade_to_v3_strict_and_three_materials`,
+`two_bay_preview_all_instances_history_host_cut_and_leaf_hinges`, and
+`two_bay_controls_apply_cancel_and_history_at_both_dpis`.
+
+This is a fixed two-bay composition, not arbitrary/nested family authoring. IFC
+does not preserve the added lite/mullion family data: export rejects such a
+family without partial output or model mutation. See the [IFC roadmap](ifc-roadmap.md).
+
+## Per-instance lite side (schema 51)
+
+A typed two-bay door or window can inherit its family's Start/End lite side or
+pin either side independently. The selected opening exposes **Flip lite** in
+the plan; the control pins the opposite effective side without editing the
+reusable type. The Edit opening form can also inherit, select Start/End, or
+reset to the type default. Equal-to-default pins are retained as explicit intent.
+Copy and Rehost preserve the instance setting. Wall reflection retains the
+endpoint-relative Start/End identity while pane-side reflection remains a
+separate operation.
+
+Schema 50→51 adds required nullable `OpeningParams.lite_side_override` to every
+opening. Existing instances migrate to null; malformed, ambiguous, or
+type-incompatible values reject atomically. Schema 51 used API 32/schema 51 and
+`.osot` version 2; schema 52 uses API 33 and package version 3 for window
+operation symbols. Generic API 2 and container 2 remain unchanged. Focused coverage is in
+`crates/os-storage/tests/lite_handedness.rs`,
+`crates/os-model/src/openings.rs`,
+`crates/os-ui/src/plan_workspace/lite_handedness_tests.rs`, and the plan copy,
+rehost, and mirror tests.
+
+## Phase-aware saved schedules (schema 48)
+
+Saved Door, Window and All opening schedules carry their own optional pinned
+phase UUID or dynamic Latest target, plus one of the five phase filters. Newly
+created schedules pin the latest phase with ShowAll. A row appears only when
+both the opening and its host wall pass the filter at that target. Schedule
+phase is independent of view/sheet phase, crop, range and category visibility.
+RoomFinish schedules remain unphased.
+
+The required `ScheduleParams.phase` field is migrated by 47→48. Existing
+definitions migrate as `LegacyUnphased`, preserving historical rows and flat
+instance CSV bytes until explicitly switched to phase-aware mode in Configure.
+Pinned UUID references block phase deletion atomically; Latest follows phase
+ordering changes. UI rows, placed sheet/PDF tables and instance/quantity CSV
+share the same filtered row derivation. See [native phase coverage](native-phases.md).
+
+## Per-plan door/window visibility (schema 49)
+
+Plan settings expose independent **Show doors** and **Show windows** controls.
+They are saved per view, default on for existing and new plans, and apply to the
+same plan drawing used by the canvas and placed sheet/vector-PDF views. Hiding a
+category hides its symbol, tag and dimensions that reference those openings; its
+symbols are not pickable/snappable, and opening-specific grips/actions are
+suppressed. Wall centerline snaps and unrelated annotations remain available.
+Schedules keep their own category/phase rules and are not filtered by a plan's
+visibility settings.
+
+Category visibility does not remove the opening from the host-wall cut model:
+the aperture remains in a visible wall when its door or window symbol is hidden.
+Phase filtering is different: phase-hidden openings are removed from the
+view-only wall model, along with their cutouts. Hiding walls still hides their
+hosted openings regardless of the door/window toggles. Apply saves both controls
+in the plan's existing single undoable settings transaction; Cancel, Escape and
+stale drafts do not change the view.
+
+Plan-settings schema 3→4 adds required `visibility.doors` and
+`visibility.windows` booleans, both true. Native model schema 48→49 performs a
+strict atomic migration and advances all native headers; native Model API 30
+requires schema 49. Generic API 2 and container 2 are unchanged. Focused tests
+cover independent plan settings, wall-cut preservation, hidden interaction and
+sheet/PDF parity at 1280×800/100% and 1000×650/150%. This is limited to native
+door/window categories; it is not a complete Revit visibility/detail system.
+
+## Opening schedule CSV reports
+
+Schema 47 adds saved `group_by` keys to Door/Window/All schedules. Configure up to
+two distinct ordered keys: Level, Kind, Type, Width, Height or Sill; check/uncheck
+to add/remove and use **Swap grouping order** to reorder. Save/cancel, stale-draft
+guards and one-step undo use the existing definition transaction. RoomFinish
+rejects grouping and has no grouping controls. The explicit 46→47 migration adds
+an empty list to every saved schedule and advances native headers.
+
+With keys selected, the read-only summary, sheet/vector-PDF table and quantity CSV
+share the same Group rows and counts, first-key Subtotal rows for two keys, and a
+Grand count (including zero for empty results). Only selected keys split groups:
+Level uses its UUID, Type uses its UUID, and Legacy Door/Legacy Window are separate
+Type buckets. Legacy dimensions split only when a dimension key is selected.
+Numeric keys compare exact effective f64 values; signed zero compares equal.
+Group order is ascending UUID, Door before Window, Legacy before typed UUIDs, or
+numeric value, in saved key order. Instance rows retain the saved sort and UUID
+tie-break inside groups and remain editable as before. UUID-bearing labels and
+round-trip dimension text distinguish groups despite short instance formatting.
+
+Grouped sheet placements show the count summary. Without grouping, sheet placements
+keep instance rows and the UI/quantity CSV keep the fixed exact-variant summary
+described below. Flat instance CSV always preserves its existing order, columns
+and byte formatting, independently of grouping. Paper retains the eight-column,
+10,000-row, rectangle/text/mark limits and reports overflow; long identity labels
+may require a larger placement. Rows are never silently dropped. No pagination,
+arbitrary subtotals, dimension sums or RoomFinish grouping is provided.
+
+Saved Door, Window and All schedules also show a read-only **Quantity summary**
+after the instance table and offer a separate **Export quantity CSV** action.
+Both use the current committed `defined_rows` after category and AND filters.
+When no configurable keys are selected, groups key on kind, stable opening-type UUID (or an explicit Legacy bucket), and
+exact effective width, height and sill. Distinct same-name types stay separate;
+dimension overrides split groups when their effective values differ. Equal-value
+pins share a group until a type edit changes inherited dimensions. Legacy rows
+combine only for matching kind and dimensions. Order is Door then Window, Legacy
+then ascending type UUID, then ascending width/height/sill using f64 total order.
+No cached model data or history is written; edits, undo/redo and reopen refresh it.
+
+Quantity columns are Kind, Type, Type ID, Width (m), Height (m), Sill (m), Count.
+Dimensions use three decimal places when that represents the exact f64 value;
+otherwise they use shortest round-trip decimals, so nearby exact variants remain
+distinguishable. Grouping never rounds values. The summary and quantity CSV share
+these cells and deterministic order independently of the instance sort/columns.
+Empty ungrouped quantity results export headers only. Quantity export uses the same preview,
+cancel/stale checks, formula protection, 16 MiB cap and atomic replacement flow
+described below. Preview/status identify quantity groups separately from instances.
+Neither summary nor export is available for unsaved All-openings-live or RoomFinish.
+This is a count report only: no dimension sums, descending group sort or lossless interchange.
+
+Saved Door, Window and All opening schedules expose **Export CSV**. All contains
+door/window openings only. The unsaved “All openings (live)” view and RoomFinish
+schedules do not export. The dialog previews the saved name, ordered columns and
+matching row count, and accepts a `.csv` path. Rows come from the same committed
+flat instance derivation: configured filters, sort, effective dimensions and
+stable IDs are preserved. Pending name, dimension and definition edits are absent.
+Zero matches still writes the single header row; no title row is included.
+
+Both reports use UTF-8 without BOM, comma delimiters, CRLF record endings, and
+double-quote escaping for commas, quotes and embedded line breaks. Width, Height
+and Sill headers carry `(m)`. Instance values retain three locale-independent
+decimals; quantity values use the exact-value formatting described above.
+This is a report, not lossless model interchange. For spreadsheet safety, text
+whose first non-whitespace character is `=`, `+`, `-` or `@` receives an apostrophe
+prefix before CSV quoting. Numeric dimensions are unchanged. The dialog discloses
+both transformations. Encoded output is limited to 16 MiB; no CSV import is provided.
+
+Cancel, Escape or closing the dialog/schedule writes nothing. Pending exports bind
+to the document session/revision and selected schedule ID/definition; stale
+contexts cancel before writing. Export leaves model, history and dirty state
+unchanged. Existing destinations require explicit replacement consent, cleared
+by any path edit. Writes use a synced temporary sibling and atomic persistence;
+without consent, a destination appearing during export is never overwritten.
+Failures retain the dialog for correction/consent and preserve prior destination
+contents. Temporary files are cleaned up on failure.
+
+Evidence: `cargo test -p os-ui --all-features opening_schedule -- --test-threads=1`;
+CSV tests in `crates/os-ui/src/opening_schedule/csv_export/tests.rs` cover parsing,
+Unicode, escaping, formula safety, units, empty results, category/filter/sort/report
+parity, committed values, stale/cancel guards and atomic filesystem behavior.
+Broader schedule coverage remains partial (no custom fields or pagination).
+
+Quantity increment validation: 37 focused schedule tests passed with
+`cargo test -p os-ui --all-features --locked --offline opening_schedule -- --test-threads=1`.
+Targeted `cargo clippy -p os-ui --all-features --all-targets --locked --offline -- -D warnings`
+and `cargo fmt --all -- --check` passed. Quantity tests cover exact nearby variants,
+same-name type identities, legacy buckets, filtered counts, UI ordering/suppression,
+CSV parity, history/reopen, read-only state and shared export safeguards. UI evidence
+is headless egui; native-window visual acceptance remains open.
+
+## Instance window pane position (schema 46)
+
+Typed windows store required nullable `pane_position_override`. Null inherits
+the shared type's pane position; Center, LeftFace and RightFace pin the instance,
+including a value equal to the current default. Doors and legacy openings require
+null. Type pane edits affect inheriting windows; pinned windows keep their position.
+Edit opening in Properties/Exact Edit offers the three positions, inheritance,
+effective/default values and **Reset pane to type default**.
+
+A selected typed window with an effective LeftFace or RightFace exposes **Side**
+in plan. It pins the opposite face in one undoable instance update. Center has no
+flip control. Preview, Escape, pointer loss, drag and stale context retain the
+existing cancellation rules. Copy and rehost retain the stored override.
+
+Native straight-wall mirror swaps each hosted off-center typed window's effective
+face into an instance override in the same transaction as the wall. This reflects
+pane/frame geometry without changing shared types or windows on other walls.
+Centered and legacy windows retain their parameters. Installed Wall providers
+reject mirrors requiring these companion edits. Rotate, schedules and IFC are
+outside this change.
+
+Schema 45→46 validates native collections and header versions, then adds explicit
+null to every opening. Missing current fields, malformed values and partial
+migrations fail atomically. Native full-model API is 27; generic API 2 and container
+2 are unchanged. Evidence: model pane override tests, storage `window_panes.rs`
+with frozen schema-45 fixture, and real egui form/side-flip/mirror tests at both
+desktop DPI profiles. These are headless tests, not native-window visual QA.
+
 ## Instance window sill
 
 Typed windows inherit their type's **Default sill** unless **Override sill** is
@@ -60,7 +339,7 @@ face**, named relative to the host's stored start→end direction. The wall open
 jambs, and host cells do not move; plan and 3D pane geometry share the same
 calculated offset. Legacy windows remain independent and centered. Door types
 require Center. The window type editor exposes the three choices; a shared type
-edit updates every placed instance in one transaction, with Cancel and stale
+edit updates inheriting instances in one transaction, with Cancel and stale
 document guards unchanged. At schema 23, native full-model plugins used API 5 /
 schema 23; the
 generic DTO protocol is unchanged.
@@ -321,8 +600,8 @@ Existing view visibility and crop settings still govern viewport highlighting.
 
 Each row has a separate **Edit name** action. Typing changes only a local draft;
 **Apply** submits one `Command::UpdateOpening` transaction and **Cancel**, Escape,
-or closing the schedule discards the draft. Type, dimensions, host, and level
-remain read-only. A changed document session/revision cancels the editor, including
+or closing the schedule discards the draft. That name editor leaves type,
+dimensions, host, and level read-only. A changed document session/revision cancels the editor, including
 changes caused by undo/redo. Invalid names display validation errors while retaining
 the draft and leaving model/history unchanged. A successful rename is one undo step.
 
@@ -334,10 +613,27 @@ and missing-host diagnostics; `row_click_selects_and_navigates_without_model_or_
 exercises actual egui row clicks with and without a plan at 1280×800/100% and
 1000×650/150%, checking unchanged model/history and visible missing-plan guidance.
 `view_ribbon_opens_schedule_window` preserves View-ribbon access. The focused tests
-`name_edit_is_draft_only_and_commits_one_undo_step`,
-`invalid_name_preserves_draft_model_and_history`, and
-`stale_context_cancel_and_escape_never_commit` cover actual egui editing/Apply,
+`instance_name_editor_remains_draft_only_undoable_and_stale_safe`,
+`invalid_name_draft_retains_value_and_model_until_correction`, and
+`name_editor_cancel_and_escape_discard_without_history` cover egui editing/Apply,
 undo/redo, validation rollback and correction, cancellation, and stale rejection.
+For saved Door and Window schedules, clicking Width or Height opens a transient
+metre-value cell editor; Window schedules also allow Sill, while Door sill stays
+zero and read-only. The existing instance-name action remains available. All,
+RoomFinish and other nonnumeric cells remain read-only. Typed edits pin the
+instance override even when it equals the type value; **Inherit type value / reset
+override** clears it. Legacy openings update their own stored dimensions and have
+no inheritance control. Invalid or non-finite input and host-fit/clearance failures
+retain the draft and leave model/history unchanged; a no-op adds no history.
+Escape, Cancel, closing, or a stale document/opening/schedule context discards the
+draft. Only committed model values feed live schedule rows and the existing sheet
+preview/PDF table. Focused evidence is in
+`numeric_schedule_cell_pointer_edit_opens_editor_and_enter_commits`,
+`typed_schedule_dimensions_pin_equal_inherit_and_follow_type_edits`,
+`legacy_window_schedule_edits_fields_and_door_sill_is_suppressed`,
+`invalid_numeric_edit_rolls_back_retains_draft_and_allows_correction`,
+`numeric_edit_cancel_escape_and_stale_schedule_or_session_never_commit`, and the
+schedule/PDF assertions in `saved_schedule_sheet_live_preview_pdf_history_overflow_and_stale_export`.
 The same window now includes a saved-definition picker, **New Door schedule**,
 **New Window schedule**, **Configure schedule**, and **Delete schedule**.
 Creation opens a draft with a unique suggested name and all eight columns.
@@ -396,7 +692,8 @@ searchable PDF text, visible sheet rows, live dimensions, history and reopen).
 UI acceptance runs at 1280×800/100% and 1000×650/150% using headless egui.
 
 Remaining schedule scope: RoomFinish filters, OR/nested predicates, custom fields,
-groups, totals, styles/conditional formatting, CSV and pagination. One live saved
+totals beyond the bounded opening group counts/subtotals, styles/conditional formatting,
+RoomFinish CSV and pagination. One live saved
 table can already be placed on a sheet. This increment does not complete S01 or
 claim native-window visual or physical-print qualification.
 
@@ -677,3 +974,57 @@ constrained or general entity arrays. Preview remains clipped to the active
 plan/canvas. Automated evidence is headless egui, not native-window visual or
 physical-print acceptance. Independent installed-provider acceptance is not
 newly exercised by these array tests.
+
+## Temporary opening spacing dimensions
+
+Select exactly one visible native door or window in its host-level plan. Two
+temporary metre values measure from its start/end jamb along the wall's stored
+Start → End axis to the nearest qualifying other opening jamb on that side,
+or to the corresponding wall endpoint. Rotated and reversed hosts use the same
+axis convention. References must be present in the current phase/range drawing
+and inside the crop and canvas. A partially cropped neighbor can supply its
+visible jamb. A side is suppressed if its reference or label cannot fit visibly
+without overlapping the other label, flip buttons or opening grips.
+
+Click a value, enter an exact distance in metres, and press Enter. Escape cancels.
+The draft starts with the full precision distance; the plan label displays three
+decimal places. Numeric edits do not snap or round. Only the selected opening's
+offset changes: UUID, host, name, typed/legacy definition, dimension and pane
+overrides, hinge/swing, and type/family/material assignments are preserved.
+The exact neighbor+jamb or endpoint is resolved again at commit using the current
+effective width. Disposable model and geometry preflight precede the existing
+`UpdateOpening` command. A successful change is one undo/redo step; a no-op has
+no history entry. Invalid text, insufficient clearance and overlap remain in the
+draft without changing the model, history, scene or cached plan drawing.
+
+Placement, Rehost, arrays, wall handles, flip controls and center/jamb grips take
+precedence. A spacing press remains consumed through release even when cancelled,
+so it cannot become a pan or selection. Escape, pointer loss, selection,
+document session/revision, view/settings, drawing identity, provider activation
+or signature, camera/canvas, and reference changes cancel stale edits. The
+installed-provider bounded command path is unchanged. These values create no
+persisted dimension or constraint and require no schema, storage or plugin
+protocol change.
+
+Automated evidence lives in
+`crates/os-ui/src/plan_workspace/opening_spacing_tests.rs`. Headless egui frames
+cover 1280×800 at 100% and 1000×650 at 150%, typed/legacy doors and windows,
+both sides, neighboring jambs and wall endpoints, forward/reversed and rotated
+hosts, exact keyboard entry, no-op/history and preserved fields, invalid drafts,
+changed references and stale contexts, phase/range/visibility/crop/canvas,
+precedence, Escape and pointer loss. These tests do not qualify native-window
+appearance, physical printing, or independent installed-provider operation.
+This increment is limited to temporary spacing edits on straight native hosts.
+Door/window category visibility is implemented separately above; general
+view/detail visibility across other model categories and full Revit workflows
+remain open.
+
+Validation for temporary spacing:
+
+- `cargo test -p os-ui --all-features --lib opening_spacing -- --test-threads=1`:
+  8 passed, including short-gap label separation at both display profiles.
+- `cargo test -p os-ui --all-features --lib -- --test-threads=1`:
+  352 passed, 4 installed-Wall-guest tests ignored.
+- `cargo clippy --workspace --all-features --all-targets -- -D warnings`: passed.
+- `cargo fmt --all -- --check`: passed.
+- `git diff --check`: passed (existing line-ending warnings only).

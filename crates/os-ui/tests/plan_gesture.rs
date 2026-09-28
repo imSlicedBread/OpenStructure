@@ -9,8 +9,10 @@ fn setup() -> (Editor, os_core::Id, WallParams) {
     let view = editor.create_floor_plan("Plan", level).unwrap();
     let p = WallParams {
         name: "Drawn wall".into(),
-        start: Point2::default(),
-        end: Point2::new(5.0, 0.0),
+        path: os_model::WallPath::Straight {
+            start: Point2::default(),
+            end: Point2::new(5.0, 0.0),
+        },
         thickness: 0.2,
         height: 3.0,
         level,
@@ -41,8 +43,8 @@ fn exact_destination_requires_anchor_and_complete_dimensions() {
 fn offset_copy_is_signed_parallel_atomic_and_preserves_source() {
     use os_ui::plan_gesture::WallEdit;
     let (mut editor, view, mut p) = setup();
-    p.start = Point2::new(1_000_000.0, 2_000_000.0);
-    p.end = Point2::new(1_000_003.0, 2_000_004.0);
+    *p.path.straight_start_mut().unwrap() = Point2::new(1_000_000.0, 2_000_000.0);
+    *p.path.straight_end_mut().unwrap() = Point2::new(1_000_003.0, 2_000_004.0);
     editor
         .wall_command("Create", os_plugin_api::Request::CreateWall(p.clone()))
         .unwrap();
@@ -51,7 +53,7 @@ fn offset_copy_is_signed_parallel_atomic_and_preserves_source() {
         .parameters
         .plan
         .unwrap();
-    settings.basis.origin = p.start;
+    settings.basis.origin = p.start();
     settings.basis.rotation = 0.37;
     editor
         .update_floor_plan(view, "Rotated", p.level, settings)
@@ -63,9 +65,9 @@ fn offset_copy_is_signed_parallel_atomic_and_preserves_source() {
         gesture.length = distance.to_string();
         let preview = gesture.parameters(Point2::new(30.0, 50.0)).unwrap();
         assert!(
-            preview.start.distance(Point2::new(
-                p.start.x - 0.8 * distance,
-                p.start.y + 0.6 * distance
+            preview.start().distance(Point2::new(
+                p.start().x - 0.8 * distance,
+                p.start().y + 0.6 * distance
             )) < 1e-8
         );
         assert!((preview.length() - 5.0).abs() < 1e-8);
@@ -118,7 +120,7 @@ fn preview_exact_input_and_single_commit_share_one_history_entry() {
     gesture.length = "4".into();
     gesture.angle_degrees = "90".into();
     let p = gesture.parameters(Point2::new(20.0, 20.0)).unwrap();
-    assert!((p.end.x - 1.0).abs() < 1e-10 && (p.end.y - 6.0).abs() < 1e-10);
+    assert!((p.end().x - 1.0).abs() < 1e-10 && (p.end().y - 6.0).abs() < 1e-10);
     assert_eq!(editor.document.model(), &before);
     gesture
         .commit(&mut editor, Some(view), Point2::new(20.0, 20.0))
@@ -184,8 +186,8 @@ fn move_and_resize_preserve_identity_properties_and_single_history_steps() {
     gesture.start = Some(Point2::new(2.0, 0.0));
     assert_eq!(gesture.snap_exclusion(), Some(id));
     let preview = gesture.parameters(Point2::new(3.0, 2.0)).unwrap();
-    assert_eq!(preview.start, Point2::new(1.0, 2.0));
-    assert_eq!(preview.end, Point2::new(6.0, 2.0));
+    assert_eq!(preview.start(), Point2::new(1.0, 2.0));
+    assert_eq!(preview.end(), Point2::new(6.0, 2.0));
     assert_eq!(editor.document.model(), &original);
     let history = editor.document.history_stats().undo_entries;
     gesture
@@ -212,15 +214,15 @@ fn move_and_resize_preserve_identity_properties_and_single_history_steps() {
     end.length = "3".into();
     end.angle_degrees = "90".into();
     let preview = end.parameters(Point2::new(100.0, 100.0)).unwrap();
-    assert_eq!(preview.start, Point2::new(1.0, 2.0));
-    assert!(preview.end.distance(Point2::new(1.0, 5.0)) < 1e-12);
+    assert_eq!(preview.start(), Point2::new(1.0, 2.0));
+    assert!(preview.end().distance(Point2::new(1.0, 5.0)) < 1e-12);
     end.commit(&mut editor, Some(view), Point2::new(100.0, 100.0))
         .unwrap();
-    let end_fixed = editor.document.model().walls[&id].parameters.end;
+    let end_fixed = editor.document.model().walls[&id].parameters.end();
     let start = WallGesture::begin_edit(&editor, view, id, WallEdit::ResizeStart).unwrap();
     let preview = start.parameters(Point2::new(3.0, 2.0)).unwrap();
-    assert_eq!(preview.start, Point2::new(3.0, 2.0));
-    assert_eq!(preview.end, end_fixed);
+    assert_eq!(preview.start(), Point2::new(3.0, 2.0));
+    assert_eq!(preview.end(), end_fixed);
     assert_eq!(
         (
             preview.height,
@@ -249,8 +251,8 @@ fn move_and_resize_preserve_identity_properties_and_single_history_steps() {
 fn rotated_moves_keep_level_and_fixed_resize_endpoint_without_coordinate_roundtrip() {
     use os_ui::plan_gesture::WallEdit;
     let (mut editor, view, mut p) = setup();
-    p.start = Point2::new(1_000_000.0, 2_000_000.0);
-    p.end = Point2::new(1_000_005.0, 2_000_000.0);
+    *p.path.straight_start_mut().unwrap() = Point2::new(1_000_000.0, 2_000_000.0);
+    *p.path.straight_end_mut().unwrap() = Point2::new(1_000_005.0, 2_000_000.0);
     editor
         .wall_command("Create", os_plugin_api::Request::CreateWall(p.clone()))
         .unwrap();
@@ -271,7 +273,7 @@ fn rotated_moves_keep_level_and_fixed_resize_endpoint_without_coordinate_roundtr
         .parameters
         .plan
         .unwrap();
-    settings.basis.origin = p.start;
+    settings.basis.origin = p.start();
     settings.basis.rotation = 0.3;
     editor
         .update_floor_plan(view, "Rotated", level.id(), settings)
@@ -282,19 +284,22 @@ fn rotated_moves_keep_level_and_fixed_resize_endpoint_without_coordinate_roundtr
     gesture.angle_degrees = "90".into();
     let preview = gesture.parameters(Point2::new(20.0, 0.0)).unwrap();
     assert!(
-        preview.start.distance(Point2::new(
-            p.start.x - 2.0 * 0.3_f64.sin(),
-            p.start.y + 2.0 * 0.3_f64.cos()
+        preview.start().distance(Point2::new(
+            p.start().x - 2.0 * 0.3_f64.sin(),
+            p.start().y + 2.0 * 0.3_f64.cos()
         )) < 1e-8
     );
     assert_eq!(preview.level, p.level);
     let resize = WallGesture::begin_edit(&editor, view, id, WallEdit::ResizeEnd).unwrap();
     assert_eq!(
-        resize.parameters(Point2::new(2.0, 1.0)).unwrap().start,
-        p.start
+        resize.parameters(Point2::new(2.0, 1.0)).unwrap().start(),
+        p.start()
     );
     let resize = WallGesture::begin_edit(&editor, view, id, WallEdit::ResizeStart).unwrap();
-    assert_eq!(resize.parameters(Point2::new(2.0, 1.0)).unwrap().end, p.end);
+    assert_eq!(
+        resize.parameters(Point2::new(2.0, 1.0)).unwrap().end(),
+        p.end()
+    );
 }
 
 #[test]
@@ -302,44 +307,52 @@ fn trim_extend_intersects_finite_same_level_boundaries_without_reversing_the_wal
     use os_ui::plan_gesture::WallEdit;
 
     let (mut editor, view, mut source) = setup();
-    source.start = Point2::new(0.0, 0.0);
-    source.end = Point2::new(2.0, 0.0);
+    *source.path.straight_start_mut().unwrap() = Point2::new(0.0, 0.0);
+    *source.path.straight_end_mut().unwrap() = Point2::new(2.0, 0.0);
     editor
         .wall_command("Create", os_plugin_api::Request::CreateWall(source.clone()))
         .unwrap();
     let id = *editor.document.model().walls.keys().next().unwrap();
     let vertical = WallParams {
-        start: Point2::new(1.0, -1.0),
-        end: Point2::new(1.0, 1.0),
+        path: os_model::WallPath::Straight {
+            start: Point2::new(1.0, -1.0),
+            end: Point2::new(1.0, 1.0),
+        },
         ..source.clone()
     };
 
     let trim_end = WallGesture::begin_edit(&editor, view, id, WallEdit::TrimEnd).unwrap();
     let point = trim_end.trim_extend_point(&vertical).unwrap();
     let parameters = trim_end.parameters(point).unwrap();
-    assert!(parameters.end.distance(Point2::new(1.0, 0.0)) < 1e-12);
-    assert_eq!(parameters.start, source.start);
+    assert!(parameters.end().distance(Point2::new(1.0, 0.0)) < 1e-12);
+    assert_eq!(parameters.start(), source.start());
 
     let trim_start = WallGesture::begin_edit(&editor, view, id, WallEdit::TrimStart).unwrap();
     let left_boundary = WallParams {
-        start: Point2::new(-1.0, -1.0),
-        end: Point2::new(-1.0, 1.0),
+        path: os_model::WallPath::Straight {
+            start: Point2::new(-1.0, -1.0),
+            end: Point2::new(-1.0, 1.0),
+        },
         ..source.clone()
     };
     let point = trim_start.trim_extend_point(&left_boundary).unwrap();
     let parameters = trim_start.parameters(point).unwrap();
-    assert!(parameters.start.distance(Point2::new(-1.0, 0.0)) < 1e-12);
-    assert_eq!(parameters.end, source.end);
+    assert!(parameters.start().distance(Point2::new(-1.0, 0.0)) < 1e-12);
+    assert_eq!(parameters.end(), source.end());
 
     let parallel = WallParams {
-        start: Point2::new(0.0, 1.0),
-        end: Point2::new(2.0, 1.0),
+        path: os_model::WallPath::Straight {
+            start: Point2::new(0.0, 1.0),
+            end: Point2::new(2.0, 1.0),
+        },
         ..source.clone()
     };
     assert!(trim_end.trim_extend_point(&parallel).is_err());
     let finite_segment_misses = WallParams {
-        start: Point2::new(3.0, 1.0),
-        end: Point2::new(3.0, 2.0),
+        path: os_model::WallPath::Straight {
+            start: Point2::new(3.0, 1.0),
+            end: Point2::new(3.0, 2.0),
+        },
         ..source.clone()
     };
     assert!(trim_end.trim_extend_point(&finite_segment_misses).is_err());
@@ -359,8 +372,8 @@ fn trim_extend_keeps_precision_in_rotated_basis_at_large_coordinates() {
 
     let (mut editor, view, mut source) = setup();
     let base = 100_000_000.0;
-    source.start = Point2::new(base, base);
-    source.end = Point2::new(base + 2.0, base);
+    *source.path.straight_start_mut().unwrap() = Point2::new(base, base);
+    *source.path.straight_end_mut().unwrap() = Point2::new(base + 2.0, base);
     editor
         .wall_command("Create", os_plugin_api::Request::CreateWall(source.clone()))
         .unwrap();
@@ -378,15 +391,17 @@ fn trim_extend_keeps_precision_in_rotated_basis_at_large_coordinates() {
         .unwrap();
 
     let boundary = WallParams {
-        start: Point2::new(base + 3.0, base - 1.0),
-        end: Point2::new(base + 3.0, base + 1.0),
+        path: os_model::WallPath::Straight {
+            start: Point2::new(base + 3.0, base - 1.0),
+            end: Point2::new(base + 3.0, base + 1.0),
+        },
         ..source.clone()
     };
     let gesture = WallGesture::begin_edit(&editor, view, id, WallEdit::TrimEnd).unwrap();
     let point = gesture.trim_extend_point(&boundary).unwrap();
     let parameters = gesture.parameters(point).unwrap();
-    assert!(parameters.end.distance(Point2::new(base + 3.0, base)) < 1e-6);
-    assert!(parameters.start.distance(source.start) < 1e-7);
+    assert!(parameters.end().distance(Point2::new(base + 3.0, base)) < 1e-6);
+    assert!(parameters.start().distance(source.start()) < 1e-7);
     assert_eq!(editor.document.model().walls[&id].parameters, source);
 }
 
@@ -402,7 +417,7 @@ fn invalid_edit_hidden_target_and_noop_leave_history_intact() {
     let mut resize = WallGesture::begin_edit(&editor, view, id, WallEdit::ResizeEnd).unwrap();
     let stats = editor.document.history_stats();
     let rev = editor.document.revision();
-    assert!(resize.commit(&mut editor, Some(view), p.start).is_err());
+    assert!(resize.commit(&mut editor, Some(view), p.start()).is_err());
     for text in ["NaN", "-1", "0", "inf"] {
         resize.length = text.into();
         assert!(

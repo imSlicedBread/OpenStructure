@@ -1,5 +1,124 @@
 use super::*;
 mod filters;
+mod phases;
+
+#[test]
+fn grouping_controls_choose_swap_remove_and_hide_for_rooms() {
+    use os_model::ScheduleGroupField::{Kind, Width};
+    for (size, scale) in [
+        (egui::vec2(1280.0, 800.0), 1.0),
+        (egui::vec2(1000.0, 650.0), 1.5),
+    ] {
+        let (mut app, _, _) = super::super::tests::fixture();
+        let ctx = egui::Context::default();
+        crate::theme::apply(&ctx);
+        app.begin_definition(Some(ScheduleCategory::All));
+        click(&mut app, &ctx, size, scale, "Group Kind");
+        click(&mut app, &ctx, size, scale, "Group Width");
+        assert_eq!(
+            app.opening_schedule
+                .definition_draft
+                .as_ref()
+                .unwrap()
+                .parameters
+                .group_by,
+            [Kind, Width]
+        );
+        click(&mut app, &ctx, size, scale, "Swap grouping order");
+        assert_eq!(
+            app.opening_schedule
+                .definition_draft
+                .as_ref()
+                .unwrap()
+                .parameters
+                .group_by,
+            [Width, Kind]
+        );
+        click(&mut app, &ctx, size, scale, "Group Kind");
+        assert_eq!(
+            app.opening_schedule
+                .definition_draft
+                .as_ref()
+                .unwrap()
+                .parameters
+                .group_by,
+            [Width]
+        );
+        click(&mut app, &ctx, size, scale, "RoomFinish");
+        assert!(
+            app.opening_schedule
+                .definition_draft
+                .as_ref()
+                .unwrap()
+                .parameters
+                .group_by
+                .is_empty()
+        );
+        let output = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                ..Default::default()
+            },
+            |ctx| app.opening_schedule_window(ctx),
+        );
+        assert!(!output.shapes.iter().any(
+            |s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.job.text == "Group Kind")
+        ));
+    }
+}
+
+#[test]
+fn grouping_definition_save_cancel_stale_and_one_step_undo() {
+    use os_model::ScheduleGroupField::{Kind, Width};
+    let (mut app, _, _) = super::super::tests::fixture();
+    app.begin_definition(Some(ScheduleCategory::All));
+    app.apply_definition();
+    let id = app.opening_schedule.selected.unwrap();
+    let before = app.editor.document.model().clone();
+    let revision = app.editor.document.revision();
+    app.begin_definition(None);
+    app.opening_schedule
+        .definition_draft
+        .as_mut()
+        .unwrap()
+        .parameters
+        .group_by = vec![Width, Kind];
+    assert_eq!(app.editor.document.model(), &before);
+    app.apply_definition();
+    assert_eq!(app.editor.document.revision(), revision + 1);
+    assert_eq!(
+        app.editor.document.model().schedules[&id]
+            .parameters
+            .group_by,
+        [Width, Kind]
+    );
+    app.editor.undo().unwrap();
+    assert_eq!(app.editor.document.model(), &before);
+    app.editor.redo().unwrap();
+    let grouped = app.editor.document.model().clone();
+    app.begin_definition(None);
+    app.opening_schedule
+        .definition_draft
+        .as_mut()
+        .unwrap()
+        .parameters
+        .group_by
+        .clear();
+    app.opening_schedule.definition_draft = None;
+    assert_eq!(app.editor.document.model(), &grouped);
+    app.begin_definition(None);
+    app.opening_schedule
+        .definition_draft
+        .as_mut()
+        .unwrap()
+        .parameters
+        .group_by
+        .clear();
+    app.editor.undo().unwrap();
+    app.apply_definition();
+    assert!(app.status.contains("document changed"));
+    assert_eq!(app.editor.document.model(), &before);
+}
 
 #[test]
 fn room_finish_definition_creation_and_category_switch_at_both_dpis() {
@@ -102,6 +221,7 @@ fn window_sill_schedule_uses_effective_values_sorting_and_instance_edit_at_both_
         let ty = OpeningType::new(
             "core.opening_type",
             OpeningTypeParams {
+                window_operation: Default::default(),
                 name: "Shared window".into(),
                 kind: OpeningKind::Window,
                 width: 1.2,

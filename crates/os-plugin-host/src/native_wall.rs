@@ -14,6 +14,10 @@ pub(super) fn project_checked(model: &os_model::Model, w: &Wall) -> Result<wire:
 
 pub(super) fn project(w: &Wall) -> Result<wire::Element> {
     ensure(
+        w.parameters.path.is_straight(),
+        "generic API 2 cannot project circular walls; use native wall geometry",
+    )?;
+    ensure(
         w.header.type_id == wall::TYPE,
         "unsupported native wall type",
     )?;
@@ -25,10 +29,10 @@ pub(super) fn project(w: &Wall) -> Result<wire::Element> {
         name: p.name.clone(),
         payload_schema_version: wall::PAYLOAD_VERSION,
         payload: serde_json::to_value(wall::Parameters {
-            start_x: p.start.x,
-            start_y: p.start.y,
-            end_x: p.end.x,
-            end_y: p.end.y,
+            start_x: p.start().x,
+            start_y: p.start().y,
+            end_x: p.end().x,
+            end_y: p.end().y,
             thickness: p.thickness,
             height: p.height,
             level: p.level.to_string(),
@@ -40,6 +44,13 @@ pub(super) fn project(w: &Wall) -> Result<wire::Element> {
 }
 
 pub(super) fn command(doc: &Document, entity: ExtensionEntity, replace: bool) -> Result<Command> {
+    ensure(
+        doc.model()
+            .walls
+            .get(&entity.id)
+            .is_none_or(|w| w.parameters.path.is_straight()),
+        "generic API 2 cannot edit circular walls",
+    )?;
     ensure(
         !doc.model().wall_type_assignments.contains_key(&entity.id),
         "generic API 2 cannot edit typed walls; use native wall type commands",
@@ -68,8 +79,10 @@ pub(super) fn command(doc: &Document, entity: ExtensionEntity, replace: bool) ->
     )?;
     let parameters = WallParams {
         name: entity.name,
-        start: Point2::new(p.start_x, p.start_y),
-        end: Point2::new(p.end_x, p.end_y),
+        path: os_model::WallPath::Straight {
+            start: Point2::new(p.start_x, p.start_y),
+            end: Point2::new(p.end_x, p.end_y),
+        },
         thickness: p.thickness,
         height: p.height,
         level,
@@ -99,8 +112,10 @@ mod tests {
             wall::TYPE,
             WallParams {
                 name: "Existing".into(),
-                start: Point2::new(1.0, 2.0),
-                end: Point2::new(4.0, 6.0),
+                path: os_model::WallPath::Straight {
+                    start: Point2::new(1.0, 2.0),
+                    end: Point2::new(4.0, 6.0),
+                },
                 thickness: 0.2,
                 height: 3.0,
                 level: *model.levels.keys().next().unwrap(),

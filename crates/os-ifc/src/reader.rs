@@ -380,6 +380,7 @@ fn import_openings(
                 (width, height, type_sill)
             };
             let params = OpeningTypeParams {
+                window_operation: Default::default(),
                 name: es[ty].at(2)?.text()?.into(),
                 kind,
                 width: type_width,
@@ -413,6 +414,8 @@ fn import_openings(
                 width_override,
                 height_override,
                 sill_override,
+                pane_position_override: None,
+                lite_side_override: None,
                 name: e.at(2)?.text()?.into(),
                 host: ids[&host_id],
                 offset: origin[0] - wall_origin[0],
@@ -788,8 +791,10 @@ pub fn import(bytes: &[u8]) -> Result<Exchange<Model>> {
             "org.openstructure.walls.wall",
             WallParams {
                 name: e.at(2)?.text()?.into(),
-                start,
-                end: Point2::new(start.x + d[0] * length, start.y + d[1] * length),
+                path: os_model::WallPath::Straight {
+                    start,
+                    end: Point2::new(start.x + d[0] * length, start.y + d[1] * length),
+                },
                 thickness,
                 height,
                 level: id_of(&ids, parent)?,

@@ -103,8 +103,8 @@ impl DesktopApp {
                         .filter(|w| w.id() != id)
                         .filter_map(|w| {
                             let d = os_model::axis(&w.parameters);
-                            let station = (node.x - w.parameters.start.x) * d.x
-                                + (node.y - w.parameters.start.y) * d.y;
+                            let station = (node.x - w.parameters.start().x) * d.x
+                                + (node.y - w.parameters.start().y) * d.y;
                             let p = WallJoinParams::Tee {
                                 host: w.id(),
                                 station,

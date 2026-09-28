@@ -1,0 +1,717 @@
+{
+  "schema_version": 45,
+  "project": {
+    "header": {
+      "id": "00000000-0000-4000-8000-000000000001",
+      "type_id": "core.project",
+      "schema_version": 45,
+      "properties": {
+        "fixture": "frozen schema 41 schedule definitions"
+      },
+      "relationships": {}
+    },
+    "parameters": {
+      "name": "Frozen schema 45 window pane inheritance"
+    }
+  },
+  "sites": {
+    "00000000-0000-4000-8000-000000000002": {
+      "header": {
+        "id": "00000000-0000-4000-8000-000000000002",
+        "type_id": "core.site",
+        "schema_version": 45,
+        "properties": {},
+        "relationships": {}
+      },
+      "parameters": {
+        "name": "Site",
+        "project": "00000000-0000-4000-8000-000000000001"
+      }
+    }
+  },
+  "buildings": {
+    "00000000-0000-4000-8000-000000000003": {
+      "header": {
+        "id": "00000000-0000-4000-8000-000000000003",
+        "type_id": "core.building",
+        "schema_version": 45,
+        "properties": {},
+        "relationships": {}
+      },
+      "parameters": {
+        "name": "Building",
+        "site": "00000000-0000-4000-8000-000000000002"
+      }
+    }
+  },
+  "levels": {
+    "00000000-0000-4000-8000-000000000004": {
+      "header": {
+        "id": "00000000-0000-4000-8000-000000000004",
+        "type_id": "core.level",
+        "schema_version": 45,
+        "properties": {},
+        "relationships": {}
+      },
+      "parameters": {
+        "name": "Ground",
+        "elevation": 2.5,
+        "building": "00000000-0000-4000-8000-000000000003"
+      }
+    }
+  },
+  "walls": {
+    "00000000-0000-4000-8000-000000000006": {
+      "header": {
+        "id": "00000000-0000-4000-8000-000000000006",
+        "type_id": "org.openstructure.walls.wall",
+        "schema_version": 45,
+        "properties": {
+          "retained": 123
+        },
+        "relationships": {}
+      },
+      "parameters": {
+        "name": "Wall",
+        "start": {
+          "x": 0,
+          "y": 0
+        },
+        "end": {
+          "x": 4,
+          "y": 0
+        },
+        "thickness": 0.2,
+        "height": 3,
+        "level": "00000000-0000-4000-8000-000000000004",
+        "material": "12345600-0000-4000-8000-000000000051"
+      }
+    },
+    "00000000-0000-4000-8000-000000000007": {
+      "header": {
+        "id": "00000000-0000-4000-8000-000000000007",
+        "type_id": "org.openstructure.walls.wall",
+        "schema_version": 45,
+        "properties": {
+          "retained": 123
+        },
+        "relationships": {}
+      },
+      "parameters": {
+        "name": "Wall",
+        "start": {
+          "x": 8,
+          "y": 0
+        },
+        "end": {
+          "x": 8,
+          "y": 4
+        },
+        "thickness": 0.2,
+        "height": 3,
+        "level": "00000000-0000-4000-8000-000000000004",
+        "material": "12345600-0000-4000-8000-000000000051"
+      }
+    }
+  },
+  "wall_types": {},
+  "wall_type_assignments": {},
+  "wall_joins": {},
+  "openings": {
+    "00000000-0000-4000-8000-000000000008": {
+      "header": {
+        "id": "00000000-0000-4000-8000-000000000008",
+        "type_id": "core.opening",
+        "schema_version": 45,
+        "properties": {},
+        "relationships": {}
+      },
+      "parameters": {
+        "name": "Legacy window",
+        "host": "00000000-0000-4000-8000-000000000006",
+        "offset": 1,
+        "definition": {
+          "Typed": {
+            "type_id": "00000000-0000-4000-8000-000000000011"
+          }
+        },
+        "hinge": "Start",
+        "swing": "Left",
+        "sill_override": 0.8,
+        "width_override": null,
+        "height_override": null
+      }
+    },
+    "00000000-0000-4000-8000-000000000012": {
+      "header": {
+        "id": "00000000-0000-4000-8000-000000000012",
+        "type_id": "core.opening",
+        "schema_version": 45,
+        "properties": {},
+        "relationships": {}
+      },
+      "parameters": {
+        "name": "Legacy sill",
+        "host": "00000000-0000-4000-8000-000000000006",
+        "offset": 2.5,
+        "definition": {
+          "Legacy": {
+            "kind": "Window",
+            "width": 0.5,
+            "height": 1,
+            "sill": 1.1
+          }
+        },
+        "hinge": "Start",
+        "swing": "Left",
+        "sill_override": null,
+        "width_override": null,
+        "height_override": null
+      }
+    }
+  },
+  "opening_types": {
+    "00000000-0000-4000-8000-000000000011": {
+      "header": {
+        "id": "00000000-0000-4000-8000-000000000011",
+        "type_id": "core.opening_type",
+        "schema_version": 45,
+        "properties": {
+          "retained": "opening type metadata"
+        },
+        "relationships": {}
+      },
+      "parameters": {
+        "name": "Shared window",
+        "kind": "Window",
+        "width": 1,
+        "height": 1.2,
+        "sill": 0.8,
+        "pane_position": "RightFace",
+        "family": {
+          "version": 4,
+          "host_cut": "Rectangular",
+          "operation": "ProfileExtrusion",
+          "profile": [
+            {
+              "x": 0,
+              "y": 0
+            },
+            {
+              "x": 1,
+              "y": 0
+            },
+            {
+              "x": 1,
+              "y": 1
+            },
+            {
+              "x": 0,
+              "y": 1
+            }
+          ],
+          "cut_profile": [
+            {
+              "x": 0,
+              "y": 0
+            },
+            {
+              "x": 1,
+              "y": 0
+            },
+            {
+              "x": 1,
+              "y": 1
+            },
+            {
+              "x": 0,
+              "y": 1
+            }
+          ],
+          "depth": 0.025,
+          "frame_width": 0.05,
+          "frame_depth": 0.05,
+          "panel_material": "12345600-0000-4000-8000-000000000051",
+          "frame_material": "ff005000-0000-4000-8000-000000000052"
+        }
+      }
+    }
+  },
+  "materials": {
+    "12345600-0000-4000-8000-000000000051": {
+      "header": {
+        "id": "12345600-0000-4000-8000-000000000051",
+        "type_id": "core.material",
+        "schema_version": 45,
+        "properties": {
+          "fixture": "frozen schema 33 material"
+        },
+        "relationships": {}
+      },
+      "parameters": {
+        "name": "Shared panel/wall",
+        "density_kg_m3": 650,
+        "color": [
+          158,
+          192,
+          146
+        ]
+      }
+    },
+    "ff005000-0000-4000-8000-000000000052": {
+      "header": {
+        "id": "ff005000-0000-4000-8000-000000000052",
+        "type_id": "core.material",
+        "schema_version": 45,
+        "properties": {
+          "fixture": "frozen schema 33 material"
+        },
+        "relationships": {}
+      },
+      "parameters": {
+        "name": "Frame",
+        "density_kg_m3": 8500,
+        "color": [
+          155,
+          140,
+          140
+        ]
+      }
+    }
+  },
+  "floors": {},
+  "rooms": {},
+  "room_tags": {},
+  "room_separation_lines": {},
+  "detail_lines": {},
+  "dimensions": {
+    "00000000-0000-4000-8000-000000000080": {
+      "header": {
+        "id": "00000000-0000-4000-8000-000000000080",
+        "type_id": "core.dimension",
+        "schema_version": 45,
+        "properties": {
+          "keep": "dimension metadata",
+          "opaque": {
+            "wall": "00000000-0000-4000-8000-000000000006",
+            "endpoint": "End"
+          }
+        },
+        "relationships": {
+          "fixture": [
+            "00000000-0000-4000-8000-000000000006"
+          ]
+        }
+      },
+      "parameters": {
+        "layout": "Aligned",
+        "additional": [],
+        "baseline_spacing_m": 0.25,
+        "view": "00000000-0000-4000-8000-000000000060",
+        "first": {
+          "WallEndpoint": {
+            "wall": "00000000-0000-4000-8000-000000000006",
+            "endpoint": "Start"
+          }
+        },
+        "second": {
+          "WallEndpoint": {
+            "wall": "00000000-0000-4000-8000-000000000006",
+            "endpoint": "End"
+          }
+        },
+        "offset_m": 1,
+        "orphan_hint": {
+          "x": 2,
+          "y": 1
+        }
+      }
+    },
+    "00000000-0000-4000-8000-000000000081": {
+      "header": {
+        "id": "00000000-0000-4000-8000-000000000081",
+        "type_id": "core.dimension",
+        "schema_version": 45,
+        "properties": {
+          "keep": "dimension metadata",
+          "opaque": {
+            "wall": "00000000-0000-4000-8000-000000000006",
+            "endpoint": "End"
+          }
+        },
+        "relationships": {
+          "fixture": [
+            "00000000-0000-4000-8000-000000000006"
+          ]
+        }
+      },
+      "parameters": {
+        "layout": "Chain",
+        "additional": [
+          {
+            "WallEndpoint": {
+              "wall": "00000000-0000-4000-8000-000000000007",
+              "endpoint": "Start"
+            }
+          }
+        ],
+        "baseline_spacing_m": 0.25,
+        "view": "00000000-0000-4000-8000-000000000060",
+        "first": {
+          "WallEndpoint": {
+            "wall": "00000000-0000-4000-8000-000000000006",
+            "endpoint": "Start"
+          }
+        },
+        "second": {
+          "WallEndpoint": {
+            "wall": "00000000-0000-4000-8000-000000000006",
+            "endpoint": "End"
+          }
+        },
+        "offset_m": 1,
+        "orphan_hint": {
+          "x": 2,
+          "y": 1
+        }
+      }
+    },
+    "00000000-0000-4000-8000-000000000082": {
+      "header": {
+        "id": "00000000-0000-4000-8000-000000000082",
+        "type_id": "core.dimension",
+        "schema_version": 45,
+        "properties": {
+          "keep": "dimension metadata",
+          "opaque": {
+            "wall": "00000000-0000-4000-8000-000000000006",
+            "endpoint": "End"
+          }
+        },
+        "relationships": {
+          "fixture": [
+            "00000000-0000-4000-8000-000000000006"
+          ]
+        }
+      },
+      "parameters": {
+        "layout": "Baseline",
+        "additional": [
+          {
+            "WallEndpoint": {
+              "wall": "00000000-0000-4000-8000-000000000007",
+              "endpoint": "Start"
+            }
+          }
+        ],
+        "baseline_spacing_m": 0.25,
+        "view": "00000000-0000-4000-8000-000000000060",
+        "first": {
+          "WallEndpoint": {
+            "wall": "00000000-0000-4000-8000-000000000006",
+            "endpoint": "Start"
+          }
+        },
+        "second": {
+          "WallEndpoint": {
+            "wall": "00000000-0000-4000-8000-000000000006",
+            "endpoint": "End"
+          }
+        },
+        "offset_m": 1,
+        "orphan_hint": {
+          "x": 2,
+          "y": 1
+        }
+      }
+    },
+    "00000000-0000-4000-8000-000000000083": {
+      "header": {
+        "id": "00000000-0000-4000-8000-000000000083",
+        "type_id": "core.dimension",
+        "schema_version": 45,
+        "properties": {
+          "keep": "dimension metadata",
+          "opaque": {
+            "wall": "00000000-0000-4000-8000-000000000006",
+            "endpoint": "End"
+          }
+        },
+        "relationships": {
+          "fixture": [
+            "00000000-0000-4000-8000-000000000006"
+          ]
+        }
+      },
+      "parameters": {
+        "layout": "Angular",
+        "additional": [],
+        "baseline_spacing_m": 0.25,
+        "view": "00000000-0000-4000-8000-000000000060",
+        "first": {
+          "WallEndpoint": {
+            "wall": "00000000-0000-4000-8000-000000000006",
+            "endpoint": "End"
+          }
+        },
+        "second": {
+          "WallEndpoint": {
+            "wall": "00000000-0000-4000-8000-000000000007",
+            "endpoint": "End"
+          }
+        },
+        "offset_m": 1,
+        "orphan_hint": {
+          "x": 2,
+          "y": 1
+        }
+      }
+    },
+    "00000000-0000-4000-8000-000000000084": {
+      "header": {
+        "id": "00000000-0000-4000-8000-000000000084",
+        "type_id": "core.dimension",
+        "schema_version": 45,
+        "properties": {
+          "keep": "dimension metadata",
+          "opaque": {
+            "wall": "00000000-0000-4000-8000-000000000006",
+            "endpoint": "End"
+          }
+        },
+        "relationships": {
+          "fixture": [
+            "00000000-0000-4000-8000-000000000006"
+          ]
+        }
+      },
+      "parameters": {
+        "layout": "Aligned",
+        "additional": [],
+        "baseline_spacing_m": 0.25,
+        "view": "00000000-0000-4000-8000-000000000060",
+        "first": {
+          "WallEndpoint": {
+            "wall": "00000000-0000-4000-8000-000000000099",
+            "endpoint": "Start"
+          }
+        },
+        "second": {
+          "WallEndpoint": {
+            "wall": "00000000-0000-4000-8000-000000000006",
+            "endpoint": "End"
+          }
+        },
+        "offset_m": 1,
+        "orphan_hint": {
+          "x": 2,
+          "y": 1
+        }
+      }
+    }
+  },
+  "grids": {},
+  "views": {
+    "00000000-0000-4000-8000-000000000060": {
+      "header": {
+        "id": "00000000-0000-4000-8000-000000000060",
+        "type_id": "core.view",
+        "schema_version": 45,
+        "properties": {
+          "retained": "tag fixture metadata"
+        },
+        "relationships": {}
+      },
+      "parameters": {
+        "name": "Tag plan",
+        "kind": "Plan",
+        "level": "00000000-0000-4000-8000-000000000004",
+        "settings_revision": 0,
+        "section": null,
+        "plan": {
+          "schema_version": 3,
+          "view_type": "FloorPlan",
+          "range": {
+            "top": 2.5,
+            "cut": 1.2,
+            "bottom": 0,
+            "depth": -1
+          },
+          "basis": {
+            "origin": {
+              "x": 0,
+              "y": 0
+            },
+            "rotation": 0
+          },
+          "crop": null,
+          "scale_denominator": 100,
+          "visibility": {
+            "walls": true,
+            "ceilings": true,
+            "extensions": true
+          },
+          "target_phase": "00000000-0000-4000-8000-000000000090",
+          "phase_filter": "ShowAll"
+        }
+      }
+    }
+  },
+  "sheets": {},
+  "schedules": {
+    "00000000-0000-4000-8000-000000000071": {
+      "header": {
+        "id": "00000000-0000-4000-8000-000000000071",
+        "type_id": "core.schedule",
+        "schema_version": 45,
+        "properties": {
+          "retained": "schedule metadata",
+          "schema_version": 41
+        },
+        "relationships": {}
+      },
+      "parameters": {
+        "name": "Door list",
+        "category": "Door",
+        "columns": [
+          "Name",
+          "Width"
+        ],
+        "sort": "Name",
+        "filters": []
+      }
+    }
+  },
+  "extensions": {
+    "10000000-0000-0000-0000-000000000003": {
+      "envelope_version": 1,
+      "id": "10000000-0000-0000-0000-000000000003",
+      "owner": "org.example.fixture",
+      "type_id": "org.example.fixture.item",
+      "name": "Opaque",
+      "payload_schema_version": 42,
+      "relationships": {
+        "wall": [
+          "00000000-0000-4000-8000-000000000006"
+        ]
+      },
+      "depends_on": [
+        "00000000-0000-4000-8000-000000000006"
+      ],
+      "payload": {
+        "schema_version": 23,
+        "custom": [
+          1,
+          "preserve",
+          true
+        ]
+      }
+    }
+  },
+  "plugin_requirements": {
+    "org.example.fixture": {
+      "version": "1.0.0"
+    }
+  },
+  "columns": {},
+  "plan_graphics": {},
+  "plan_graphics_templates": {},
+  "opening_tags": {
+    "00000000-0000-4000-8000-000000000061": {
+      "header": {
+        "id": "00000000-0000-4000-8000-000000000061",
+        "type_id": "core.opening_tag",
+        "schema_version": 45,
+        "properties": {
+          "retained": "tag fixture metadata"
+        },
+        "relationships": {}
+      },
+      "parameters": {
+        "view": "00000000-0000-4000-8000-000000000060",
+        "opening": "00000000-0000-4000-8000-000000000008",
+        "position": {
+          "x": 2,
+          "y": 1
+        },
+        "label_preset": "Full"
+      }
+    },
+    "00000000-0000-4000-8000-000000000062": {
+      "header": {
+        "id": "00000000-0000-4000-8000-000000000062",
+        "type_id": "core.opening_tag",
+        "schema_version": 45,
+        "properties": {
+          "retained": "tag fixture metadata"
+        },
+        "relationships": {}
+      },
+      "parameters": {
+        "view": "00000000-0000-4000-8000-000000000060",
+        "opening": "00000000-0000-4000-8000-000000000012",
+        "position": {
+          "x": 2,
+          "y": 2
+        },
+        "label_preset": "Full"
+      }
+    },
+    "00000000-0000-4000-8000-000000000063": {
+      "header": {
+        "id": "00000000-0000-4000-8000-000000000063",
+        "type_id": "core.opening_tag",
+        "schema_version": 45,
+        "properties": {
+          "retained": "tag fixture metadata"
+        },
+        "relationships": {}
+      },
+      "parameters": {
+        "view": "00000000-0000-4000-8000-000000000060",
+        "opening": "00000000-0000-4000-8000-000000000099",
+        "position": {
+          "x": 2,
+          "y": 3
+        },
+        "label_preset": "Full"
+      }
+    }
+  },
+  "stairs": {},
+  "roofs": {},
+  "ceilings": {},
+  "phases": {
+    "00000000-0000-4000-8000-000000000090": {
+      "header": {
+        "id": "00000000-0000-4000-8000-000000000090",
+        "type_id": "core.phase",
+        "schema_version": 45,
+        "properties": {},
+        "relationships": {}
+      },
+      "parameters": {
+        "name": "Existing",
+        "order": 0
+      }
+    }
+  },
+  "element_lifecycles": {
+    "00000000-0000-4000-8000-000000000006": {
+      "created_in": "00000000-0000-4000-8000-000000000090",
+      "demolished_in": null
+    },
+    "00000000-0000-4000-8000-000000000007": {
+      "created_in": "00000000-0000-4000-8000-000000000090",
+      "demolished_in": null
+    },
+    "00000000-0000-4000-8000-000000000008": {
+      "created_in": "00000000-0000-4000-8000-000000000090",
+      "demolished_in": null
+    },
+    "00000000-0000-4000-8000-000000000012": {
+      "created_in": "00000000-0000-4000-8000-000000000090",
+      "demolished_in": null
+    }
+  }
+}

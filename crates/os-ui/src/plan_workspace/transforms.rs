@@ -58,6 +58,10 @@ impl Draft {
             .get(&id)
             .ok_or_else(|| Error::Invalid("Select a native wall".into()))?;
         ensure(
+            wall.parameters.path.is_straight(),
+            "split, align, rotate and mirror tools currently require a straight wall; edit circular walls in Properties",
+        )?;
+        ensure(
             wall.header.type_id == os_walls::WALL_TYPE,
             "Select a native straight wall",
         )?;
@@ -78,7 +82,8 @@ impl Draft {
             mode == Mode::Split
                 || (!model.dimensions.values().any(|d| {
                     d.parameters.references().any(|r| match r {
-                        os_model::DimensionReference::WallEndpoint { wall, .. } => wall == id,
+                        os_model::DimensionReference::WallEndpoint { wall, .. }
+                        | os_model::DimensionReference::WallFace { wall, .. } => wall == id,
                         os_model::DimensionReference::OpeningJamb { opening, .. } => model
                             .openings
                             .get(&opening)
@@ -92,16 +97,6 @@ impl Draft {
                 })),
             "Wall transforms are unavailable for walls with attached dimensions or opening tags",
         )?;
-        if mode == Mode::Mirror {
-            for opening in model.openings.values().filter(|o| o.parameters.host == id) {
-                let resolved = model.resolve_opening(&opening.parameters)?;
-                ensure(
-                    resolved.kind != OpeningKind::Window
-                        || resolved.pane_position == WindowPanePosition::Center,
-                    "Mirror requires centered window panes",
-                )?;
-            }
-        }
         #[cfg(feature = "external-plugins")]
         let installed = app.editor.host.worker_supported(os_walls::PLUGIN_ID);
         #[cfg(not(feature = "external-plugins"))]
@@ -155,11 +150,12 @@ impl Draft {
                         .values()
                         .filter(|o| o.parameters.host == id)
                         .any(|o| {
-                            model
-                                .resolve_opening(&o.parameters)
-                                .is_ok_and(|r| r.kind == OpeningKind::Door)
+                            model.resolve_opening(&o.parameters).is_ok_and(|r| {
+                                r.kind == OpeningKind::Door
+                                    || r.pane_position != WindowPanePosition::Center
+                            })
                         })),
-            "This mirror requires an atomic native batch; the installed Wall provider cannot change door swing or wall layer sides",
+            "This mirror requires an atomic native batch; the installed Wall provider cannot change door swing, window pane sides or wall layer sides",
         )
     }
 
@@ -203,6 +199,7 @@ impl Draft {
                     .find_map(|item| {
                         self.original.walls.get(&item.entity).filter(|target| {
                             target.header.type_id == os_walls::WALL_TYPE
+                                && target.parameters.path.is_straight()
                                 && target.parameters.level == original.level
                         })
                     })
@@ -212,19 +209,21 @@ impl Draft {
                         )
                     })?;
                 let shift = alignment_shift(
-                    original.start,
-                    original.end,
-                    reference.parameters.start,
-                    reference.parameters.end,
+                    original.start(),
+                    original.end(),
+                    reference.parameters.start(),
+                    reference.parameters.end(),
                 )?;
-                wall.start = Point2::new(original.start.x + shift.x, original.start.y + shift.y);
-                wall.end = Point2::new(original.end.x + shift.x, original.end.y + shift.y);
+                *wall.path.straight_start_mut()? =
+                    Point2::new(original.start().x + shift.x, original.start().y + shift.y);
+                *wall.path.straight_end_mut()? =
+                    Point2::new(original.end().x + shift.x, original.end().y + shift.y);
                 ensure(wall != *original, "Wall is already aligned")?;
             }
             Mode::Rotate => {
                 let center = Point2::new(
-                    original.start.x + (original.end.x - original.start.x) * 0.5,
-                    original.start.y + (original.end.y - original.start.y) * 0.5,
+                    original.start().x + (original.end().x - original.start().x) * 0.5,
+                    original.start().y + (original.end().y - original.start().y) * 0.5,
                 );
                 let angle = if self.degrees.trim().is_empty() {
                     ensure(
@@ -232,8 +231,8 @@ impl Draft {
                         "Choose an angle away from the midpoint",
                     )?;
                     (world.y - center.y).atan2(world.x - center.x)
-                        - (original.end.y - original.start.y)
-                            .atan2(original.end.x - original.start.x)
+                        - (original.end().y - original.start().y)
+                            .atan2(original.end().x - original.start().x)
                 } else {
                     let degrees = self
                         .degrees
@@ -250,8 +249,8 @@ impl Draft {
                         center.y + s * (p.x - center.x) + c * (p.y - center.y),
                     )
                 };
-                wall.start = rotate(original.start);
-                wall.end = rotate(original.end);
+                *wall.path.straight_start_mut()? = rotate(original.start());
+                *wall.path.straight_end_mut()? = rotate(original.end());
             }
             Mode::Mirror => {
                 let a =
@@ -272,8 +271,8 @@ impl Draft {
                         a.y + 2.0 * projection * y - dy,
                     )
                 };
-                wall.start = reflect(original.start);
-                wall.end = reflect(original.end);
+                *wall.path.straight_start_mut()? = reflect(original.start());
+                *wall.path.straight_end_mut()? = reflect(original.end());
             }
         }
         wall.validate()?;
@@ -296,17 +295,32 @@ impl Draft {
                 .values()
                 .filter(|o| o.parameters.host == self.id)
             {
-                if self.original.resolve_opening(&opening.parameters)?.kind == OpeningKind::Door {
-                    let mut parameters = opening.parameters.clone();
+                let resolved = self.original.resolve_opening(&opening.parameters)?;
+                let mut parameters = opening.parameters.clone();
+                // Reflection preserves endpoint identity and axial stations. Keep
+                // lite-side inheritance/pins: Start remains the reflected Start bay.
+                if resolved.kind == OpeningKind::Door {
                     parameters.swing = match parameters.swing {
                         DoorSwing::Left => DoorSwing::Right,
                         DoorSwing::Right => DoorSwing::Left,
                     };
-                    commands.push(Command::UpdateOpening {
-                        id: opening.id(),
-                        parameters,
-                    });
+                } else if resolved.type_id.is_some() {
+                    match resolved.pane_position {
+                        WindowPanePosition::LeftFace => {
+                            parameters.pane_position_override = Some(WindowPanePosition::RightFace)
+                        }
+                        WindowPanePosition::RightFace => {
+                            parameters.pane_position_override = Some(WindowPanePosition::LeftFace)
+                        }
+                        WindowPanePosition::Center => continue,
+                    }
+                } else {
+                    continue;
                 }
+                commands.push(Command::UpdateOpening {
+                    id: opening.id(),
+                    parameters,
+                });
             }
         }
         // Use precisely the document transaction validator on an isolated model.

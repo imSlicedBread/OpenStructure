@@ -18,6 +18,7 @@ pub(super) struct OpeningTypeDraft {
     id: Id,
     kind: OpeningKind,
     pane_position: WindowPanePosition,
+    window_operation: os_model::WindowOperation,
     family: os_model::OpeningFamily,
     selected_vertex: usize,
     editing_cut: bool,
@@ -39,6 +40,9 @@ impl OpeningTypeDraft {
         let pane_position = dimensions
             .as_ref()
             .map_or(WindowPanePosition::Center, |p| p.pane_position);
+        let window_operation = dimensions
+            .as_ref()
+            .map_or(os_model::WindowOperation::Fixed, |p| p.window_operation);
         let family = dimensions
             .as_ref()
             .map(|p| p.family.clone())
@@ -73,6 +77,7 @@ impl OpeningTypeDraft {
             id: Id::new(),
             kind,
             pane_position,
+            window_operation,
             family,
             selected_vertex: 0,
             editing_cut: false,
@@ -104,6 +109,7 @@ impl OpeningTypeDraft {
             id,
             kind: p.kind,
             pane_position: p.pane_position,
+            window_operation: p.window_operation,
             family: p.family.clone(),
             selected_vertex: 0,
             editing_cut: false,
@@ -138,6 +144,7 @@ impl OpeningTypeDraft {
                 .map_err(|_| Error::Invalid(format!("{} needs a number", TYPE_FIELDS[index])))
         };
         Ok(OpeningTypeParams {
+            window_operation: self.window_operation,
             family: self.family.clone(),
             name: self.values[3].trim().to_owned(),
             kind: self.kind,
@@ -393,6 +400,17 @@ impl DesktopApp {
                     }
                 });
             if draft.kind == OpeningKind::Window {
+                ui.horizontal(|ui| {
+                    ui.label("2D window symbol");
+                    for operation in [
+                        os_model::WindowOperation::Fixed,
+                        os_model::WindowOperation::Sliding,
+                        os_model::WindowOperation::Casement,
+                    ] {
+                        ui.selectable_value(&mut draft.window_operation, operation, format!("{operation:?}"));
+                    }
+                });
+                ui.small("Plan symbol only; does not create an operable 3D sash.");
                 ui.label("Pane position");
                 ui.horizontal(|ui| {
                     for (position, label) in [
@@ -478,6 +496,35 @@ mod tests {
     use os_model::{Opening, OpeningDefinition, Wall, WallParams};
 
     #[test]
+    fn window_operation_type_editor_defaults_and_duplicate_retains_choice() {
+        let mut editor = Editor::new().unwrap();
+        let mut create = OpeningTypeDraft::new(&editor, OpeningKind::Window, None, None);
+        assert_eq!(create.window_operation, os_model::WindowOperation::Fixed);
+        create.window_operation = os_model::WindowOperation::Sliding;
+        let type_id = create.apply(&mut editor).unwrap();
+        assert_eq!(
+            editor.document.model().opening_types[&type_id]
+                .parameters
+                .window_operation,
+            os_model::WindowOperation::Sliding
+        );
+
+        let mut duplicate = OpeningTypeDraft::edit(&editor, type_id).unwrap();
+        duplicate.duplicate();
+        assert_eq!(
+            duplicate.window_operation,
+            os_model::WindowOperation::Sliding
+        );
+        let duplicate_id = duplicate.apply(&mut editor).unwrap();
+        assert_eq!(
+            editor.document.model().opening_types[&duplicate_id]
+                .parameters
+                .window_operation,
+            os_model::WindowOperation::Sliding
+        );
+    }
+
+    #[test]
     fn window_sill_legacy_conversion_and_duplicate_keep_type_default_and_pin() {
         let mut app = DesktopApp::new().unwrap();
         let wall = Wall::new(os_walls::WALL_TYPE, default_wall(app.active_level));
@@ -498,6 +545,8 @@ mod tests {
                 width_override: None,
                 height_override: None,
                 sill_override: None,
+                pane_position_override: None,
+                lite_side_override: None,
                 hinge: Default::default(),
                 swing: Default::default(),
             },
@@ -574,8 +623,10 @@ mod tests {
             os_walls::WALL_TYPE,
             WallParams {
                 name: "Type host".into(),
-                start: Point2::new(0.0, 0.0),
-                end: Point2::new(8.0, 0.0),
+                path: os_model::WallPath::Straight {
+                    start: Point2::new(0.0, 0.0),
+                    end: Point2::new(8.0, 0.0),
+                },
                 thickness: 0.2,
                 height: 3.0,
                 level,
@@ -596,6 +647,8 @@ mod tests {
                     width_override: None,
                     height_override: None,
                     sill_override: None,
+                    pane_position_override: None,
+                    lite_side_override: None,
                     hinge: Default::default(),
                     swing: Default::default(),
                     name: "Door instance".into(),

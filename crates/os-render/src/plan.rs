@@ -622,6 +622,19 @@ impl PlanDrawing {
             })?
             .query(current, query)
     }
+    pub fn with_snap_arcs(mut self, arcs: Vec<crate::snapping::SnapArc>) -> Result<Self> {
+        ensure(
+            arcs.iter()
+                .all(|a| self.items.iter().any(|i| i.entity == a.entity)),
+            "arc snap references invisible wall",
+        )?;
+        let scene = self
+            .snaps
+            .take()
+            .ok_or_else(|| os_core::Error::Invalid("attach snap segments before arcs".into()))?;
+        self.snaps = Some(scene.with_arcs(arcs)?);
+        Ok(self)
+    }
     pub fn items(&self, current: PlanContext) -> Result<&[PlanItem]> {
         ensure(
             self.context == current,

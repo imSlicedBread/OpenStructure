@@ -9,7 +9,11 @@ use os_model::{
 };
 
 pub fn depth(p: &ResolvedOpening, wall: &WallParams) -> f64 {
-    p.family.depth.min(wall.thickness * 0.2).min(p.width * 0.2)
+    let mut width = p.width;
+    if let Ok(Some(bays)) = p.family.bays(p.width) {
+        width = (bays.primary.1 - bays.primary.0).min(bays.lite.1 - bays.lite.0);
+    }
+    p.family.depth.min(wall.thickness * 0.2).min(width * 0.2)
 }
 
 pub fn pane_offset(p: &ResolvedOpening, wall: &WallParams) -> f64 {
@@ -57,25 +61,30 @@ pub fn component_point(p: &ResolvedOpening, wall: &WallParams, u: f64) -> Point2
 }
 
 pub fn world(wall: &WallParams, x: f64, y: f64) -> Point2 {
-    let dx = (wall.end.x - wall.start.x) / wall.length();
-    let dy = (wall.end.y - wall.start.y) / wall.length();
+    let dx = (wall.end().x - wall.start().x) / wall.length();
+    let dy = (wall.end().y - wall.start().y) / wall.length();
     Point2::new(
-        wall.start.x + dx * x - dy * y,
-        wall.start.y + dy * x + dx * y,
+        wall.start().x + dx * x - dy * y,
+        wall.start().y + dy * x + dx * y,
     )
 }
 
 pub fn component_mesh(p: &ResolvedOpening, wall: &WallParams, elevation: f64) -> Result<Mesh> {
     p.validate_host(wall)?;
     p.family.validate_for(p.width, p.height, p.kind)?;
+    if let Some(bays) = p.family.bays(p.width)? {
+        return two_bay_mesh(p, wall, elevation, bays);
+    }
     let thickness = depth(p, wall);
     if p.family.frame_width == 0.0 && p.family.profile == os_model::OpeningFamily::default().profile
     {
         let start = component_point(p, wall, 0.);
         let end = component_point(p, wall, 1.);
         let mut panel = wall.clone();
-        panel.start = world(wall, start.x, start.y);
-        panel.end = world(wall, end.x, end.y);
+        panel.path = os_model::WallPath::Straight {
+            start: world(wall, start.x, start.y),
+            end: world(wall, end.x, end.y),
+        };
         panel.height = p.height;
         panel.thickness = thickness;
         let mut mesh = crate::PrismKernel
@@ -137,6 +146,109 @@ fn rect_profile(x0: f64, y0: f64, x1: f64, y1: f64) -> Vec<Point2> {
         Point2::new(x1, y1),
         Point2::new(x0, y1),
     ]
+}
+
+/// Derived component only: the model opening and its cut retain their outer bounds.
+pub fn primary_bay(p: &ResolvedOpening) -> Result<ResolvedOpening> {
+    let mut primary = p.clone();
+    if let Some(bays) = p.family.bays(p.width)? {
+        primary.offset += bays.primary.0;
+        primary.width = bays.primary.1 - bays.primary.0;
+        primary.family.side_lite = None;
+        primary.family.frame_width = 0.;
+        primary.family.profile = os_model::OpeningFamily::rectangle();
+        let bottom = if p.kind == OpeningKind::Window {
+            p.family.frame_width
+        } else {
+            0.
+        };
+        primary.sill += bottom;
+        primary.height -= bottom + p.family.frame_width;
+    }
+    Ok(primary)
+}
+
+fn two_bay_mesh(
+    p: &ResolvedOpening,
+    wall: &WallParams,
+    elevation: f64,
+    bays: os_model::OpeningBays,
+) -> Result<Mesh> {
+    let primary = primary_bay(p)?;
+    let thickness = depth(p, wall);
+    let make_panel = |component: &ResolvedOpening| -> Result<Mesh> {
+        let mut part = extrude_floor(
+            &os_model::OpeningFamily::rectangle(),
+            thickness / 2.,
+            thickness,
+        )?;
+        assign_material(&mut part, component.family.panel_material);
+        let mut component = component.clone();
+        component.family.depth = thickness;
+        let a = component_point(&component, wall, 0.);
+        let b = component_point(&component, wall, 1.);
+        let (dx, dy) = ((b.x - a.x) / component.width, (b.y - a.y) / component.width);
+        for v in &mut part.vertices {
+            let center = component_point(&component, wall, v.x);
+            let xy = world(wall, center.x + dy * v.z, center.y - dx * v.z);
+            *v = crate::Vec3::new(
+                xy.x,
+                xy.y,
+                elevation + component.sill + v.y * component.height,
+            );
+        }
+        Ok(part)
+    };
+    let mut mesh = make_panel(&primary)?;
+    let mut lite = primary;
+    lite.kind = OpeningKind::Window;
+    lite.offset = p.offset + bays.lite.0;
+    lite.width = bays.lite.1 - bays.lite.0;
+    lite.family.panel_material = p
+        .family
+        .side_lite
+        .as_ref()
+        .and_then(|l| l.material)
+        .or(p.family.panel_material);
+    append_mesh(&mut mesh, make_panel(&lite)?)?;
+    let f = p.family.frame_width;
+    let bottom = if p.kind == OpeningKind::Window { f } else { 0. };
+    let mut bars = vec![rect_profile(
+        bays.mullion.0 / p.width,
+        bottom / p.height,
+        bays.mullion.1 / p.width,
+        1. - f / p.height,
+    )];
+    if f > 0. {
+        bars.extend([
+            rect_profile(0., 0., f / p.width, 1.),
+            rect_profile(1. - f / p.width, 0., 1., 1.),
+            rect_profile(f / p.width, 1. - f / p.height, 1. - f / p.width, 1.),
+        ]);
+        if p.kind == OpeningKind::Window {
+            bars.push(rect_profile(
+                f / p.width,
+                0.,
+                1. - f / p.width,
+                f / p.height,
+            ));
+        }
+    }
+    for bar in bars {
+        let thickness = frame_thickness(p, wall);
+        let mut part = extrude_floor(&bar, thickness / 2., thickness)?;
+        assign_material(&mut part, p.family.frame_material);
+        for v in &mut part.vertices {
+            let xy = world(wall, p.offset + v.x * p.width, frame_offset(p, wall) + v.z);
+            *v = crate::Vec3::new(xy.x, xy.y, elevation + p.sill + v.y * p.height);
+        }
+        for t in &mut part.triangles {
+            t.swap(1, 2);
+        }
+        append_mesh(&mut mesh, part)?;
+    }
+    mesh.validate()?;
+    Ok(mesh)
 }
 
 fn assign_material(mesh: &mut Mesh, material: Option<os_core::Id>) {
@@ -281,13 +393,161 @@ mod tests {
     use super::*;
 
     #[test]
+    fn two_bay_components_materials_frames_alignment_and_reversed_hosts() {
+        let model = os_model::Model::new("Bays");
+        let level = *model.levels.keys().next().unwrap();
+        for kind in [OpeningKind::Door, OpeningKind::Window] {
+            for side in [os_model::LiteSide::Start, os_model::LiteSide::End] {
+                for reversed in [false, true] {
+                    for alignment in [
+                        WindowPanePosition::Center,
+                        WindowPanePosition::LeftFace,
+                        WindowPanePosition::RightFace,
+                    ] {
+                        let mut wall = WallParams {
+                            name: "Host".into(),
+                            path: os_model::WallPath::Straight {
+                                start: Point2::new(2., 3.),
+                                end: Point2::new(2., 11.),
+                            },
+                            thickness: 0.2,
+                            height: 4.,
+                            level,
+                            material: None,
+                        };
+                        if reversed {
+                            wall.path = os_model::WallPath::Straight {
+                                start: wall.end(),
+                                end: wall.start(),
+                            };
+                        }
+                        for frame in [0., 0.05] {
+                            let panel = os_core::Id::new();
+                            let lite = os_core::Id::new();
+                            let mullion = os_core::Id::new();
+                            let p = ResolvedOpening {
+                                window_operation: Default::default(),
+                                name: "Bay".into(),
+                                host: level,
+                                offset: 1.,
+                                kind,
+                                width: 1.2,
+                                height: 2.,
+                                sill: if kind == OpeningKind::Door { 0. } else { 0.8 },
+                                pane_position: alignment,
+                                type_id: None,
+                                type_name: None,
+                                hinge: DoorHinge::End,
+                                swing: DoorSwing::Right,
+                                family: os_model::OpeningFamily {
+                                    frame_width: frame,
+                                    panel_material: Some(panel),
+                                    frame_material: Some(mullion),
+                                    side_lite: Some(os_model::SideLite {
+                                        side,
+                                        width_fraction: 0.25,
+                                        mullion_width: 0.05,
+                                        material: Some(lite),
+                                    }),
+                                    ..Default::default()
+                                },
+                            };
+                            let mesh = component_mesh(&p, &wall, 0.).unwrap();
+                            mesh.validate().unwrap();
+                            assert_eq!(
+                                mesh.triangles.len(),
+                                12 * (3 + if frame == 0. {
+                                    0
+                                } else if kind == OpeningKind::Door {
+                                    3
+                                } else {
+                                    4
+                                })
+                            );
+                            assert_eq!(
+                                mesh.surfaces
+                                    .iter()
+                                    .filter(|s| s.material == Some(panel))
+                                    .count(),
+                                12
+                            );
+                            assert_eq!(
+                                mesh.surfaces
+                                    .iter()
+                                    .filter(|s| s.material == Some(lite))
+                                    .count(),
+                                12
+                            );
+                            let separator = &mesh.vertices[16..24];
+                            let low = separator.iter().map(|v| v.z).fold(f64::INFINITY, f64::min);
+                            let high = separator
+                                .iter()
+                                .map(|v| v.z)
+                                .fold(f64::NEG_INFINITY, f64::max);
+                            assert!(
+                                (low - p.sill
+                                    - if kind == OpeningKind::Window {
+                                        frame
+                                    } else {
+                                        0.
+                                    })
+                                .abs()
+                                    < 1e-10
+                            );
+                            assert!((high - p.sill - p.height + frame).abs() < 1e-10);
+                            assert_eq!(
+                                cut_plan_spans(&p, 0., p.sill + 1., 0.).unwrap(),
+                                vec![(0., 1.)]
+                            );
+                            if kind == OpeningKind::Window {
+                                let normal = |v: &crate::Vec3| {
+                                    if reversed {
+                                        v.x - wall.start().x
+                                    } else {
+                                        wall.start().x - v.x
+                                    }
+                                };
+                                for vertices in [&mesh.vertices[..8], &mesh.vertices[8..16]] {
+                                    let low =
+                                        vertices.iter().map(normal).fold(f64::INFINITY, f64::min);
+                                    let high = vertices
+                                        .iter()
+                                        .map(normal)
+                                        .fold(f64::NEG_INFINITY, f64::max);
+                                    assert!(
+                                        ((low + high) / 2. - pane_offset(&p, &wall)).abs() < 1e-10
+                                    );
+                                }
+                            }
+                            let mut inherited = p.clone();
+                            inherited.family.side_lite.as_mut().unwrap().material = None;
+                            let inherited = component_mesh(&inherited, &wall, 0.).unwrap();
+                            assert_eq!(inherited.vertices, mesh.vertices);
+                            assert_eq!(
+                                inherited
+                                    .surfaces
+                                    .iter()
+                                    .filter(|s| s.material == Some(panel))
+                                    .count(),
+                                24
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn authored_opening_frames_create_closed_door_and_window_assemblies() {
         let mut model = os_model::Model::new("Framed openings");
         let level = *model.levels.keys().next().unwrap();
         let wall = WallParams {
             name: "Host".into(),
-            start: Point2::new(0., 0.),
-            end: Point2::new(8., 0.),
+            path: os_model::WallPath::Straight {
+                start: Point2::new(0., 0.),
+                end: Point2::new(8., 0.),
+            },
             thickness: 0.2,
             height: 3.,
             level,
@@ -302,6 +562,7 @@ mod tests {
             let ty = os_model::OpeningType::new(
                 "core.opening_type",
                 os_model::OpeningTypeParams {
+                    window_operation: Default::default(),
                     family,
                     name: format!("{kind:?}"),
                     kind,
@@ -322,6 +583,8 @@ mod tests {
                     width_override: None,
                     height_override: None,
                     sill_override: None,
+                    pane_position_override: None,
+                    lite_side_override: None,
                     name: format!("{kind:?} instance"),
                     host: level,
                     offset: 1.,
@@ -397,8 +660,10 @@ mod tests {
         let level = *model.levels.keys().next().unwrap();
         let wall = WallParams {
             name: "Host".into(),
-            start: Point2::new(3., 4.),
-            end: Point2::new(7., 7.),
+            path: os_model::WallPath::Straight {
+                start: Point2::new(3., 4.),
+                end: Point2::new(7., 7.),
+            },
             thickness: 0.2,
             height: 3.,
             level,
@@ -407,6 +672,7 @@ mod tests {
         let ty = os_model::OpeningType::new(
             "core.opening_type",
             os_model::OpeningTypeParams {
+                window_operation: Default::default(),
                 family: os_model::OpeningFamily {
                     profile: vec![
                         Point2::new(0., 0.),
@@ -432,6 +698,8 @@ mod tests {
                         width_override: None,
                         height_override: None,
                         sill_override: None,
+                        pane_position_override: None,
+                        lite_side_override: None,
                         name: "Door".into(),
                         host: level,
                         offset: 1.,

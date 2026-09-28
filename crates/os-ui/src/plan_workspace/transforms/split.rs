@@ -19,27 +19,27 @@ impl Draft {
         let original = &source.parameters;
         let world = self.context.basis.plane_to_world(point)?;
         let length = original.length();
-        let ux = (original.end.x - original.start.x) / length;
-        let uy = (original.end.y - original.start.y) / length;
+        let ux = (original.end().x - original.start().x) / length;
+        let uy = (original.end().y - original.start().y) / length;
         // Project only onto this wall's axis. Generic snaps must not displace it.
-        let station = (world.x - original.start.x) * ux + (world.y - original.start.y) * uy;
+        let station = (world.x - original.start().x) * ux + (world.y - original.start().y) * uy;
         ensure(
             station.is_finite() && station > 0.001 && length - station > 0.001,
             "Split must leave more than 1 mm at both wall ends",
         )?;
         let cut = Point2::new(
-            original.start.x + ux * station,
-            original.start.y + uy * station,
+            original.start().x + ux * station,
+            original.start().y + uy * station,
         );
         ensure(
             point_in_plan_crop(self.context, self.context.basis.world_to_plane(cut)?),
             "Split station is outside the plan crop",
         )?;
         let mut start = original.clone();
-        start.end = cut;
+        *start.path.straight_end_mut()? = cut;
         let mut end = source.clone();
         end.header.id = self.split_id;
-        end.parameters.start = cut;
+        *end.parameters.path.straight_start_mut()? = cut;
         start.validate()?;
         end.parameters.validate()?;
         let lifecycle = self
@@ -131,7 +131,7 @@ impl Draft {
                 (p.y / ROOM_TOLERANCE).round() as i64,
             )
         };
-        let forward = quantized(original.start) < quantized(original.end);
+        let forward = quantized(original.start()) < quantized(original.end());
         let affected: Vec<_> = self
             .original
             .rooms

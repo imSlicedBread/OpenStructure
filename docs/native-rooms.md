@@ -131,7 +131,7 @@ fit checks. See [sheet preview](native-sheet-preview.md).
 
 Schema 32→33 atomically initializes all three required nullable fields to null,
 preserving IDs, boundary signatures and legacy schedule definitions. Native
-full-model plugins now require API 26/schema 45; generic API 2 and container 2 remain
+full-model plugins now require API 32/schema 51; generic API 2 and container 2 remain
 unchanged. Frozen migration and save/reopen evidence is in
 `crates/os-storage/tests/room_finishes.rs` and its schema-32 JSON fixture.
 

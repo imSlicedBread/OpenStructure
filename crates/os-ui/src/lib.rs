@@ -1015,6 +1015,7 @@ impl DesktopApp {
     }
 
     fn show(&mut self, ctx: &egui::Context) {
+        self.discard_hidden_opening_interaction();
         // Render the phase modal first so its keyboard input cannot reach the
         // document or plan tools, including on the frame that Cancel closes it.
         let phase_modal = self.phase_draft.is_some();
@@ -1152,8 +1153,10 @@ impl eframe::App for DesktopApp {
 fn default_wall(level: Id) -> WallParams {
     WallParams {
         name: "Wall".into(),
-        start: Point2::new(0.0, 0.0),
-        end: Point2::new(5.0, 0.0),
+        path: os_model::WallPath::Straight {
+            start: Point2::new(0.0, 0.0),
+            end: Point2::new(5.0, 0.0),
+        },
         thickness: 0.2,
         height: 3.0,
         level,
@@ -1574,7 +1577,7 @@ mod desktop_tests {
                 .unwrap()
                 .start
                 .unwrap()
-                .distance(first.parameters.end)
+                .distance(first.parameters.end())
                 < 1e-8
         );
         h.click_at(end - egui::vec2(0.0, 130.0));
@@ -1589,7 +1592,7 @@ mod desktop_tests {
             .values()
             .find(|w| w.id() != first.id())
             .unwrap();
-        assert_eq!(second.parameters.start, first.parameters.end);
+        assert_eq!(second.parameters.start(), first.parameters.end());
         assert_eq!(h.app.editor.scene.len(), 2);
         h.app.history(false);
         h.frame(vec![]);
@@ -1681,7 +1684,7 @@ mod desktop_tests {
         h.click("Draw wall in plan");
         h.click_at(end + egui::vec2(4.0, 0.0));
         let gesture = h.app.wall_gesture.as_mut().unwrap();
-        assert!(gesture.start.unwrap().distance(first.parameters.end) < 1e-8);
+        assert!(gesture.start.unwrap().distance(first.parameters.end()) < 1e-8);
         gesture.length = "3".into();
         gesture.angle_degrees = "90".into();
         h.click_at(end - egui::vec2(0.0, 80.0));
@@ -1696,7 +1699,7 @@ mod desktop_tests {
             .values()
             .find(|w| w.id() != first.id())
             .unwrap();
-        assert_eq!(second.parameters.start, first.parameters.end);
+        assert_eq!(second.parameters.start(), first.parameters.end());
         assert!((second.parameters.length() - 3.0).abs() < 1e-8);
         assert_eq!(h.app.editor.scene.len(), 2);
         let two = h.app.editor.document.model().clone();
@@ -1754,8 +1757,8 @@ mod desktop_tests {
             } else {
                 &h.app.editor.document.model().walls[&first.id()]
             };
-            assert_eq!(actual.parameters.start, expected.start);
-            assert_eq!(actual.parameters.end, expected.end);
+            assert_eq!(actual.parameters.start(), expected.start());
+            assert_eq!(actual.parameters.end(), expected.end());
             h.app.history(false);
             settle(&mut h);
             assert_eq!(*h.app.editor.document.model(), two);
@@ -1974,8 +1977,8 @@ mod desktop_tests {
             .find(|(id, _)| !original.walls.contains_key(id))
             .unwrap()
             .1;
-        assert_eq!(added.parameters.start, Point2::new(3.0, 0.0));
-        assert_eq!(added.parameters.end, Point2::new(3.0, 2.0));
+        assert_eq!(added.parameters.start(), Point2::new(3.0, 0.0));
+        assert_eq!(added.parameters.end(), Point2::new(3.0, 2.0));
         h.app.history(false);
         assert_eq!(h.app.editor.document.model(), &original);
     }
@@ -2008,8 +2011,8 @@ mod desktop_tests {
             .find(|(id, _)| !original.walls.contains_key(id))
             .unwrap()
             .1;
-        assert_eq!(added.parameters.start, Point2::new(1.0, 2.0));
-        assert_eq!(added.parameters.end, Point2::new(1.0, 0.0));
+        assert_eq!(added.parameters.start(), Point2::new(1.0, 2.0));
+        assert_eq!(added.parameters.end(), Point2::new(1.0, 0.0));
         h.app.history(false);
         assert_eq!(h.app.editor.document.model(), &original);
     }
@@ -2059,8 +2062,8 @@ mod desktop_tests {
             assert_eq!(changed.walls[&id], original.walls[&id]);
             assert_eq!(changed.walls.len(), 2);
             let copy = changed.walls.values().find(|wall| wall.id() != id).unwrap();
-            assert_eq!(copy.parameters.start, Point2::new(0.0, -2.0));
-            assert_eq!(copy.parameters.end, Point2::new(5.0, -2.0));
+            assert_eq!(copy.parameters.start(), Point2::new(0.0, -2.0));
+            assert_eq!(copy.parameters.end(), Point2::new(5.0, -2.0));
             assert_eq!(h.app.editor.scene.len(), 2);
             h.app.history(false);
             assert_eq!(h.app.editor.document.model(), &original);
@@ -2192,8 +2195,8 @@ mod desktop_tests {
             .find(|(id, _)| !original.walls.contains_key(id))
             .unwrap()
             .1;
-        assert_eq!(wall.parameters.start, Point2::default());
-        assert_eq!(wall.parameters.end, Point2::new(1.0, 1.0));
+        assert_eq!(wall.parameters.start(), Point2::default());
+        assert_eq!(wall.parameters.end(), Point2::new(1.0, 1.0));
         h.app.history(false);
         assert_eq!(h.app.editor.document.model(), &original);
     }
@@ -2234,8 +2237,8 @@ mod desktop_tests {
             settle(&mut h);
             let moved = h.app.editor.document.model().clone();
             assert_eq!(moved.walls[&id].header, original.walls[&id].header);
-            assert_eq!(moved.walls[&id].parameters.start, Point2::new(1.0, 1.0));
-            assert_eq!(moved.walls[&id].parameters.end, Point2::new(3.0, 1.0));
+            assert_eq!(moved.walls[&id].parameters.start(), Point2::new(1.0, 1.0));
+            assert_eq!(moved.walls[&id].parameters.end(), Point2::new(3.0, 1.0));
             assert_eq!(h.app.editor.scene.len(), 1);
             h.app.history(false);
             assert_eq!(h.app.editor.document.model(), &original);
@@ -2252,9 +2255,10 @@ mod desktop_tests {
             settle(&mut h);
             let resized = h.app.editor.document.model().clone();
             assert_eq!(resized.walls[&id].header, original.walls[&id].header);
-            assert_eq!(resized.walls[&id].parameters.start, Point2::new(1.0, 1.0));
+            assert_eq!(resized.walls[&id].parameters.start(), Point2::new(1.0, 1.0));
             assert_ne!(
-                resized.walls[&id].parameters.end, moved.walls[&id].parameters.end,
+                resized.walls[&id].parameters.end(),
+                moved.walls[&id].parameters.end(),
                 "resize must commit at scale={scale}"
             );
             h.app.history(false);
@@ -2329,8 +2333,8 @@ mod desktop_tests {
             h.click_at(rect.center() + egui::vec2(65.0, -130.0));
             settle(&mut h);
             let wall = h.app.editor.document.model().walls.values().next().unwrap();
-            assert_eq!(wall.parameters.start, Point2::new(1.0, 0.0));
-            assert_eq!(wall.parameters.end, Point2::new(1.0, 2.0));
+            assert_eq!(wall.parameters.start(), Point2::new(1.0, 0.0));
+            assert_eq!(wall.parameters.end(), Point2::new(1.0, 2.0));
             assert_eq!(h.app.editor.document.model().grids[&grid.id()], grid);
             h.app.history(false);
             h.frame(vec![]);
@@ -2535,8 +2539,7 @@ mod desktop_tests {
                             "org.openstructure.walls.wall",
                             WallParams {
                                 name: name.into(),
-                                start,
-                                end,
+                                path: os_model::WallPath::Straight { start, end },
                                 thickness: 0.2,
                                 height: 3.0,
                                 level,
@@ -2654,8 +2657,10 @@ mod desktop_tests {
                         "org.openstructure.walls.wall",
                         WallParams {
                             name: "Partition".into(),
-                            start: Point2::new(2.0, 0.0),
-                            end: Point2::new(2.0, 3.0),
+                            path: os_model::WallPath::Straight {
+                                start: Point2::new(2.0, 0.0),
+                                end: Point2::new(2.0, 3.0),
+                            },
                             thickness: 0.1,
                             height: 3.0,
                             level,
@@ -3104,7 +3109,7 @@ mod desktop_tests {
     #[test]
     fn invalid_drafts_and_file_confirmations_preserve_committed_work() {
         let mut h = Harness::new();
-        h.app.draft.end = h.app.draft.start;
+        *h.app.draft.path.straight_end_mut().unwrap() = h.app.draft.start();
         h.frame(vec![]);
         h.click("Create wall");
         assert!(h.app.status_error);
@@ -3205,7 +3210,7 @@ mod desktop_tests {
                     );
                 }
                 h.dimension("End X", "7");
-                assert_eq!(h.app.draft.end.x, 7.0);
+                assert_eq!(h.app.draft.end().x, 7.0);
                 assert!(
                     h.app.editor.scene.is_empty(),
                     "Draft field edit committed prematurely"

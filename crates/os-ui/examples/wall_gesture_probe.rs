@@ -61,8 +61,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     editor.update_floor_plan(view, "Installed pointer plan", level, settings)?;
     let p = WallParams {
         name: "Wall".into(),
-        start: Point2::default(),
-        end: Point2::new(5.0, 0.0),
+        path: os_model::WallPath::Straight {
+            start: Point2::default(),
+            end: Point2::new(5.0, 0.0),
+        },
         thickness: 0.2,
         height: 3.0,
         level,
@@ -97,7 +99,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap()
         .clone();
     ensure(
-        first.parameters.start == expected.start && first.parameters.end == expected.end,
+        first.parameters.start() == expected.start() && first.parameters.end() == expected.end(),
         "guest changed exact preview coordinates",
     )?;
     ensure(
@@ -112,7 +114,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         camera,
         viewport: [800.0, 600.0],
         pointer: camera.project(
-            c.basis.world_to_plane(first.parameters.end)?,
+            c.basis.world_to_plane(first.parameters.end())?,
             [800.0, 600.0],
         )?,
         radius_pixels: 8.0,
@@ -211,8 +213,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &editor.document.model().walls[&first.id()]
         };
         ensure(
-            actual.parameters.start == expected.start
-                && actual.parameters.end == expected.end
+            actual.parameters.start() == expected.start()
+                && actual.parameters.end() == expected.end()
                 && actual.parameters.level == expected.level
                 && actual.parameters.height == expected.height
                 && actual.parameters.thickness == expected.thickness,

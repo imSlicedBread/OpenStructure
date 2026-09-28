@@ -14,8 +14,8 @@ pub enum WallEndpoint {
 impl WallEndpoint {
     pub fn point(self, wall: &WallParams) -> Point2 {
         match self {
-            Self::Start => wall.start,
-            Self::End => wall.end,
+            Self::Start => wall.start(),
+            Self::End => wall.end(),
         }
     }
     pub fn opposite(self) -> Self {
@@ -85,6 +85,10 @@ impl WallJoinParams {
         let [a, b] = self.members();
         ensure(a != b, "join requires different walls")?;
         let (wa, wb) = (&wall(model, a)?, &wall(model, b)?);
+        ensure(
+            wa.path.is_straight() && wb.path.is_straight(),
+            "wall joins require straight walls; circular wall joins are not supported",
+        )?;
         wa.validate()?;
         wb.validate()?;
         ensure(
@@ -138,8 +142,8 @@ impl WallJoinParams {
             }
             let w = &model.resolve_wall(*id)?.parameters;
             let d = axis(w);
-            let t =
-                ((node.x - w.start.x) * d.x + (node.y - w.start.y) * d.y).clamp(0.0, w.length());
+            let t = ((node.x - w.start().x) * d.x + (node.y - w.start().y) * d.y)
+                .clamp(0.0, w.length());
             ensure(
                 node.distance(wall_point(w, t, 0.0)) > (wa.thickness + w.thickness) / 2.0 + 1e-9,
                 "join has an ambiguous third wall at its junction",
@@ -153,17 +157,10 @@ fn wall(model: &Model, id: Id) -> Result<WallParams> {
     Ok(model.resolve_wall(id)?.parameters)
 }
 pub fn axis(w: &WallParams) -> Point2 {
-    Point2::new(
-        (w.end.x - w.start.x) / w.length(),
-        (w.end.y - w.start.y) / w.length(),
-    )
+    w.path.tangent(0.0)
 }
 pub fn wall_point(w: &WallParams, station: f64, across: f64) -> Point2 {
-    let d = axis(w);
-    Point2::new(
-        w.start.x + d.x * station - d.y * across,
-        w.start.y + d.y * station + d.x * across,
-    )
+    w.path.offset_point(station, across)
 }
 
 /// Effective material stations in the authored axis, shared by all consumers.
@@ -228,6 +225,10 @@ impl ButtJoinParams {
             "butt join requires two different walls",
         )?;
         let (a, b) = (&wall(model, self.a.wall)?, &wall(model, self.b.wall)?);
+        ensure(
+            a.path.is_straight() && b.path.is_straight(),
+            "wall joins require straight walls; circular wall joins are not supported",
+        )?;
         a.validate()?;
         b.validate()?;
         ensure(
@@ -255,11 +256,11 @@ impl ButtJoinParams {
                 continue;
             }
             let w = &model.resolve_wall(*id)?.parameters;
-            let dx = w.end.x - w.start.x;
-            let dy = w.end.y - w.start.y;
+            let dx = w.end().x - w.start().x;
+            let dy = w.end().y - w.start().y;
             let length = dx.hypot(dy);
-            let along = ((node.x - w.start.x) * dx + (node.y - w.start.y) * dy) / length;
-            let across = ((node.x - w.start.x) * dy - (node.y - w.start.y) * dx) / length;
+            let along = ((node.x - w.start().x) * dx + (node.y - w.start().y) * dy) / length;
+            let across = ((node.x - w.start().x) * dy - (node.y - w.start().y) * dx) / length;
             ensure(
                 !(across.abs() <= 1e-9 && along >= -1e-9 && along <= length + 1e-9),
                 "butt join has a competing wall at its junction",
@@ -326,7 +327,7 @@ pub fn validate_wall_joins(model: &Model) -> Result<()> {
             {
                 let (a, b) = wall_join_trace(model, &join.parameters)?;
                 let d = axis(w);
-                let project = |p: Point2| (p.x - w.start.x) * d.x + (p.y - w.start.y) * d.y;
+                let project = |p: Point2| (p.x - w.start().x) * d.x + (p.y - w.start().y) * d.y;
                 let (a, b) = (project(a), project(b));
                 if (a - b).abs() > 1e-9 {
                     ensure(

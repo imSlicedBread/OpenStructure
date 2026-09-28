@@ -32,8 +32,8 @@ fn ring(x0: f64, y0: f64, x1: f64, y1: f64) -> Vec<Point2> {
 impl Harness {
     fn new(size: egui::Vec2, scale: f32) -> Self {
         let mut app = DesktopApp::new().unwrap();
-        app.draft.start = Point2::new(-3., 0.);
-        app.draft.end = Point2::new(3., 0.);
+        *app.draft.path.straight_start_mut().unwrap() = Point2::new(-3., 0.);
+        *app.draft.path.straight_end_mut().unwrap() = Point2::new(3., 0.);
         app.apply_wall();
         let wall = app.selected.unwrap();
         let view = app
@@ -57,6 +57,8 @@ impl Harness {
                     width_override: None,
                     height_override: None,
                     sill_override: None,
+                    pane_position_override: None,
+                    lite_side_override: None,
                     hinge: Default::default(),
                     swing: Default::default(),
                 },

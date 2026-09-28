@@ -61,7 +61,15 @@ impl DesktopApp {
                 .map(|i| format!("{base} {i}"))
                 .find(|n| !names.contains(&n.to_lowercase()))
                 .unwrap();
-            (None, ScheduleParams::new(name, category))
+            let parameters =
+                match ScheduleParams::new_for_model(name, category, self.editor.document.model()) {
+                    Ok(parameters) => parameters,
+                    Err(error) => {
+                        self.report(Err(error), "");
+                        return;
+                    }
+                };
+            (None, parameters)
         } else if let Some(schedule) = self
             .opening_schedule
             .selected
@@ -145,6 +153,9 @@ impl DesktopApp {
             if ui.button("New Window schedule").clicked() {
                 self.begin_definition(Some(ScheduleCategory::Window));
             }
+            if ui.button("New All schedule").clicked() {
+                self.begin_definition(Some(ScheduleCategory::All));
+            }
             if ui.button("New Room Finish schedule").clicked() {
                 self.begin_definition(Some(ScheduleCategory::RoomFinish));
             }
@@ -195,10 +206,14 @@ impl DesktopApp {
                 if (previous == ScheduleCategory::RoomFinish)
                     != (draft.parameters.category == ScheduleCategory::RoomFinish)
                 {
-                    draft.parameters = ScheduleParams::new(
+                    match ScheduleParams::new_for_model(
                         draft.parameters.name.clone(),
                         draft.parameters.category,
-                    );
+                        self.editor.document.model(),
+                    ) {
+                        Ok(parameters) => draft.parameters = parameters,
+                        Err(error) => draft.error = Some(error.to_string()),
+                    }
                 }
                 egui::ComboBox::from_id_salt("schedule_sort")
                     .selected_text(format!("Sort: {:?}", draft.parameters.sort))
@@ -236,6 +251,36 @@ impl DesktopApp {
                 }
             });
             if draft.parameters.category != ScheduleCategory::RoomFinish {
+                phase_controls(
+                    ui,
+                    &mut draft.parameters.phase,
+                    self.editor.document.model(),
+                );
+                ui.label("Group counts · up to two keys, in order");
+                ui.horizontal_wrapped(|ui| {
+                    for key in os_model::ScheduleGroupField::ALL {
+                        let mut enabled = draft.parameters.group_by.contains(&key);
+                        if ui
+                            .add_enabled(
+                                enabled || draft.parameters.group_by.len() < 2,
+                                egui::Checkbox::new(&mut enabled, format!("Group {key:?}")),
+                            )
+                            .changed()
+                        {
+                            if enabled {
+                                draft.parameters.group_by.push(key);
+                            } else {
+                                draft.parameters.group_by.retain(|k| *k != key);
+                            }
+                        }
+                    }
+                });
+                if draft.parameters.group_by.len() == 2
+                    && ui.button("Swap grouping order").clicked()
+                {
+                    draft.parameters.group_by.swap(0, 1);
+                }
+                ui.label(format!("Grouping order: {:?}", draft.parameters.group_by));
                 filters::controls(ui, &mut draft.parameters);
             } else {
                 ui.label("RoomFinish filters are not supported.");
@@ -256,4 +301,58 @@ impl DesktopApp {
         }
         ui.separator();
     }
+}
+
+fn phase_controls(ui: &mut egui::Ui, phase: &mut SchedulePhase, model: &Model) {
+    use os_model::PhaseFilter;
+    ui.horizontal_wrapped(|ui| {
+        ui.label("Schedule phase");
+        ui.selectable_value(phase, SchedulePhase::LegacyUnphased, "Legacy unphased");
+        let mut aware = matches!(phase, SchedulePhase::PhaseAware { .. });
+        if ui.checkbox(&mut aware, "Phase aware").changed() {
+            *phase = if aware {
+                SchedulePhase::PhaseAware {
+                    target: model.latest_phase(),
+                    filter: PhaseFilter::ShowAll,
+                }
+            } else {
+                SchedulePhase::LegacyUnphased
+            };
+        }
+        if let SchedulePhase::PhaseAware { target, filter } = phase {
+            egui::ComboBox::from_id_salt("schedule_phase_target")
+                .selected_text(target.map_or_else(
+                    || "Latest phase (dynamic)".into(),
+                    |id| {
+                        model.phases.get(&id).map_or_else(
+                            || "Missing phase".into(),
+                            |p| format!("Pinned: {}", p.parameters.name),
+                        )
+                    },
+                ))
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(target, None, "Latest phase (dynamic)");
+                    for p in model.ordered_phases() {
+                        ui.selectable_value(
+                            target,
+                            Some(p.id()),
+                            format!("Pinned: {}", p.parameters.name),
+                        );
+                    }
+                });
+            egui::ComboBox::from_id_salt("schedule_phase_filter")
+                .selected_text(format!("{filter:?}"))
+                .show_ui(ui, |ui| {
+                    for value in [
+                        PhaseFilter::ShowAll,
+                        PhaseFilter::ShowExisting,
+                        PhaseFilter::ShowNew,
+                        PhaseFilter::ShowDemolished,
+                        PhaseFilter::ShowTemporary,
+                    ] {
+                        ui.selectable_value(filter, value, format!("{value:?}"));
+                    }
+                });
+        }
+    });
 }

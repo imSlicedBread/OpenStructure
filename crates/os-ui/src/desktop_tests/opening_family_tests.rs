@@ -1,5 +1,47 @@
 use super::*;
 
+#[test]
+fn two_bay_controls_apply_cancel_and_history_at_both_dpis() {
+    for (size, scale) in [
+        (egui::vec2(1280., 800.), 1.),
+        (egui::vec2(1000., 650.), 1.5),
+    ] {
+        for kind in [os_model::OpeningKind::Door, os_model::OpeningKind::Window] {
+            let mut h = Harness::at_size(size, scale);
+            let before = h.app.editor.document.model().clone();
+            h.app.begin_new_opening_type(kind);
+            h.frame(vec![]);
+            h.frame(vec![]);
+            h.click("Fixed side lite / two bays");
+            h.click("Start");
+            assert_eq!(h.app.editor.document.model(), &before);
+            h.click("Cancel type");
+            assert_eq!(h.app.editor.document.model(), &before);
+            h.app.begin_new_opening_type(kind);
+            h.frame(vec![]);
+            h.frame(vec![]);
+            h.click("Fixed side lite / two bays");
+            h.click("Apply type");
+            let after = h.app.editor.document.model().clone();
+            let family = &after
+                .opening_types
+                .values()
+                .next()
+                .unwrap()
+                .parameters
+                .family;
+            assert_eq!(
+                family.side_lite.as_ref().unwrap().side,
+                os_model::LiteSide::End
+            );
+            h.app.history(false);
+            assert_eq!(h.app.editor.document.model(), &before);
+            h.app.history(true);
+            assert_eq!(h.app.editor.document.model(), &after);
+        }
+    }
+}
+
 fn profile_handles(h: &Harness) -> Vec<egui::Pos2> {
     h.output
         .shapes
@@ -345,6 +387,7 @@ fn window_type_pane_position_edit_cancel_stale_and_history_at_both_dpis() {
         let ty = os_model::OpeningType::new(
             "core.opening_type",
             os_model::OpeningTypeParams {
+                window_operation: Default::default(),
                 family: Default::default(),
                 name: "Window family".into(),
                 kind: os_model::OpeningKind::Window,
@@ -362,6 +405,8 @@ fn window_type_pane_position_edit_cancel_stale_and_history_at_both_dpis() {
                     width_override: None,
                     height_override: None,
                     sill_override: None,
+                    pane_position_override: None,
+                    lite_side_override: None,
                     name: "Window instance".into(),
                     host,
                     offset,

@@ -1,6 +1,84 @@
 use super::*;
 
 #[test]
+fn window_pane_form_pin_equal_reset_cancel_and_stale_both_dpis() {
+    for (size, scale) in [
+        (egui::vec2(1280., 800.), 1.),
+        (egui::vec2(1000., 650.), 1.5),
+    ] {
+        let mut app = DesktopApp::new().unwrap();
+        let view = app
+            .editor
+            .create_floor_plan("Panes", app.active_level)
+            .unwrap();
+        let wall = os_model::Wall::new(os_walls::WALL_TYPE, default_wall(app.active_level));
+        let host = wall.id();
+        app.editor.command("Host", Command::AddWall(wall)).unwrap();
+        let draft = OpeningDraft::begin(
+            &app.editor,
+            Some(view),
+            Some(host),
+            Some(OpeningKind::Window),
+            None,
+        )
+        .unwrap();
+        let id = draft
+            .apply(&mut app.editor, Some(view), Some(host), false)
+            .unwrap();
+        app.plans.active = Some(view);
+        app.select(Some(id));
+        let before = app.editor.document.model().clone();
+        let stats = app.editor.document.history_stats();
+        let ctx = egui::Context::default();
+        theme::apply(&ctx);
+        app.begin_opening(None);
+        click(&mut app, &ctx, size, scale, "Center");
+        app.opening_draft
+            .as_ref()
+            .unwrap()
+            .preview(&app.editor, Some(view), Some(id))
+            .unwrap();
+        assert_eq!(app.editor.document.model(), &before);
+        click(&mut app, &ctx, size, scale, "Apply opening");
+        let mut pinned = before.clone();
+        pinned
+            .openings
+            .get_mut(&id)
+            .unwrap()
+            .parameters
+            .pane_position_override = Some(WindowPanePosition::Center);
+        assert_eq!(app.editor.document.model(), &pinned);
+        assert_eq!(
+            app.editor.document.history_stats().undo_entries,
+            stats.undo_entries + 1
+        );
+        app.editor.undo().unwrap();
+        assert_eq!(app.editor.document.model(), &before);
+        app.editor.redo().unwrap();
+        assert_eq!(app.editor.document.model(), &pinned);
+        app.begin_opening(None);
+        click(&mut app, &ctx, size, scale, "Reset pane to type default");
+        click(&mut app, &ctx, size, scale, "Apply opening");
+        assert_eq!(app.editor.document.model(), &before);
+        app.begin_opening(None);
+        click(&mut app, &ctx, size, scale, "Left face");
+        click(&mut app, &ctx, size, scale, "Cancel opening");
+        assert_eq!(app.editor.document.model(), &before);
+        app.begin_opening(None);
+        click(&mut app, &ctx, size, scale, "Right face");
+        app.editor
+            .command("Revision", Command::RenameProject("Changed".into()))
+            .unwrap();
+        let changed = app.editor.document.model().clone();
+        let stats = app.editor.document.history_stats();
+        frame(&mut app, &ctx, size, scale, vec![]);
+        assert!(app.opening_draft.is_none());
+        assert_eq!(app.editor.document.model(), &changed);
+        assert_eq!(app.editor.document.history_stats(), stats);
+    }
+}
+
+#[test]
 fn instance_dimension_forms_inherit_pin_reset_preview_history_cancel_and_stale_both_dpis() {
     for (size, scale) in [
         (egui::vec2(1280., 800.), 1.),

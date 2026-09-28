@@ -28,8 +28,10 @@ pub(crate) fn fixture() -> (Editor, Id, [Id; 6], [Id; 3]) {
             WallParams {
                 name: format!("Phase wall {i}"),
                 level,
-                start: Point2::new(0., i as f64 * 2.),
-                end: Point2::new(6., i as f64 * 2.),
+                path: os_model::WallPath::Straight {
+                    start: Point2::new(0., i as f64 * 2.),
+                    end: Point2::new(6., i as f64 * 2.),
+                },
                 thickness: 0.2,
                 height: 3.,
                 material: None,
@@ -171,6 +173,8 @@ fn phase_opening_cutout_tags_dimensions_host_and_provider_precedence() {
                 width_override: None,
                 height_override: None,
                 sill_override: None,
+                pane_position_override: None,
+                lite_side_override: None,
                 hinge: Default::default(),
                 swing: Default::default(),
             },

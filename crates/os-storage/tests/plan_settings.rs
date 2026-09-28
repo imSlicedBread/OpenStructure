@@ -5,6 +5,7 @@ use os_storage::{Manifest, StorageBackend, ZipJsonStorage, migrate};
 use serde_json::{Value, json};
 use std::{fs::File, io::Write, path::Path};
 use zip::{ZipWriter, write::SimpleFileOptions};
+mod common;
 
 const FIXTURE: &str = include_str!("../../../fixtures/schema-2-plans.json");
 const PLAN: &str = "55555555-5555-4555-8555-555555555555";
@@ -14,6 +15,8 @@ fn schema_44_phase_defaults_preserve_settings_and_reject_partial_data_atomically
     // Start with a frozen old document, then isolate the schema 44 -> 45 step.
     let mut legacy: Value = serde_json::from_str(FIXTURE).unwrap();
     migrate(&mut legacy, 2).unwrap();
+    common::remove_opening_visibility(&mut legacy);
+    common::reverse_wall_paths(&mut legacy);
     legacy["schema_version"] = 44.into();
     for (key, data) in legacy.as_object_mut().unwrap() {
         if key == "project" {
@@ -53,6 +56,14 @@ fn schema_44_phase_defaults_preserve_settings_and_reject_partial_data_atomically
     restored.as_object_mut().unwrap().remove("target_phase");
     restored.as_object_mut().unwrap().remove("phase_filter");
     restored["schema_version"] = 2.into();
+    restored["visibility"]
+        .as_object_mut()
+        .unwrap()
+        .remove("doors");
+    restored["visibility"]
+        .as_object_mut()
+        .unwrap()
+        .remove("windows");
     assert_eq!(restored, before["views"][PLAN]["parameters"]["plan"]);
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("legacy44.osb");

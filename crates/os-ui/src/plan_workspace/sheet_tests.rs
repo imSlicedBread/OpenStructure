@@ -178,6 +178,8 @@ fn saved_schedule_sheet_live_preview_pdf_history_overflow_and_stale_export() {
                 width_override: None,
                 height_override: None,
                 sill_override: None,
+                pane_position_override: None,
+                lite_side_override: None,
                 name: "D01".into(),
                 host: wall.id(),
                 offset: 1.0,
@@ -269,8 +271,44 @@ fn saved_schedule_sheet_live_preview_pdf_history_overflow_and_stale_export() {
                 .iter()
                 .any(|s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.job.text == "D01"))
         );
+        app.opening_schedule.open = true;
+        app.opening_schedule.selected = Some(schedule_id);
+        let live_before = app.editor.document.model().clone();
+        let live_history = app.editor.document.history_stats();
+        app.begin_schedule_cell(schedule_id, door, os_model::ScheduleNumericField::Width);
+        app.opening_schedule.draft.as_mut().unwrap().value = "1.4".into();
+        assert_eq!(app.editor.document.model(), &live_before);
+        assert_eq!(app.editor.document.history_stats(), live_history);
+        let draft_table =
+            crate::opening_schedule::paper_table(app.editor.document.model(), schedule_id).unwrap();
+        assert_eq!(draft_table.rows[0][1], "0.900");
+        let draft_pdf = String::from_utf8(app.sheet_page().unwrap().to_pdf().unwrap()).unwrap();
+        assert!(draft_pdf.contains("<302E393030> Tj"));
+        assert!(!draft_pdf.contains("<312E343030> Tj"));
+        app.apply_schedule_cell();
+        assert_eq!(
+            app.editor.document.history_stats().undo_entries,
+            live_history.undo_entries + 1
+        );
+        settle(&mut app);
+        let committed_table =
+            crate::opening_schedule::paper_table(app.editor.document.model(), schedule_id).unwrap();
+        assert_eq!(committed_table.rows[0][1], "1.400");
+        let committed_pdf = String::from_utf8(app.sheet_page().unwrap().to_pdf().unwrap()).unwrap();
+        assert!(committed_pdf.contains("<312E343030> Tj"));
+        assert!(!committed_pdf.contains("<302E393030> Tj"));
+        app.editor.undo().unwrap();
+        settle(&mut app);
+        assert!(
+            String::from_utf8(app.sheet_page().unwrap().to_pdf().unwrap())
+                .unwrap()
+                .contains("<302E393030> Tj")
+        );
+        app.editor.redo().unwrap();
+        settle(&mut app);
         app.plans.pdf_path = "schedule-validation.pdf".into();
-        app.prepare_sheet_pdf(&page);
+        let current_page = app.sheet_page().unwrap();
+        app.prepare_sheet_pdf(&current_page);
         assert!(app.plans.pending_pdf.is_some());
         let mut parameters = app.editor.document.model().openings[&door]
             .parameters
@@ -352,8 +390,10 @@ fn app_with_section() -> (DesktopApp, Id) {
         os_walls::WALL_TYPE,
         os_model::WallParams {
             name: "Section sheet wall".into(),
-            start: Point2::new(0.0, 0.0),
-            end: Point2::new(8.0, 0.0),
+            path: os_model::WallPath::Straight {
+                start: Point2::new(0.0, 0.0),
+                end: Point2::new(8.0, 0.0),
+            },
             thickness: 0.2,
             height: 3.0,
             level,

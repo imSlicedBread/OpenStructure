@@ -73,6 +73,7 @@ fn schema_fourteen_migrates_to_fifteen_and_preserves_unconfigured_views() {
     migrate(&mut migrated, 14).unwrap();
 
     let mut expected = old;
+    common::apply_wall_paths(&mut expected);
     expected["schedules"] = json!({});
     expected["detail_lines"] = json!({});
     expected["room_separation_lines"] = json!({});

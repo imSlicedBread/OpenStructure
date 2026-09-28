@@ -8,12 +8,12 @@ fn perpendicular_join_inspector_at_supported_dpi_profiles() {
             (egui::vec2(1000., 650.), 1.5),
         ] {
             let mut h = Harness::at_size(size, scale);
-            h.app.draft.start = if tee {
+            *h.app.draft.path.straight_start_mut().unwrap() = if tee {
                 Point2::new(2., 3.)
             } else {
                 Point2::new(0., 0.)
             };
-            h.app.draft.end = if tee {
+            *h.app.draft.path.straight_end_mut().unwrap() = if tee {
                 Point2::new(2., 0.)
             } else {
                 Point2::new(3., 0.)
@@ -22,12 +22,12 @@ fn perpendicular_join_inspector_at_supported_dpi_profiles() {
             let a = h.app.selected.unwrap();
             h.app.select(None);
             h.app.draft.name = "B".into();
-            h.app.draft.start = if tee {
+            *h.app.draft.path.straight_start_mut().unwrap() = if tee {
                 Point2::new(0., 0.)
             } else {
                 Point2::new(3., 0.)
             };
-            h.app.draft.end = if tee {
+            *h.app.draft.path.straight_end_mut().unwrap() = if tee {
                 Point2::new(4., 0.)
             } else {
                 Point2::new(3., 4.)
@@ -83,14 +83,14 @@ fn butt_join_inspector_actions_at_supported_dpi_profiles() {
         (egui::vec2(1000., 650.), 1.5),
     ] {
         let mut h = Harness::at_size(size, scale);
-        h.app.draft.start = Point2::new(0., 0.);
-        h.app.draft.end = Point2::new(3., 0.);
+        *h.app.draft.path.straight_start_mut().unwrap() = Point2::new(0., 0.);
+        *h.app.draft.path.straight_end_mut().unwrap() = Point2::new(3., 0.);
         h.app.apply_wall();
         let a = h.app.selected.unwrap();
         h.app.select(None);
         h.app.draft.name = "B".into();
-        h.app.draft.start = Point2::new(3., 0.);
-        h.app.draft.end = Point2::new(7., 0.);
+        *h.app.draft.path.straight_start_mut().unwrap() = Point2::new(3., 0.);
+        *h.app.draft.path.straight_end_mut().unwrap() = Point2::new(7., 0.);
         h.app.apply_wall();
         h.app.select(Some(a));
         h.frame(vec![]);

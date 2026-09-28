@@ -40,7 +40,7 @@ used for authored points.
 
 The atomic schema-37→38 migration adds an empty roof map and advances native
 headers; a pre-existing map in schema 37 is rejected as ambiguous. Native
-full-model plugin API 26 requires schema 45. Generic plugin API 2 and the `.osb`
+full-model plugin API 32 requires schema 51. Generic plugin API 2 and the `.osb`
 container version do not change. IFC import rejects `IfcRoof`, and IFC export
 rejects native roofs instead of silently dropping them.
 

@@ -9,6 +9,15 @@ pub enum OpeningKind {
     Window,
 }
 
+/// Type-level 2D symbol metadata; does not describe an operable 3D sash.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WindowOperation {
+    #[default]
+    Fixed,
+    Sliding,
+    Casement,
+}
+
 /// Jamb relative to the host's stored start-to-end direction.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DoorHinge {
@@ -37,6 +46,7 @@ pub enum WindowPanePosition {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OpeningTypeParams {
+    pub window_operation: WindowOperation,
     pub family: crate::OpeningFamily,
     pub name: String,
     pub kind: OpeningKind,
@@ -80,10 +90,28 @@ pub struct OpeningParams {
     /// Explicit null means inherit; missing fields require schema migration.
     #[serde(deserialize_with = "required_sill_override")]
     pub sill_override: Option<f64>,
+    /// Typed windows only. Explicit null inherits; missing requires migration.
+    #[serde(deserialize_with = "required_pane_position_override")]
+    pub pane_position_override: Option<WindowPanePosition>,
+    /// Typed two-bay families only. Null inherits; Some pins even equal defaults.
+    #[serde(deserialize_with = "required_lite_side_override")]
+    pub lite_side_override: Option<crate::LiteSide>,
     pub hinge: DoorHinge,
     pub swing: DoorSwing,
 }
 pub type Opening = Entity<OpeningParams>;
+
+fn required_lite_side_override<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<crate::LiteSide>, D::Error> {
+    Option::<crate::LiteSide>::deserialize(deserializer)
+}
+
+fn required_pane_position_override<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<WindowPanePosition>, D::Error> {
+    Option::<WindowPanePosition>::deserialize(deserializer)
+}
 
 fn required_sill_override<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
@@ -94,6 +122,7 @@ fn required_sill_override<'de, D: serde::Deserializer<'de>>(
 /// Ephemeral effective dimensions resolved from the current project model.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ResolvedOpening {
+    pub window_operation: WindowOperation,
     pub family: crate::OpeningFamily,
     pub name: String,
     pub host: Id,
@@ -120,6 +149,10 @@ impl OpeningTypeParams {
     pub fn validate(&self) -> Result<()> {
         validate_name(&self.name)?;
         ensure(
+            self.kind == OpeningKind::Window || self.window_operation == WindowOperation::Fixed,
+            "doors require Fixed window operation",
+        )?;
+        ensure(
             self.kind == OpeningKind::Window || self.pane_position == WindowPanePosition::Center,
             "doors require Center pane position",
         )?;
@@ -142,13 +175,14 @@ impl Model {
                 || matches!(opening.definition, OpeningDefinition::Typed { .. }),
             "legacy openings cannot override sill",
         )?;
-        let resolved = match opening.definition {
+        let mut resolved = match opening.definition {
             OpeningDefinition::Legacy {
                 kind,
                 width,
                 height,
                 sill,
             } => ResolvedOpening {
+                window_operation: WindowOperation::Fixed,
                 family: Default::default(),
                 name: opening.name.clone(),
                 host: opening.host,
@@ -171,6 +205,7 @@ impl Model {
                 ty.parameters.validate()?;
                 let p = &ty.parameters;
                 ResolvedOpening {
+                    window_operation: p.window_operation,
                     family: p.family.clone(),
                     name: opening.name.clone(),
                     host: opening.host,
@@ -180,13 +215,28 @@ impl Model {
                     height: opening.height_override.unwrap_or(p.height),
                     sill: opening.sill_override.unwrap_or(p.sill),
                     type_id: Some(type_id),
-                    pane_position: p.pane_position,
+                    pane_position: opening.pane_position_override.unwrap_or(p.pane_position),
                     type_name: Some(p.name.clone()),
                     hinge: opening.hinge,
                     swing: opening.swing,
                 }
             }
         };
+        if let Some(side) = opening.lite_side_override {
+            ensure(
+                resolved.type_id.is_some(),
+                "legacy openings cannot override lite side",
+            )?;
+            let lite = resolved.family.side_lite.as_mut().ok_or_else(|| {
+                os_core::Error::Invalid("only typed two-bay openings can override lite side".into())
+            })?;
+            lite.side = side;
+        }
+        ensure(
+            opening.pane_position_override.is_none()
+                || (resolved.kind == OpeningKind::Window && resolved.type_id.is_some()),
+            "only typed windows can override pane position",
+        )?;
         ensure(
             resolved.kind == OpeningKind::Window || opening.sill_override.is_none(),
             "doors cannot override sill",
@@ -246,6 +296,10 @@ fn validate_dimensions(kind: OpeningKind, width: f64, height: f64, sill: f64) ->
 
 impl ResolvedOpening {
     pub fn validate_host(&self, host: &WallParams) -> Result<()> {
+        ensure(
+            host.path.is_straight(),
+            "doors and windows require a straight wall; circular hosts are not supported",
+        )?;
         host.validate()?;
         self.family
             .validate_for(self.width, self.height, self.kind)?;
@@ -273,6 +327,11 @@ pub(crate) fn validate(model: &Model) -> Result<()> {
         for material in [
             ty.parameters.family.panel_material,
             ty.parameters.family.frame_material,
+            ty.parameters
+                .family
+                .side_lite
+                .as_ref()
+                .and_then(|lite| lite.material),
         ]
         .into_iter()
         .flatten()
@@ -316,8 +375,10 @@ mod tests {
             "org.openstructure.walls.wall",
             WallParams {
                 name: "Host".into(),
-                start: Point2::new(0.0, 0.0),
-                end: Point2::new(10.0, 0.0),
+                path: crate::WallPath::Straight {
+                    start: Point2::new(0.0, 0.0),
+                    end: Point2::new(10.0, 0.0),
+                },
                 thickness: 0.2,
                 height: 3.0,
                 level: *model.levels.keys().next().unwrap(),
@@ -328,6 +389,8 @@ mod tests {
             width_override: None,
             height_override: None,
             sill_override: None,
+            pane_position_override: None,
+            lite_side_override: None,
             hinge: Default::default(),
             swing: Default::default(),
             name: "Door 1".into(),
@@ -343,6 +406,7 @@ mod tests {
         let ty = OpeningType::new(
             "core.opening_type",
             OpeningTypeParams {
+                window_operation: Default::default(),
                 family: Default::default(),
                 name: "Standard door".into(),
                 pane_position: Default::default(),
@@ -356,6 +420,232 @@ mod tests {
         model.walls.insert(wall.id(), wall);
         model.opening_types.insert(id, ty);
         (model, p, id)
+    }
+
+    #[test]
+    fn window_operation_is_required_type_metadata_and_legacy_is_fixed() {
+        let (mut model, mut opening, ty) = fixture();
+        assert_eq!(
+            model.resolve_opening(&opening).unwrap().window_operation,
+            WindowOperation::Fixed
+        );
+        opening.definition = OpeningDefinition::Typed { type_id: ty };
+        for operation in [
+            WindowOperation::Fixed,
+            WindowOperation::Sliding,
+            WindowOperation::Casement,
+        ] {
+            let params = &mut model.opening_types.get_mut(&ty).unwrap().parameters;
+            params.window_operation = operation;
+            assert_eq!(
+                params.validate().is_ok(),
+                operation == WindowOperation::Fixed
+            );
+            params.kind = OpeningKind::Window;
+            params.validate().unwrap();
+            assert_eq!(
+                model.resolve_opening(&opening).unwrap().window_operation,
+                operation
+            );
+            model.opening_types.get_mut(&ty).unwrap().parameters.kind = OpeningKind::Door;
+        }
+        let params = &mut model.opening_types.get_mut(&ty).unwrap().parameters;
+        params.window_operation = WindowOperation::Fixed;
+        for bad in [
+            None,
+            Some(serde_json::json!(null)),
+            Some(serde_json::json!("Tilt")),
+            Some(serde_json::json!(3)),
+        ] {
+            let mut value = serde_json::to_value(&params).unwrap();
+            value.as_object_mut().unwrap().remove("window_operation");
+            if let Some(bad) = bad {
+                value["window_operation"] = bad;
+            }
+            assert!(serde_json::from_value::<OpeningTypeParams>(value).is_err());
+        }
+    }
+
+    #[test]
+    fn lite_side_override_is_required_typed_two_bay_and_pins_equal_defaults() {
+        use crate::{
+            LiteSide::{End, Start},
+            SideLite,
+        };
+        let (mut model, mut p, ty) = fixture();
+        let mut missing = serde_json::to_value(&p).unwrap();
+        missing
+            .as_object_mut()
+            .unwrap()
+            .remove("lite_side_override");
+        assert!(serde_json::from_value::<OpeningParams>(missing).is_err());
+        for bad in [
+            serde_json::json!("Left"),
+            serde_json::json!(0),
+            serde_json::json!({}),
+        ] {
+            let mut value = serde_json::to_value(&p).unwrap();
+            value["lite_side_override"] = bad;
+            assert!(serde_json::from_value::<OpeningParams>(value).is_err());
+        }
+        for kind in [OpeningKind::Door, OpeningKind::Window] {
+            p.definition = OpeningDefinition::Legacy {
+                kind,
+                width: 0.9,
+                height: 2.1,
+                sill: 0.0,
+            };
+            for side in [Start, End] {
+                p.lite_side_override = Some(side);
+                assert!(model.resolve_opening(&p).is_err());
+            }
+            p.definition = OpeningDefinition::Typed { type_id: ty };
+            let defaults = &mut model.opening_types.get_mut(&ty).unwrap().parameters;
+            defaults.kind = kind;
+            defaults.family.side_lite = None;
+            assert!(model.resolve_opening(&p).is_err());
+            for default in [Start, End] {
+                model
+                    .opening_types
+                    .get_mut(&ty)
+                    .unwrap()
+                    .parameters
+                    .family
+                    .side_lite = Some(SideLite {
+                    side: default,
+                    width_fraction: 0.25,
+                    mullion_width: 0.04,
+                    material: None,
+                });
+                p.lite_side_override = None;
+                let inherited = model.resolve_opening(&p).unwrap();
+                let mut pinned = p.clone();
+                pinned.lite_side_override = Some(default);
+                assert_eq!(model.resolve_opening(&pinned).unwrap(), inherited);
+                let changed = if default == Start { End } else { Start };
+                model
+                    .opening_types
+                    .get_mut(&ty)
+                    .unwrap()
+                    .parameters
+                    .family
+                    .side_lite
+                    .as_mut()
+                    .unwrap()
+                    .side = changed;
+                assert_eq!(
+                    model
+                        .resolve_opening(&p)
+                        .unwrap()
+                        .family
+                        .side_lite
+                        .unwrap()
+                        .side,
+                    changed
+                );
+                assert_eq!(
+                    model
+                        .resolve_opening(&pinned)
+                        .unwrap()
+                        .family
+                        .side_lite
+                        .unwrap()
+                        .side,
+                    default
+                );
+                assert_eq!(
+                    serde_json::from_value::<OpeningParams>(serde_json::to_value(&pinned).unwrap())
+                        .unwrap(),
+                    pinned
+                );
+                pinned.width_override = Some(0.02);
+                assert!(model.resolve_opening(&pinned).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn pane_override_requires_explicit_field_and_distinguishes_inherited_from_pinned_equal() {
+        let (mut model, mut p, ty) = fixture();
+        let mut missing = serde_json::to_value(&p).unwrap();
+        missing
+            .as_object_mut()
+            .unwrap()
+            .remove("pane_position_override");
+        assert!(serde_json::from_value::<OpeningParams>(missing).is_err());
+        for bad in [
+            serde_json::json!("Left"),
+            serde_json::json!(0),
+            serde_json::json!({}),
+        ] {
+            let mut value = serde_json::to_value(&p).unwrap();
+            value["pane_position_override"] = bad;
+            assert!(serde_json::from_value::<OpeningParams>(value).is_err());
+        }
+        for position in [
+            WindowPanePosition::Center,
+            WindowPanePosition::LeftFace,
+            WindowPanePosition::RightFace,
+        ] {
+            p.pane_position_override = Some(position);
+            assert!(model.resolve_opening(&p).is_err());
+            let legacy = p.definition.clone();
+            p.definition = OpeningDefinition::Typed { type_id: ty };
+            assert!(model.resolve_opening(&p).is_err()); // typed door, including Center
+            p.definition = legacy;
+        }
+        p.definition = OpeningDefinition::Typed { type_id: ty };
+        model.opening_types.get_mut(&ty).unwrap().parameters.kind = OpeningKind::Window;
+        for default in [
+            WindowPanePosition::Center,
+            WindowPanePosition::LeftFace,
+            WindowPanePosition::RightFace,
+        ] {
+            model
+                .opening_types
+                .get_mut(&ty)
+                .unwrap()
+                .parameters
+                .pane_position = default;
+            p.pane_position_override = None;
+            assert_eq!(model.resolve_opening(&p).unwrap().pane_position, default);
+            let mut pinned = p.clone();
+            pinned.pane_position_override = Some(default);
+            assert_eq!(
+                model.resolve_opening(&pinned).unwrap().pane_position,
+                default
+            );
+            let changed = if default == WindowPanePosition::LeftFace {
+                WindowPanePosition::RightFace
+            } else {
+                WindowPanePosition::LeftFace
+            };
+            model
+                .opening_types
+                .get_mut(&ty)
+                .unwrap()
+                .parameters
+                .pane_position = changed;
+            assert_eq!(model.resolve_opening(&p).unwrap().pane_position, changed);
+            assert_eq!(
+                model.resolve_opening(&pinned).unwrap().pane_position,
+                default
+            );
+            pinned.validate(&model).unwrap();
+            assert_eq!(
+                serde_json::from_value::<OpeningParams>(serde_json::to_value(&pinned).unwrap())
+                    .unwrap(),
+                pinned
+            );
+        }
+        p.definition = OpeningDefinition::Legacy {
+            kind: OpeningKind::Window,
+            width: 1.,
+            height: 1.,
+            sill: 0.5,
+        };
+        p.pane_position_override = Some(WindowPanePosition::Center);
+        assert!(model.resolve_opening(&p).is_err());
     }
 
     #[test]

@@ -2,6 +2,7 @@ use os_core::Point2;
 use os_model::{Model, Wall, WallParams};
 use os_storage::migrate;
 use serde_json::Value;
+mod common;
 
 fn schema_43_fixture() -> Value {
     let mut model = Model::new("Legacy phases");
@@ -10,8 +11,10 @@ fn schema_43_fixture() -> Value {
         "org.openstructure.walls.wall",
         WallParams {
             name: "Existing wall".into(),
-            start: Point2::new(0.0, 0.0),
-            end: Point2::new(4.0, 0.0),
+            path: os_model::WallPath::Straight {
+                start: Point2::new(0.0, 0.0),
+                end: Point2::new(4.0, 0.0),
+            },
             thickness: 0.2,
             height: 3.0,
             level,
@@ -20,6 +23,7 @@ fn schema_43_fixture() -> Value {
     );
     model.walls.insert(wall.id(), wall);
     let mut value = serde_json::to_value(model).unwrap();
+    common::reverse_wall_paths(&mut value);
     value.as_object_mut().unwrap().remove("phases");
     value.as_object_mut().unwrap().remove("element_lifecycles");
     fn set_entity_headers(value: &mut Value) {

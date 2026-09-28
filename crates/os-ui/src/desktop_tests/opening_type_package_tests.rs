@@ -9,10 +9,94 @@ const PROFILES: [(egui::Vec2, f32); 2] = [
     (egui::vec2(1000.0, 650.0), 1.5),
 ];
 
+#[test]
+fn two_bay_package_dependencies_collisions_history_and_reopen() {
+    for (size, scale) in PROFILES {
+        for kind in [OpeningKind::Door, OpeningKind::Window] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut source = Model::new("Source");
+            let mut ty = sample_type("Two bay", kind, 1.2);
+            let mut ids = Vec::new();
+            for name in ["Panel", "Frame", "Lite"] {
+                let material = Material::new(
+                    "core.material",
+                    MaterialParams {
+                        name: name.into(),
+                        density_kg_m3: 2500.,
+                        color: [40, 90, 150],
+                    },
+                );
+                ids.push(material.id());
+                source.materials.insert(material.id(), material);
+            }
+            ty.parameters.family.panel_material = Some(ids[0]);
+            ty.parameters.family.frame_material = Some(ids[1]);
+            ty.parameters.family.side_lite = Some(os_model::SideLite {
+                side: os_model::LiteSide::Start,
+                width_fraction: 0.25,
+                mullion_width: 0.05,
+                material: Some(ids[2]),
+            });
+            let source_id = ty.id();
+            source.opening_types.insert(source_id, ty);
+            let path = dir.path().join("two-bay.osot");
+            os_storage::write_opening_type_package(&source, source_id, &path).unwrap();
+            let mut h = Harness::at_size(size, scale);
+            let mut collision = source.materials[&ids[2]].clone();
+            collision.parameters.color = [255, 0, 0];
+            h.app
+                .editor
+                .document
+                .execute(
+                    "Conflicts",
+                    vec![
+                        Command::AddMaterial(collision),
+                        Command::AddOpeningType(sample_type("Two bay", kind, 0.8)),
+                    ],
+                )
+                .unwrap();
+            let before = h.app.editor.document.model().clone();
+            read_button(&mut h, &path);
+            assert_eq!(h.app.editor.document.model(), &before);
+            h.click("Import type");
+            let type_id = h.app.selected.unwrap();
+            let after = h.app.editor.document.model().clone();
+            let imported = &after.opening_types[&type_id];
+            assert_ne!(type_id, source_id);
+            let lite = imported.parameters.family.side_lite.as_ref().unwrap();
+            assert_ne!(lite.material, Some(ids[2]));
+            assert_eq!(
+                after.materials[&lite.material.unwrap()].parameters.color,
+                [40, 90, 150]
+            );
+            assert_eq!(after.materials[&ids[2]].parameters.color, [255, 0, 0]);
+            assert_eq!(
+                os_storage::parse_opening_type_package(
+                    &os_storage::export_opening_type_package(&after, type_id).unwrap()
+                )
+                .unwrap()
+                .materials
+                .len(),
+                3
+            );
+            h.app.history(false);
+            assert_eq!(h.app.editor.document.model(), &before);
+            h.app.history(true);
+            assert_eq!(h.app.editor.document.model(), &after);
+            let native = dir.path().join("two-bay.osb");
+            h.app.editor.save(&native).unwrap();
+            let mut reopened = Editor::new().unwrap();
+            reopened.open(&native).unwrap();
+            assert_eq!(reopened.document.model(), &after);
+        }
+    }
+}
+
 fn sample_type(name: &str, kind: OpeningKind, width: f64) -> OpeningType {
     OpeningType::new(
         "core.opening_type",
         OpeningTypeParams {
+            window_operation: Default::default(),
             family: OpeningFamily::default(),
             name: name.into(),
             kind,
@@ -208,6 +292,18 @@ fn package_update_preserves_type_identity_instances_and_pinned_dimensions_in_one
         1.4,
         false,
     );
+    let package = os_storage::read_opening_type_package(&path).unwrap();
+    let mut source = Model::new("Two bay update source");
+    let mut ty = OpeningType::new("core.opening_type", package.parameters);
+    ty.header.id = package.source_type_id;
+    ty.parameters.family.side_lite = Some(os_model::SideLite {
+        side: os_model::LiteSide::End,
+        width_fraction: 0.25,
+        mullion_width: 0.05,
+        material: None,
+    });
+    source.opening_types.insert(ty.id(), ty);
+    os_storage::write_opening_type_package(&source, package.source_type_id, &path).unwrap();
     let mut h = Harness::at_size(size, scale);
 
     let target = sample_type("Existing Door", OpeningKind::Door, 0.9);
@@ -223,6 +319,8 @@ fn package_update_preserves_type_identity_instances_and_pinned_dimensions_in_one
         width_override: Some(1.0),
         height_override: Some(1.95),
         sill_override: None,
+        pane_position_override: None,
+        lite_side_override: None,
         hinge: Default::default(),
         swing: Default::default(),
     };
@@ -238,6 +336,8 @@ fn package_update_preserves_type_identity_instances_and_pinned_dimensions_in_one
             width_override: None,
             height_override: None,
             sill_override: None,
+            pane_position_override: None,
+            lite_side_override: None,
             hinge: Default::default(),
             swing: Default::default(),
         },
@@ -282,6 +382,7 @@ fn package_update_preserves_type_identity_instances_and_pinned_dimensions_in_one
     let updated = &h.app.editor.document.model().opening_types[&target_id];
     assert_eq!(updated.parameters.name, "Existing Door");
     assert_eq!(updated.parameters.width, 1.4);
+    assert!(updated.parameters.family.side_lite.is_some());
     assert_eq!(h.app.selected, Some(target_id));
     assert_eq!(
         h.app.editor.document.model().openings[&opening_id].parameters,
@@ -331,7 +432,10 @@ fn package_update_with_host_fit_failure_is_blocked_and_escape_cancels() {
     let wall = os_model::Wall::new(
         os_walls::WALL_TYPE,
         os_model::WallParams {
-            end: os_core::Point2::new(1.5, 0.0),
+            path: os_model::WallPath::Straight {
+                start: default_wall(level).start(),
+                end: os_core::Point2::new(1.5, 0.0),
+            },
             ..default_wall(level)
         },
     );
@@ -346,6 +450,8 @@ fn package_update_with_host_fit_failure_is_blocked_and_escape_cancels() {
             width_override: None,
             height_override: None,
             sill_override: None,
+            pane_position_override: None,
+            lite_side_override: None,
             hinge: Default::default(),
             swing: Default::default(),
         },

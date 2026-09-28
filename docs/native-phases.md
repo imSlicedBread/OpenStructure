@@ -17,7 +17,7 @@ legacy behavior. The generated phase IDs are deterministic per project so
 reopening an unsaved legacy file does not change identity. Strict validation
 checks phase name/identity/order bounds, lifecycle references/order, and
 explicit hosted-opening lifetimes against their wall. Generic plugin API 2 and `.osb`
-container 2 are unchanged. Current full-model native plugins require API 26/schema 45.
+container 2 are unchanged. Current full-model native plugins require API 32/schema 51.
 
 Focused evidence:
 
@@ -95,6 +95,11 @@ wall cutout inputs; openings cannot outlive a hidden host in the drawing. Joins
 to hidden walls are excluded from the view geometry. Room/opening tags and
 dimensions with phase-hidden references are omitted. Grids, detail lines,
 section markers and generic plugin graphics retain their existing view behavior.
+Door and Window category switches are separate from this lifecycle filter:
+category-hidden openings keep their host-wall cutouts but omit opening symbols
+and dependent plan annotations. A phase-hidden opening still removes its host
+cutout in the view-only model. Plan category visibility does not affect saved
+schedule rows.
 
 The shared `PlanDrawing` resolves subdued gray Existing, dark blue New, dashed
 muted red Demolished and dashed purple Temporary linework. Category weights are
@@ -126,8 +131,37 @@ Focused evidence for this slice:
 Room enclosure topology remains based on the full model: phase filtering changes
 room visibility and appearance but does not reconstruct room boundaries or areas.
 Room-bound ceiling resolution shares that limitation. Split 3D remains the full
-committed model. Phase-aware schedules, design options and linked-model phase
-mapping remain deferred. P01 remains partial, not production-complete.
+committed model.
+
+## Phase-aware opening schedules (schema 48)
+
+Door, Window and All saved opening schedules own their phase target and filter;
+they do not inherit a plan or sheet view's crop, range, category visibility or
+phase settings. New schedules pin the current latest phase with ShowAll. A saved
+schedule can instead pin any phase by UUID or follow Latest dynamically, and can
+select ShowAll, ShowExisting, ShowNew, ShowDemolished or ShowTemporary. A row is
+eligible only when both its opening and host wall pass the selected filter at the
+target phase. This prevents a schedule from reporting an opening whose host is
+not present in that phase.
+
+Schema 48 adds the required `ScheduleParams.phase`. The 47→48 migration marks all
+existing saved schedules `LegacyUnphased`, preserving their previous report rows
+and bytes rather than silently changing issued schedules. Configure explicitly
+switches those definitions to phase-aware behavior. RoomFinish remains unphased
+because room enclosure/area is not phase-aware. A pinned phase is a model
+reference; deleting it is rejected atomically. Latest resolves by phase ordering
+each time rows are derived, while pinned identity survives reorder. UI, placed
+sheet tables, PDF, instance CSV and quantity CSV share the same eligible rows.
+
+Evidence: `os-model/tests/schedule_phases.rs` covers all six derived statuses,
+all five filters, pinned-vs-Latest identity and UUID resolution;
+`os-storage/tests/schedule_phases.rs` covers frozen schema-47 migration,
+save/reopen, strict rejection, pinned-phase deletion and atomic history;
+`os-ui/src/opening_schedule/csv_export/tests/phases.rs` checks opening/host
+status disagreements and row parity across UI-derived rows, sheets, PDF and both
+CSV reports, including legacy bytes and empty output. UI draft controls and
+save/cancel/stale/undo have focused egui tests. Design options and linked-model
+phase mapping remain deferred. P01 remains partial, not production-complete.
 Migrations also remain bounded by the native 64 MiB serialized-model limit;
 legacy files whose added lifecycle records exceed that limit are rejected
 atomically rather than opened in a state that cannot be saved.

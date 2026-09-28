@@ -54,6 +54,7 @@ fn frozen_nineteen_migrates_without_inventing_joins_and_rejects_ambiguity() {
     assert!(model.wall_joins.is_empty());
     assert_eq!(model.walls.len(), 2);
     let mut expected = old.clone();
+    common::apply_wall_paths(&mut expected);
     expected["schema_version"] = json!(SCHEMA_VERSION);
     expected["opening_tags"] = json!({});
     expected["project"]["header"]["schema_version"] = json!(SCHEMA_VERSION);

@@ -31,8 +31,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "org.openstructure.walls.wall",
                 WallParams {
                     name: "Wall".into(),
-                    start: Point2::new(x, y),
-                    end: Point2::new(x + 5.0, y),
+                    path: os_model::WallPath::Straight {
+                        start: Point2::new(x, y),
+                        end: Point2::new(x + 5.0, y),
+                    },
                     thickness: 0.2,
                     height: 3.0,
                     level,

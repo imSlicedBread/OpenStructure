@@ -24,6 +24,8 @@ pub struct WallGesture {
     pub start: Option<Point2>,
     pub length: String,
     pub angle_degrees: String,
+    pub(crate) arc: bool,
+    pub(crate) arc_bulge: Option<Point2>,
 }
 impl WallGesture {
     #[cfg(feature = "external-plugins")]
@@ -39,6 +41,10 @@ impl WallGesture {
         mut parameters: WallParams,
         installed: bool,
     ) -> Result<Self> {
+        ensure(
+            parameters.path.is_straight(),
+            "circular walls use Draw arc wall and arc Properties; straight wall tools cannot edit them",
+        )?;
         ensure(
             editor.host.manifests().any(|m| {
                 m.id == os_walls::PLUGIN_ID && (installed || m.entrypoint == "builtin:os-walls")
@@ -63,6 +69,8 @@ impl WallGesture {
             start: None,
             length: String::new(),
             angle_degrees: String::new(),
+            arc: false,
+            arc_bulge: None,
         })
     }
     /// Explicit independent Wall adapter. It uses the existing API-2 metre-field
@@ -194,10 +202,10 @@ impl WallGesture {
             context,
         )?;
         for (key, value) in [
-            ("start_x", p.start.x),
-            ("start_y", p.start.y),
-            ("end_x", p.end.x),
-            ("end_y", p.end.y),
+            ("start_x", p.start().x),
+            ("start_y", p.start().y),
+            ("end_x", p.end().x),
+            ("end_y", p.end().y),
             ("thickness", p.thickness),
             ("height", p.height),
         ] {
@@ -305,10 +313,10 @@ impl WallGesture {
         gesture.start = match mode {
             WallEdit::Move => None,
             WallEdit::ResizeStart | WallEdit::TrimStart => {
-                Some(c.basis.world_to_plane(original.end)?)
+                Some(c.basis.world_to_plane(original.end())?)
             }
             WallEdit::ResizeEnd | WallEdit::TrimEnd | WallEdit::OffsetCopy => {
-                Some(c.basis.world_to_plane(original.start)?)
+                Some(c.basis.world_to_plane(original.start())?)
             }
         };
         Ok(gesture)
@@ -328,6 +336,10 @@ impl WallGesture {
     /// Resolve a picked finite reference wall to the exact source-axis crossing.
     /// The returned point is in the active plan's local basis.
     pub fn trim_extend_point(&self, boundary: &WallParams) -> Result<Point2> {
+        ensure(
+            boundary.path.is_straight(),
+            "Trim/Extend requires a straight boundary; circular boundaries are unsupported",
+        )?;
         let mode = self
             .edit_mode()
             .ok_or_else(|| os_core::Error::Invalid("Trim/Extend needs an edited wall".into()))?;
@@ -340,10 +352,10 @@ impl WallGesture {
             "Choose a boundary wall on the same level",
         )?;
         boundary.validate()?;
-        let p = self.parameters.start;
-        let r = Point2::new(self.parameters.end.x - p.x, self.parameters.end.y - p.y);
-        let q = boundary.start;
-        let s = Point2::new(boundary.end.x - q.x, boundary.end.y - q.y);
+        let p = self.parameters.start();
+        let r = Point2::new(self.parameters.end().x - p.x, self.parameters.end().y - p.y);
+        let q = boundary.start();
+        let s = Point2::new(boundary.end().x - q.x, boundary.end().y - q.y);
         let cross = |a: Point2, b: Point2| a.x * b.y - a.y * b.x;
         let denominator = cross(r, s);
         let source_length = r.x.hypot(r.y);
@@ -388,13 +400,23 @@ impl WallGesture {
     }
     pub fn offset_measurement(&self, preview: &WallParams) -> Option<f64> {
         (self.edit_mode() == Some(WallEdit::OffsetCopy)).then(|| {
-            let dx = self.parameters.end.x - self.parameters.start.x;
-            let dy = self.parameters.end.y - self.parameters.start.y;
-            ((preview.start.x - self.parameters.start.x) * (-dy / self.parameters.length()))
-                + ((preview.start.y - self.parameters.start.y) * (dx / self.parameters.length()))
+            let dx = self.parameters.end().x - self.parameters.start().x;
+            let dy = self.parameters.end().y - self.parameters.start().y;
+            ((preview.start().x - self.parameters.start().x) * (-dy / self.parameters.length()))
+                + ((preview.start().y - self.parameters.start().y)
+                    * (dx / self.parameters.length()))
         })
     }
     pub fn prompt(&self) -> &'static str {
+        if self.arc {
+            return if self.start.is_none() {
+                "Arc: click start"
+            } else if self.arc_bulge.is_none() {
+                "Arc: click a point on the curve"
+            } else {
+                "Arc: click end (Escape cancels)"
+            };
+        }
         match self.edit_mode() {
             None => {
                 if self.start.is_none() {
@@ -429,6 +451,22 @@ impl WallGesture {
             })
     }
     pub fn parameters(&self, pointer: Point2) -> Result<WallParams> {
+        if self.arc {
+            let start = self
+                .start
+                .ok_or_else(|| os_core::Error::Invalid("Choose arc start".into()))?;
+            let bulge = self
+                .arc_bulge
+                .ok_or_else(|| os_core::Error::Invalid("Choose a point on the curve".into()))?;
+            let mut result = self.parameters.clone();
+            result.path = os_model::WallPath::through_three_points(
+                self.context.basis.plane_to_world(start)?,
+                self.context.basis.plane_to_world(bulge)?,
+                self.context.basis.plane_to_world(pointer)?,
+            )?;
+            result.validate()?;
+            return Ok(result);
+        }
         ensure(pointer.is_finite(), "invalid wall pointer")?;
         ensure(
             !self.is_trim_extend()
@@ -445,8 +483,8 @@ impl WallGesture {
                 "Offset keeps the source direction; angle is not supported",
             )?;
             let length = self.parameters.length();
-            let nx = -(self.parameters.end.y - self.parameters.start.y) / length;
-            let ny = (self.parameters.end.x - self.parameters.start.x) / length;
+            let nx = -(self.parameters.end().y - self.parameters.start().y) / length;
+            let ny = (self.parameters.end().x - self.parameters.start().x) / length;
             // Express the original world normal in the plan basis, without a large-origin roundtrip.
             let (s, c) = self.context.basis.rotation.sin_cos();
             let distance = if self.length.trim().is_empty() {
@@ -463,14 +501,17 @@ impl WallGesture {
                 "Offset magnitude must exceed one micrometre",
             )?;
             let mut result = self.parameters.clone();
-            result.start = Point2::new(
-                result.start.x + nx * distance,
-                result.start.y + ny * distance,
+            *result.path.straight_start_mut()? = Point2::new(
+                result.start().x + nx * distance,
+                result.start().y + ny * distance,
             );
-            result.end = Point2::new(result.end.x + nx * distance, result.end.y + ny * distance);
+            *result.path.straight_end_mut()? = Point2::new(
+                result.end().x + nx * distance,
+                result.end().y + ny * distance,
+            );
             result.validate()?;
             ensure(
-                result.start != self.parameters.start && result.end != self.parameters.end,
+                result.start() != self.parameters.start() && result.end() != self.parameters.end(),
                 "Offset is below coordinate precision",
             )?;
             return Ok(result);
@@ -527,15 +568,18 @@ impl WallGesture {
             let dy = destination.y - start.y;
             let (s, c) = self.context.basis.rotation.sin_cos();
             let world = Point2::new(c * dx - s * dy, s * dx + c * dy);
-            parameters.start =
-                Point2::new(parameters.start.x + world.x, parameters.start.y + world.y);
-            parameters.end = Point2::new(parameters.end.x + world.x, parameters.end.y + world.y);
+            *parameters.path.straight_start_mut()? = Point2::new(
+                parameters.start().x + world.x,
+                parameters.start().y + world.y,
+            );
+            *parameters.path.straight_end_mut()? =
+                Point2::new(parameters.end().x + world.x, parameters.end().y + world.y);
             parameters.validate()?;
             return Ok(parameters);
         }
-        parameters.start = self.context.basis.plane_to_world(start)?;
+        *parameters.path.straight_start_mut()? = self.context.basis.plane_to_world(start)?;
         // With no exact override, preserve the snapped endpoint's original bits.
-        parameters.end = self.context.basis.plane_to_world(
+        *parameters.path.straight_end_mut()? = self.context.basis.plane_to_world(
             if self.length.trim().is_empty() && self.angle_degrees.trim().is_empty() {
                 pointer
             } else {
@@ -544,11 +588,11 @@ impl WallGesture {
         )?;
         match self.edit_mode() {
             Some(WallEdit::ResizeStart | WallEdit::TrimStart) => {
-                parameters.start = parameters.end;
-                parameters.end = self.parameters.end;
+                *parameters.path.straight_start_mut()? = parameters.end();
+                *parameters.path.straight_end_mut()? = self.parameters.end();
             }
             Some(WallEdit::ResizeEnd | WallEdit::TrimEnd) => {
-                parameters.start = self.parameters.start
+                *parameters.path.straight_start_mut()? = self.parameters.start()
             }
             _ => {}
         }
@@ -584,12 +628,12 @@ impl WallGesture {
             }];
             if mode == WallEdit::TrimStart {
                 let original = &model.walls[&source].parameters;
-                let dx = original.end.x - original.start.x;
-                let dy = original.end.y - original.start.y;
+                let dx = original.end().x - original.start().x;
+                let dy = original.end().y - original.start().y;
                 let length = dx.hypot(dy);
                 let moved_start = Point2::new(
-                    parameters.start.x - original.start.x,
-                    parameters.start.y - original.start.y,
+                    parameters.start().x - original.start().x,
+                    parameters.start().y - original.start().y,
                 );
                 let station = (moved_start.x * dx + moved_start.y * dy) / length;
                 for opening in model
@@ -649,10 +693,18 @@ impl WallGesture {
         let elevation = editor.document.model().levels[&parameters.level]
             .parameters
             .elevation;
-        os_geometry::GeometryKernel::tessellate(
-            &os_geometry::PrismKernel,
-            &os_walls::wall_solid(&parameters, elevation)?,
-        )?;
+        if self.arc {
+            let mut candidate = editor.document.model().clone();
+            let wall = os_model::Wall::new(os_walls::WALL_TYPE, parameters.clone());
+            let id = wall.id();
+            candidate.walls.insert(id, wall);
+            os_geometry::walls::NativeWall::from_model(&candidate, id)?.mesh()?;
+        } else {
+            os_geometry::GeometryKernel::tessellate(
+                &os_geometry::PrismKernel,
+                &os_walls::wall_solid(&parameters, elevation)?,
+            )?;
+        }
         let (label, request) = match self.edit {
             None => (
                 "Draw wall in plan",

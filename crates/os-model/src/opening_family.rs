@@ -13,6 +13,37 @@ pub enum OpeningComponentOperation {
     ProfileExtrusion,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LiteSide {
+    Start,
+    End,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SideLite {
+    pub side: LiteSide,
+    /// Clear lite width as a fraction of the full outer opening width.
+    pub width_fraction: f64,
+    /// Physical separator width in metres, independent of instance width.
+    pub mullion_width: f64,
+    #[serde(deserialize_with = "required_material")]
+    pub material: Option<Id>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OpeningBays {
+    pub primary: (f64, f64),
+    pub lite: (f64, f64),
+    pub mullion: (f64, f64),
+}
+
+fn required_side_lite<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<SideLite>, D::Error> {
+    Option::<SideLite>::deserialize(deserializer)
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OpeningFamily {
@@ -35,6 +66,8 @@ pub struct OpeningFamily {
     /// Project material for generated frame rails, including when the frame is disabled.
     #[serde(deserialize_with = "required_material")]
     pub frame_material: Option<Id>,
+    #[serde(deserialize_with = "required_side_lite")]
+    pub side_lite: Option<SideLite>,
 }
 
 fn required_material<'de, D: serde::Deserializer<'de>>(
@@ -46,7 +79,7 @@ fn required_material<'de, D: serde::Deserializer<'de>>(
 impl Default for OpeningFamily {
     fn default() -> Self {
         Self {
-            version: 4,
+            version: 5,
             host_cut: OpeningHostCut::Rectangular,
             operation: OpeningComponentOperation::ProfileExtrusion,
             profile: vec![
@@ -61,6 +94,7 @@ impl Default for OpeningFamily {
             frame_depth: 0.05,
             panel_material: None,
             frame_material: None,
+            side_lite: None,
         }
     }
 }
@@ -93,7 +127,30 @@ impl OpeningFamily {
     }
 
     pub fn validate(&self) -> Result<()> {
-        ensure(self.version == 4, "unsupported opening family version")?;
+        ensure(self.version == 5, "unsupported opening family version")?;
+        if let Some(lite) = &self.side_lite {
+            ensure(
+                lite.width_fraction.is_finite()
+                    && lite.width_fraction > 0.
+                    && lite.width_fraction < 1.,
+                "lite width fraction must be between zero and one",
+            )?;
+            ensure(
+                lite.mullion_width.is_finite() && (0.001..=0.3).contains(&lite.mullion_width),
+                "mullion width must be 1-300 mm",
+            )?;
+            let rectangular_panel = self
+                .profile
+                .iter()
+                .all(|p| p.x == 0. || p.x == 1. || p.y == 0. || p.y == 1.)
+                && Self::rectangle().iter().all(|p| self.profile.contains(p));
+            ensure(
+                self.host_cut == OpeningHostCut::Rectangular
+                    && self.rectangular_cut()
+                    && rectangular_panel,
+                "two-bay families require rectangular component and host cut profiles",
+            )?;
+        }
         ensure(
             self.depth.is_finite() && (0.001..=0.2).contains(&self.depth),
             "component depth must be 1-200 mm",
@@ -181,6 +238,7 @@ impl OpeningFamily {
 
     pub fn validate_for(&self, width: f64, height: f64, kind: crate::OpeningKind) -> Result<()> {
         self.validate()?;
+        self.bays(width)?;
         ensure(
             width.is_finite() && height.is_finite() && width > 0. && height > 0.,
             "invalid opening dimensions",
@@ -211,6 +269,33 @@ impl OpeningFamily {
             )?;
         }
         Ok(())
+    }
+
+    /// Clear bay intervals in metres from the full opening Start jamb.
+    pub fn bays(&self, width: f64) -> Result<Option<OpeningBays>> {
+        let Some(lite) = &self.side_lite else {
+            return Ok(None);
+        };
+        let start = self.frame_width;
+        let end = width - self.frame_width;
+        let lite_width = width * lite.width_fraction;
+        let primary_width = end - start - lite_width - lite.mullion_width;
+        ensure(
+            width.is_finite() && lite_width >= 0.001 && primary_width >= 0.001,
+            "each bay must have at least 1 mm usable width",
+        )?;
+        Ok(Some(match lite.side {
+            LiteSide::Start => OpeningBays {
+                lite: (start, start + lite_width),
+                mullion: (start + lite_width, start + lite_width + lite.mullion_width),
+                primary: (start + lite_width + lite.mullion_width, end),
+            },
+            LiteSide::End => OpeningBays {
+                primary: (start, start + primary_width),
+                mullion: (start + primary_width, end - lite_width),
+                lite: (end - lite_width, end),
+            },
+        }))
     }
 
     /// Inner panel/pane profile after reserving the frame rails. Door frames
@@ -337,6 +422,83 @@ mod tests {
     use super::*;
 
     #[test]
+    fn two_bay_bounds_profiles_and_physical_widths() {
+        let mut minimum = OpeningFamily {
+            side_lite: Some(SideLite {
+                side: LiteSide::Start,
+                width_fraction: 0.25,
+                mullion_width: 0.001,
+                material: None,
+            }),
+            ..Default::default()
+        };
+        minimum
+            .validate_for(0.004, 1., crate::OpeningKind::Window)
+            .unwrap();
+        assert!(
+            minimum
+                .validate_for(0.0039, 1., crate::OpeningKind::Window)
+                .is_err()
+        );
+        minimum.side_lite.as_mut().unwrap().width_fraction = 0.5;
+        minimum
+            .validate_for(0.004, 1., crate::OpeningKind::Door)
+            .unwrap();
+        assert!(
+            minimum
+                .validate_for(0.0039, 1., crate::OpeningKind::Door)
+                .is_err()
+        );
+        for kind in [crate::OpeningKind::Door, crate::OpeningKind::Window] {
+            for side in [LiteSide::Start, LiteSide::End] {
+                let mut family = OpeningFamily {
+                    frame_width: 0.05,
+                    side_lite: Some(SideLite {
+                        side,
+                        width_fraction: 0.25,
+                        mullion_width: 0.05,
+                        material: None,
+                    }),
+                    ..Default::default()
+                };
+                for width in [1., 1.5, 2.] {
+                    family.validate_for(width, 2., kind).unwrap();
+                    let bays = family.bays(width).unwrap().unwrap();
+                    assert!((bays.lite.1 - bays.lite.0 - width * 0.25).abs() < 1e-10);
+                    assert!(
+                        (bays.primary.1 - bays.primary.0 - (width * 0.75 - 0.15)).abs() < 1e-10
+                    );
+                    assert!((bays.mullion.1 - bays.mullion.0 - 0.05).abs() < 1e-10);
+                    assert_eq!(
+                        if side == LiteSide::Start {
+                            bays.lite.0
+                        } else {
+                            bays.primary.0
+                        },
+                        0.05
+                    );
+                }
+                assert!(family.validate_for(0.2, 2., kind).is_err());
+                for fraction in [0., 1., f64::NAN, 0.0001, 0.99] {
+                    family.side_lite.as_mut().unwrap().width_fraction = fraction;
+                    assert!(family.validate_for(1., 2., kind).is_err());
+                }
+                family.side_lite.as_mut().unwrap().width_fraction = 0.25;
+                for width in [0., 0.0009, 0.301, f64::INFINITY] {
+                    family.side_lite.as_mut().unwrap().mullion_width = width;
+                    assert!(family.validate_for(1., 2., kind).is_err());
+                }
+                family.side_lite.as_mut().unwrap().mullion_width = 0.05;
+                family.profile[2].y = 0.8;
+                assert!(family.validate().is_err());
+                family.profile = OpeningFamily::rectangle();
+                family.cut_profile[2].y = 0.8;
+                assert!(family.validate().is_err());
+            }
+        }
+    }
+
+    #[test]
     fn cut_containment_checks_edges_through_concave_notches_and_frame_compatibility() {
         let mut family = OpeningFamily {
             host_cut: OpeningHostCut::Profile,
@@ -393,6 +555,7 @@ mod tests {
             "frame_depth",
             "panel_material",
             "frame_material",
+            "side_lite",
         ] {
             let mut value = serde_json::to_value(&family).unwrap();
             value.as_object_mut().unwrap().remove(key);
@@ -401,9 +564,9 @@ mod tests {
         let mut future = serde_json::to_value(&family).unwrap();
         future["operation"] = serde_json::json!("Sweep");
         assert!(serde_json::from_value::<OpeningFamily>(future).is_err());
-        family.version = 5;
+        family.version = 6;
         assert!(family.validate().is_err());
-        family.version = 4;
+        family.version = 5;
         family.frame_width = 0.3;
         assert!(
             family

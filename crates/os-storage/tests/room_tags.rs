@@ -15,6 +15,7 @@ fn room_tag_frozen_schema_twelve_migration_preserves_all_data_except_versions_an
     let mut migrated = original.clone();
     migrate(&mut migrated, 12).unwrap();
     let mut expected = original.clone();
+    common::apply_wall_paths(&mut expected);
     expected["schema_version"] = json!(SCHEMA_VERSION);
     for room in expected["rooms"].as_object_mut().unwrap().values_mut() {
         for field in [

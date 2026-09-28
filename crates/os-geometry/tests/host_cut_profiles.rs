@@ -6,8 +6,10 @@ fn wall(profile: Vec<Point2>, reverse: bool) -> NativeWall {
     let id = Id::new();
     let parameters = WallParams {
         name: "Host".into(),
-        start: Point2::new(4., 3.),
-        end: Point2::new(4., if reverse { -3. } else { 9. }),
+        path: os_model::WallPath::Straight {
+            start: Point2::new(4., 3.),
+            end: Point2::new(4., if reverse { -3. } else { 9. }),
+        },
         thickness: 0.3,
         height: 3.,
         level: Id::new(),
@@ -20,6 +22,7 @@ fn wall(profile: Vec<Point2>, reverse: bool) -> NativeWall {
         ..Default::default()
     };
     let opening = ResolvedOpening {
+        window_operation: Default::default(),
         family,
         name: "Cut".into(),
         host: id,

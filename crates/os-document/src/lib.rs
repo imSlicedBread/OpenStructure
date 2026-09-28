@@ -1137,8 +1137,10 @@ mod tests {
             "org.openstructure.walls.wall",
             WallParams {
                 name: "Wall".into(),
-                start: Point2::new(0.0, 0.0),
-                end: Point2::new(5.0, 0.0),
+                path: os_model::WallPath::Straight {
+                    start: Point2::new(0.0, 0.0),
+                    end: Point2::new(5.0, 0.0),
+                },
                 thickness: 0.2,
                 height: 3.0,
                 level: *doc.model().levels.keys().next().unwrap(),

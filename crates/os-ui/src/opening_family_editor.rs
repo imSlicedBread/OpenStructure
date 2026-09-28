@@ -22,6 +22,15 @@ impl OpeningTypeDraft {
             );
         });
         ui.small("Swatches use shared project material colors.");
+        if let Some(lite) = &mut self.family.side_lite {
+            material_selector(
+                ui,
+                editor.document.model(),
+                "Lite material",
+                &mut lite.material,
+            );
+            ui.small("No lite material inherits the panel material and its default swatch.");
+        }
     }
 
     pub(super) fn preview_model(&self, editor: &Editor) -> Result<Model> {
@@ -82,8 +91,10 @@ impl OpeningTypeDraft {
                 os_walls::WALL_TYPE,
                 WallParams {
                     name: "Preview host".into(),
-                    start: Point2::new(0., 0.),
-                    end: Point2::new(p.width + 2., 0.),
+                    path: os_model::WallPath::Straight {
+                        start: Point2::new(0., 0.),
+                        end: Point2::new(p.width + 2., 0.),
+                    },
                     height: p.sill + p.height + 1.,
                     thickness: 0.2,
                     level: *model.levels.keys().next().unwrap(),
@@ -96,6 +107,8 @@ impl OpeningTypeDraft {
                     width_override: None,
                     height_override: None,
                     sill_override: None,
+                    pane_position_override: None,
+                    lite_side_override: None,
                     name: "Preview".into(),
                     host: wall.id(),
                     offset: 1.,
@@ -173,6 +186,26 @@ impl OpeningTypeDraft {
 
     pub(super) fn profile_editor(&mut self, ui: &mut egui::Ui, editor: &Editor, view: Option<Id>) {
         ui.separator();
+        if let Some(lite) = &mut self.family.side_lite {
+            ui.horizontal_wrapped(|ui| {
+                ui.label("Lite at");
+                ui.selectable_value(&mut lite.side, os_model::LiteSide::Start, "Start");
+                ui.selectable_value(&mut lite.side, os_model::LiteSide::End, "End");
+                ui.label("Lite width / total width");
+                ui.add(
+                    egui::DragValue::new(&mut lite.width_fraction)
+                        .speed(0.01)
+                        .range(0.001..=0.999),
+                );
+                ui.label("Mullion (m)");
+                ui.add(
+                    egui::DragValue::new(&mut lite.mullion_width)
+                        .speed(0.001)
+                        .range(0.001..=0.3),
+                );
+            });
+            ui.small("Rectangles only. Clear lite width scales with total width; each bay needs at least 1 mm after reserving the frame and mullion.");
+        }
         ui.horizontal(|ui| {
             if ui
                 .selectable_label(!self.editing_cut, "Component profile")
@@ -187,6 +220,19 @@ impl OpeningTypeDraft {
             {
                 self.editing_cut = true;
                 self.selected_vertex = 0;
+            }
+            let mut enabled = self.family.side_lite.is_some();
+            if ui
+                .checkbox(&mut enabled, "Fixed side lite / two bays")
+                .changed()
+            {
+                self.family.side_lite = enabled.then_some(os_model::SideLite {
+                    side: os_model::LiteSide::End,
+                    width_fraction: 0.25,
+                    mullion_width: 0.05,
+                    material: None,
+                });
+                self.error = None;
             }
         });
         let mut profile = if self.editing_cut {

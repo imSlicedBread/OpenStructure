@@ -130,8 +130,10 @@ fn fixture() -> (Editor, Id, [Id; 2], WallType, [Id; 2]) {
             os_walls::WALL_TYPE,
             WallParams {
                 name: format!("Wall {y}"),
-                start: Point2::new(0., y),
-                end: Point2::new(4., y),
+                path: os_model::WallPath::Straight {
+                    start: Point2::new(0., y),
+                    end: Point2::new(4., y),
+                },
                 thickness: 0.12,
                 height: 3.,
                 level,
@@ -163,6 +165,8 @@ fn door(host: Id, offset: f64) -> Opening {
             width_override: None,
             height_override: None,
             sill_override: None,
+            pane_position_override: None,
+            lite_side_override: None,
             name: "Door".into(),
             host,
             offset,
@@ -456,11 +460,11 @@ fn compound_butt_corner_tee_contact_clearance_and_atomic_type_propagation() {
     for kind in 0..3 {
         let (mut e, plan, ids, ty, _) = fixture();
         let mut p = e.document.model().walls[&ids[1]].parameters.clone();
-        p.start = Point2::new(if kind == 2 { 2. } else { 4. }, 0.);
-        p.end = if kind == 0 {
+        *p.path.straight_start_mut().unwrap() = Point2::new(if kind == 2 { 2. } else { 4. }, 0.);
+        *p.path.straight_end_mut().unwrap() = if kind == 0 {
             Point2::new(8., 0.)
         } else {
-            Point2::new(p.start.x, 3.)
+            Point2::new(p.start().x, 3.)
         };
         e.command(
             "Position",

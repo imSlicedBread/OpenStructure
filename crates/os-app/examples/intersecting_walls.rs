@@ -43,8 +43,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "Create crossing wall",
             Request::CreateWall(WallParams {
                 name: name.into(),
-                start,
-                end,
+                path: os_model::WallPath::Straight { start, end },
                 height,
                 thickness: 0.5,
                 level,

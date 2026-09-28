@@ -235,6 +235,8 @@ fn elements(h: &mut Harness) -> [Id; 3] {
             width_override: None,
             height_override: None,
             sill_override: None,
+            pane_position_override: None,
+            lite_side_override: None,
             hinge: Default::default(),
             swing: Default::default(),
         },

@@ -27,6 +27,7 @@ fn write_package_with_width(
     let ty = OpeningType::new(
         "core.opening_type",
         OpeningTypeParams {
+            window_operation: Default::default(),
             family: OpeningFamily::default(),
             name: name.into(),
             kind,

@@ -164,7 +164,7 @@ fn worker_commands_commit_exactly_once_and_preserve_history() {
 
 #[test]
 fn legacy_model_guest_is_rejected_before_activation_or_model_dispatch() {
-    let legacy = wall_manifest().replace("api_version = 26", "api_version = 24");
+    let legacy = wall_manifest().replace("api_version = 35", "api_version = 24");
     // The normal install helper parses manifests through the current host and
     // therefore rejects API 22 before the directory loader sees the fixture.
     // Write the old guest package directly to exercise that load boundary.
@@ -192,8 +192,8 @@ fn schema21_worker_member_edits_validate_whole_join_graph_and_remain_atomic() {
         let mut doc = Document::new("Joined worker model").unwrap();
         let a = Wall::new("org.openstructure.walls.wall", params(doc.model()));
         let mut p = a.parameters.clone();
-        p.start = a.parameters.end;
-        p.end = Point2::new(5., 4.);
+        *p.path.straight_start_mut().unwrap() = a.parameters.end();
+        *p.path.straight_end_mut().unwrap() = Point2::new(5., 4.);
         let b = Wall::new("org.openstructure.walls.wall", p);
         let join = WallJoin::new(
             "core.wall_join",
@@ -222,9 +222,9 @@ fn schema21_worker_member_edits_validate_whole_join_graph_and_remain_atomic() {
         let revision = doc.revision();
         let mut parameters = a.parameters.clone();
         if detached {
-            parameters.end.x += 1.;
+            parameters.path.straight_end_mut().unwrap().x += 1.;
         } else {
-            parameters.start.x -= 1.;
+            parameters.path.straight_start_mut().unwrap().x -= 1.;
         }
         let directory = install(
             &wall_manifest(),
@@ -601,8 +601,10 @@ fn grants() -> BTreeSet<Permission> {
 fn params(model: &Model) -> WallParams {
     WallParams {
         name: "External reply wall".into(),
-        start: Point2::new(0.0, 0.0),
-        end: Point2::new(5.0, 0.0),
+        path: os_model::WallPath::Straight {
+            start: Point2::new(0.0, 0.0),
+            end: Point2::new(5.0, 0.0),
+        },
         thickness: 0.2,
         height: 3.0,
         level: *model.levels.keys().next().unwrap(),
@@ -907,7 +909,7 @@ fn loading_errors_leave_no_registrations_or_plugins() {
     for manifest in [
         PROBE_MANIFEST.replace("wasm:probe.wasm", "wasm:../probe.wasm"),
         PROBE_MANIFEST.replace("wasm:probe.wasm", "wasm:C:\\probe.wasm"),
-        PROBE_MANIFEST.replace("api_version = 26", "api_version = 999"),
+        PROBE_MANIFEST.replace("api_version = 35", "api_version = 999"),
         PROBE_MANIFEST.replace(
             "dependencies = []",
             "dependencies = [{ id = 'org.example.missing', version = '1.0.0' }]",

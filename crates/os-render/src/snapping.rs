@@ -11,6 +11,30 @@ pub struct SnapSegment {
     pub start: Point2,
     pub end: Point2,
 }
+
+/// Analytic circular feature in view-plane metres, independent of display sampling.
+#[derive(Clone, Copy, Debug)]
+pub struct SnapArc {
+    pub entity: Id,
+    pub center: Point2,
+    pub radius: f64,
+    pub start_angle_rad: f64,
+    pub signed_sweep_rad: f64,
+}
+impl SnapArc {
+    fn point(self, angle: f64) -> Point2 {
+        Point2::new(
+            self.center.x + self.radius * angle.cos(),
+            self.center.y + self.radius * angle.sin(),
+        )
+    }
+    fn angle(self, p: Point2) -> Option<f64> {
+        let a = (p.y - self.center.y).atan2(p.x - self.center.x);
+        let travel = ((a - self.start_angle_rad) * self.signed_sweep_rad.signum())
+            .rem_euclid(std::f64::consts::TAU);
+        (travel <= self.signed_sweep_rad.abs() + 1e-12).then_some(a)
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SnapKind {
     Endpoint,
@@ -122,6 +146,7 @@ pub struct SnapScene {
     context: PlanContext,
     segments: Vec<PreparedSegment>,
     grids: BTreeSet<Id>,
+    arcs: Vec<SnapArc>,
 }
 
 /// Immutable derived geometry, rebuilt with the revision-bound scene. In particular,
@@ -182,7 +207,32 @@ impl SnapScene {
                 })
                 .collect(),
             grids: BTreeSet::new(),
+            arcs: Vec::new(),
         })
+    }
+
+    pub fn with_arcs(mut self, arcs: Vec<SnapArc>) -> Result<Self> {
+        ensure(
+            arcs.len() + self.segments.len() <= MAX_PLAN_ELEMENTS,
+            "snap feature limit exceeded",
+        )?;
+        let mut ids = BTreeSet::new();
+        for arc in &arcs {
+            ensure(
+                !arc.entity.0.is_nil()
+                    && ids.insert(arc.entity)
+                    && arc.center.is_finite()
+                    && arc.radius.is_finite()
+                    && arc.radius > 0.0
+                    && arc.start_angle_rad.is_finite()
+                    && arc.signed_sweep_rad.is_finite()
+                    && arc.signed_sweep_rad.abs() > 1e-6
+                    && arc.signed_sweep_rad.abs() < std::f64::consts::TAU,
+                "invalid arc snap feature",
+            )?;
+        }
+        self.arcs = arcs;
+        Ok(self)
     }
 
     /// Host classification, not a provider-controlled arbitrary priority.
@@ -305,6 +355,55 @@ impl SnapScene {
                 }
                 Ok(())
             };
+        for arc in &self.arcs {
+            if query.exclude_entity == Some(arc.entity) || excluded_entities.contains(&arc.entity) {
+                continue;
+            }
+            let start = arc.point(arc.start_angle_rad);
+            let end = arc.point(arc.start_angle_rad + arc.signed_sweep_rad);
+            let identity = SnapSegment {
+                entity: arc.entity,
+                feature: 0,
+                start,
+                end,
+            };
+            if query.endpoints {
+                offer(&identity, None, SnapKind::Endpoint, 0, start)?;
+                offer(&identity, None, SnapKind::Endpoint, 1, end)?;
+            }
+            if query.midpoints {
+                offer(
+                    &identity,
+                    None,
+                    SnapKind::Midpoint,
+                    0,
+                    arc.point(arc.start_angle_rad + arc.signed_sweep_rad / 2.0),
+                )?;
+            }
+            if query.nearest {
+                let point = if pointer == arc.center {
+                    start
+                } else if let Some(a) = arc.angle(pointer) {
+                    arc.point(a)
+                } else if pointer.distance(start) <= pointer.distance(end) {
+                    start
+                } else {
+                    end
+                };
+                offer(&identity, None, SnapKind::Nearest, 0, point)?;
+            }
+            if let Some(anchor) = query.perpendicular_from
+                && anchor.distance(arc.center) > 1e-9
+            {
+                let a = (anchor.y - arc.center.y).atan2(anchor.x - arc.center.x);
+                for a in [a, a + std::f64::consts::PI] {
+                    let point = arc.point(a);
+                    if arc.angle(point).is_some() && point.distance(anchor) > 1e-9 {
+                        offer(&identity, None, SnapKind::Perpendicular, 0, point)?;
+                    }
+                }
+            }
+        }
         let mut nearby = Vec::new();
         for prepared in &self.segments {
             let segment = &prepared.segment;

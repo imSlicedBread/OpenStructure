@@ -3,7 +3,9 @@ use os_core::{Id, Point2, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub const SCHEMA_VERSION: u32 = 45;
+pub const SCHEMA_VERSION: u32 = 54;
+mod wall_path;
+pub use wall_path::*;
 mod phases;
 pub use phases::*;
 mod opening_tags;
@@ -203,28 +205,27 @@ pub enum ViewKind {
     Section,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WallParams {
     pub name: String,
-    pub start: Point2,
-    pub end: Point2,
+    pub path: WallPath,
     pub thickness: f64,
     pub height: f64,
     pub level: Id,
     pub material: Option<Id>,
 }
 impl WallParams {
+    pub fn start(&self) -> Point2 {
+        self.path.start()
+    }
+    pub fn end(&self) -> Point2 {
+        self.path.end()
+    }
     pub fn length(&self) -> f64 {
-        self.start.distance(self.end)
+        self.path.length()
     }
     pub fn validate(&self) -> Result<()> {
-        ensure(
-            self.start.is_finite() && self.end.is_finite(),
-            "wall endpoints must be finite",
-        )?;
-        ensure(
-            self.length().is_finite() && self.length() > 1e-6,
-            "wall length must exceed one micrometre",
-        )?;
+        self.path.validate(self.thickness)?;
         ensure(
             self.thickness.is_finite() && self.thickness > 1e-6,
             "wall thickness must be positive",
@@ -241,10 +242,26 @@ impl WallParams {
         ensure(length.is_finite() && length > 1e-6, "invalid wall length")?;
         let mut result = self.clone();
         let scale = length / self.length();
-        result.end = Point2::new(
-            self.start.x + (self.end.x - self.start.x) * scale,
-            self.start.y + (self.end.y - self.start.y) * scale,
-        );
+        result.path = match self.path {
+            WallPath::Straight { start, end } => WallPath::Straight {
+                start,
+                end: Point2::new(
+                    start.x + (end.x - start.x) * scale,
+                    start.y + (end.y - start.y) * scale,
+                ),
+            },
+            WallPath::CircularArc {
+                center,
+                radius,
+                start_angle_rad,
+                signed_sweep_rad,
+            } => WallPath::CircularArc {
+                center,
+                radius,
+                start_angle_rad,
+                signed_sweep_rad: signed_sweep_rad * scale,
+            },
+        };
         result.validate()?;
         Ok(result)
     }
@@ -621,20 +638,22 @@ mod tests {
     fn validates_wall_and_preserves_direction() {
         let wall = WallParams {
             name: "W".into(),
-            start: Point2::new(1.0, 2.0),
-            end: Point2::new(4.0, 6.0),
+            path: crate::WallPath::Straight {
+                start: Point2::new(1.0, 2.0),
+                end: Point2::new(4.0, 6.0),
+            },
             thickness: 0.2,
             height: 3.0,
             level: Id::new(),
             material: None,
         };
         let resized = wall.with_length(10.0).unwrap();
-        assert_eq!(resized.end, Point2::new(7.0, 10.0));
+        assert_eq!(resized.end(), Point2::new(7.0, 10.0));
         for value in [0.0, -1.0, f64::NAN, f64::INFINITY] {
             assert!(wall.with_length(value).is_err());
         }
         let mut bad = wall.clone();
-        bad.end = bad.start;
+        *bad.path.straight_end_mut().unwrap() = bad.start();
         assert!(bad.validate().is_err());
         bad = wall;
         bad.thickness = -0.2;

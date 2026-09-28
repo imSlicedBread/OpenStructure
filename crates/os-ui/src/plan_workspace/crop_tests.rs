@@ -214,7 +214,7 @@ fn crop_expansion_regenerates_clipping_and_picking_and_empty_drag_pans() {
         let mut wall = h.app.editor.document.model().walls[&h.wall]
             .parameters
             .clone();
-        wall.end = Point2::new(2.0, 0.0);
+        *wall.path.straight_end_mut().unwrap() = Point2::new(2.0, 0.0);
         h.app
             .editor
             .command(

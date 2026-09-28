@@ -14,8 +14,10 @@ fn pair(reverse_a: bool, reverse_b: bool) -> (Editor, Id, WallAnchor, WallAnchor
             os_walls::WALL_TYPE,
             WallParams {
                 name: name.into(),
-                start: Point2::new(start, 0.),
-                end: Point2::new(finish, 0.),
+                path: os_model::WallPath::Straight {
+                    start: Point2::new(start, 0.),
+                    end: Point2::new(finish, 0.),
+                },
                 thickness: 0.2,
                 height: 3.,
                 level,
@@ -138,12 +140,12 @@ fn butt_join_rejects_incompatible_topology_and_atomic_edits_never_detach() {
         let mut model = e.document.model().clone();
         let mut p = model.walls[&b.wall].parameters.clone();
         match case {
-            0 => p.start.x += 1e-8,
-            1 => p.end = Point2::new(3., 4.),
-            2 => p.end = Point2::new(1., 0.),
+            0 => p.path.straight_start_mut().unwrap().x += 1e-8,
+            1 => *p.path.straight_end_mut().unwrap() = Point2::new(3., 4.),
+            2 => *p.path.straight_end_mut().unwrap() = Point2::new(1., 0.),
             3 => p.thickness += 0.01,
             4 => p.height += 0.01,
-            5 => p.end = Point2::new(7., 1.),
+            5 => *p.path.straight_end_mut().unwrap() = Point2::new(7., 1.),
             _ => {
                 let mut level = model.levels[&p.level].clone();
                 level.header.id = Id::new();
@@ -161,7 +163,7 @@ fn butt_join_rejects_incompatible_topology_and_atomic_edits_never_detach() {
     let original = e.document.model().clone();
     let revision = e.document.revision();
     let mut p = original.walls[&a.wall].parameters.clone();
-    p.end.x = 4.;
+    p.path.straight_end_mut().unwrap().x = 4.;
     for command in [
         Command::UpdateWall {
             id: a.wall,
@@ -181,8 +183,10 @@ fn butt_join_rejects_incompatible_topology_and_atomic_edits_never_detach() {
         os_walls::WALL_TYPE,
         WallParams {
             name: "Tee".into(),
-            start: Point2::new(3., 0.),
-            end: Point2::new(3., 4.),
+            path: os_model::WallPath::Straight {
+                start: Point2::new(3., 0.),
+                end: Point2::new(3., 4.),
+            },
             ..p.clone()
         },
     );
@@ -192,7 +196,7 @@ fn butt_join_rejects_incompatible_topology_and_atomic_edits_never_detach() {
             .is_err()
     );
     let mut q = original.walls[&b.wall].parameters.clone();
-    q.start.x = 4.;
+    q.path.straight_start_mut().unwrap().x = 4.;
     e.document.drain_events();
     e.document
         .execute(
@@ -217,7 +221,7 @@ fn butt_join_rejects_incompatible_topology_and_atomic_edits_never_detach() {
     e.undo().unwrap();
     assert_eq!(e.document.model(), &original);
     e.redo().unwrap();
-    assert_eq!(e.document.model().walls[&a.wall].parameters.end.x, 4.);
+    assert_eq!(e.document.model().walls[&a.wall].parameters.end().x, 4.);
 }
 
 #[test]
@@ -272,6 +276,8 @@ fn butt_join_openings_quantities_storage_and_section_interfaces() {
             width_override: None,
             height_override: None,
             sill_override: None,
+            pane_position_override: None,
+            lite_side_override: None,
             name: "Door".into(),
             host: a.wall,
             offset: 0.5,
@@ -307,9 +313,9 @@ fn butt_join_openings_quantities_storage_and_section_interfaces() {
             < 1e-10
     );
     let mut invalid = expected.walls[&a.wall].parameters.clone();
-    invalid.end.x = 1.;
+    invalid.path.straight_end_mut().unwrap().x = 1.;
     let mut other = expected.walls[&b.wall].parameters.clone();
-    other.end.x = 1.;
+    other.path.straight_end_mut().unwrap().x = 1.;
     assert!(
         e.document
             .execute(
@@ -386,8 +392,7 @@ fn corner_tee_and_closed_corner_loop_have_gap_free_non_overlapping_cells() {
             os_walls::WALL_TYPE,
             WallParams {
                 name: name.into(),
-                start,
-                end,
+                path: os_model::WallPath::Straight { start, end },
                 thickness: 0.2,
                 height: 3.0,
                 level,

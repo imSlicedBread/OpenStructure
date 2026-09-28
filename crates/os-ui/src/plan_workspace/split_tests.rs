@@ -21,14 +21,14 @@ fn wall_split_rejects_joins_and_invisible_sources() {
         let mut h = Harness::new(PROFILES[0].0, PROFILES[0].1);
         let mut model = h.app.editor.document.model().clone();
         let mut p = model.walls[&h.wall].parameters.clone();
-        p.start = Point2::new(1.0, 0.0);
-        p.end = Point2::new(1.0, 2.0);
+        *p.path.straight_start_mut().unwrap() = Point2::new(1.0, 0.0);
+        *p.path.straight_end_mut().unwrap() = Point2::new(1.0, 2.0);
         if kind == "butt" {
-            p.end = Point2::new(3.0, 0.0);
+            *p.path.straight_end_mut().unwrap() = Point2::new(3.0, 0.0);
         }
         if kind.starts_with("tee") {
-            p.start.x = 0.0;
-            p.end.x = 0.0;
+            p.path.straight_start_mut().unwrap().x = 0.0;
+            p.path.straight_end_mut().unwrap().x = 0.0;
         }
         let peer = os_model::Wall::new(os_walls::WALL_TYPE, p);
         let peer_id = peer.id();
@@ -171,7 +171,10 @@ fn dependencies(h: &mut Harness, reversed: bool) -> (Id, Id, Id) {
         .properties
         .insert("mark".into(), serde_json::json!("W-01"));
     if reversed {
-        std::mem::swap(&mut source.parameters.start, &mut source.parameters.end);
+        source.parameters.path = os_model::WallPath::Straight {
+            start: source.parameters.end(),
+            end: source.parameters.start(),
+        };
     }
     model
         .wall_type_assignments
@@ -187,8 +190,8 @@ fn dependencies(h: &mut Harness, reversed: bool) -> (Id, Id, Id) {
         ((2.0, 0.0), (3.0, 0.0)),
     ] {
         let mut p = params.clone();
-        p.start = Point2::new(a.0, a.1);
-        p.end = Point2::new(b.0, b.1);
+        *p.path.straight_start_mut().unwrap() = Point2::new(a.0, a.1);
+        *p.path.straight_end_mut().unwrap() = Point2::new(b.0, b.1);
         let wall = os_model::Wall::new(os_walls::WALL_TYPE, p);
         peers.push(wall.id());
         model.walls.insert(wall.id(), wall);
@@ -282,7 +285,7 @@ fn wall_split_dependencies_preview_commit_and_history_at_both_dpis() {
             assert!(h.app.plans.transform.is_some());
             let target = h.point(Point2::new(0.0, 0.03));
             h.frame(vec![egui::Event::PointerMoved(target)]);
-            h.press(h.point(before.walls[&h.wall].parameters.start));
+            h.press(h.point(before.walls[&h.wall].parameters.start()));
             h.frame(vec![egui::Event::PointerMoved(target)]);
             assert_eq!(h.app.editor.document.model(), &before);
             assert_eq!(h.app.editor.document.revision(), revision);
@@ -309,8 +312,15 @@ fn wall_split_dependencies_preview_commit_and_history_at_both_dpis() {
             let mut expected = before.clone();
             let mut end = before.walls[&h.wall].clone();
             end.header.id = new;
-            end.parameters.start = Point2::new(0.0, 0.0);
-            expected.walls.get_mut(&h.wall).unwrap().parameters.end = end.parameters.start;
+            *end.parameters.path.straight_start_mut().unwrap() = Point2::new(0.0, 0.0);
+            *expected
+                .walls
+                .get_mut(&h.wall)
+                .unwrap()
+                .parameters
+                .path
+                .straight_end_mut()
+                .unwrap() = end.parameters.start();
             expected.walls.insert(new, end);
             expected
                 .element_lifecycles
@@ -434,10 +444,13 @@ fn wall_split_rotated_basis_large_coordinates_and_legacy_wall() {
         let mut model = h.app.editor.document.model().clone();
         let base = 100_000_000.0;
         let p = &mut model.walls.get_mut(&h.wall).unwrap().parameters;
-        p.start = Point2::new(base, base);
-        p.end = Point2::new(base + 4.0, base + 3.0);
+        *p.path.straight_start_mut().unwrap() = Point2::new(base, base);
+        *p.path.straight_end_mut().unwrap() = Point2::new(base + 4.0, base + 3.0);
         if reverse {
-            std::mem::swap(&mut p.start, &mut p.end);
+            p.path = os_model::WallPath::Straight {
+                start: p.end(),
+                end: p.start(),
+            };
         }
         model
             .views
@@ -463,8 +476,8 @@ fn wall_split_rotated_basis_large_coordinates_and_legacy_wall() {
             )
             .unwrap();
         let p = &candidate.model.walls[&h.wall].parameters;
-        assert!(p.end.distance(Point2::new(base + 2.0, base + 1.5)) < 1e-7);
-        assert_eq!(p.start, model.walls[&h.wall].parameters.start);
+        assert!(p.end().distance(Point2::new(base + 2.0, base + 1.5)) < 1e-7);
+        assert_eq!(p.start(), model.walls[&h.wall].parameters.start());
         assert_eq!(candidate.model.walls.len(), 2);
         assert_eq!(h.app.editor.document.model(), &model);
         for p in [Point2::new(f64::NAN, 0.0), Point2::new(100.0, 100.0)] {

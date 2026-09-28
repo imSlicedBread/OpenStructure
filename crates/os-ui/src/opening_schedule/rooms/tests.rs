@@ -14,8 +14,8 @@ pub(crate) fn fixture() -> (DesktopApp, Id, Id, Id, Id) {
         ((0., 3.), (0., 0.)),
     ] {
         let mut p = crate::default_wall(level);
-        p.start = Point2::new(start.0, start.1);
-        p.end = Point2::new(end.0, end.1);
+        *p.path.straight_start_mut().unwrap() = Point2::new(start.0, start.1);
+        *p.path.straight_end_mut().unwrap() = Point2::new(end.0, end.1);
         commands.push(Command::AddWall(Wall::new(os_walls::WALL_TYPE, p)));
     }
     let separator = RoomSeparationLine::new(

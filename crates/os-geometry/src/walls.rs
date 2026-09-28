@@ -5,6 +5,7 @@ use os_core::{Id, Point2, Result, ensure};
 use os_model::{Model, ResolvedOpening, WallJoinParams, WallParams};
 use std::collections::BTreeMap;
 
+mod arcs;
 mod profiles;
 
 #[derive(Clone, Debug)]
@@ -156,6 +157,10 @@ impl NativeWall {
             .collect())
     }
     pub fn layer_cells(&self) -> Result<Vec<(os_model::ResolvedWallLayer, Vec<Solid>)>> {
+        ensure(
+            self.parameters.path.is_straight(),
+            "circular walls require native annular mesh; rectangular Solid conversion is unsupported",
+        )?;
         let base = wall_prisms_at(
             &self.parameters,
             self.elevation,
@@ -182,6 +187,9 @@ impl NativeWall {
             .collect())
     }
     pub fn net_volume(&self) -> Result<f64> {
+        if !self.parameters.path.is_straight() {
+            return Ok(self.arc_quantities()?.iter().map(|q| q.volume_m3).sum());
+        }
         if self.has_profile_cuts() {
             let volume: f64 = self.layer_quantities()?.iter().map(|q| q.volume_m3).sum();
             ensure(volume.is_finite(), "wall volume overflow")?;
@@ -204,7 +212,9 @@ impl NativeWall {
         for layer in &self.layers {
             let mut part = self.clone();
             part.layers = vec![layer.clone()];
-            let mesh = if self.has_profile_cuts() {
+            let mesh = if !self.parameters.path.is_straight() {
+                part.arc_layer_mesh(layer)?
+            } else if self.has_profile_cuts() {
                 part.profile_mesh()?
             } else {
                 part.mesh_cells()?
@@ -226,6 +236,9 @@ impl NativeWall {
         Ok(result)
     }
     pub fn layer_quantities(&self) -> Result<Vec<LayerQuantity>> {
+        if !self.parameters.path.is_straight() {
+            return self.arc_quantities();
+        }
         if self.has_profile_cuts() {
             return self.profile_quantities();
         }
@@ -300,7 +313,26 @@ impl NativeWall {
     }
     /// World-space shared face trace, used to suppress only persisted joins.
     pub fn seams(&self) -> Vec<(Point2, Point2)> {
-        self.interfaces.clone()
+        let mut seams = self.interfaces.clone();
+        if !self.parameters.path.is_straight()
+            && let Ok(count) = self
+                .parameters
+                .path
+                .display_segments(self.parameters.thickness / 2.0)
+        {
+            for i in 1..count {
+                let station = self.parameters.length() * i as f64 / count as f64;
+                seams.push((
+                    self.parameters
+                        .path
+                        .offset_point(station, -self.parameters.thickness / 2.0),
+                    self.parameters
+                        .path
+                        .offset_point(station, self.parameters.thickness / 2.0),
+                ));
+            }
+        }
+        seams
     }
 }
 
@@ -314,6 +346,10 @@ pub struct LayerQuantity {
 }
 
 pub fn wall_solid(wall: &WallParams, elevation: f64) -> Result<Solid> {
+    ensure(
+        wall.path.is_straight(),
+        "circular walls require native annular geometry; rectangular Solid conversion is unsupported",
+    )?;
     wall.validate()?;
     ensure(elevation.is_finite(), "invalid level elevation")?;
     let length = wall.length();
@@ -329,8 +365,8 @@ pub fn wall_solid(wall: &WallParams, elevation: f64) -> Result<Solid> {
         },
         height: wall.height,
         transform: Transform {
-            translation: Vec3::new(wall.start.x, wall.start.y, elevation),
-            rotation_z: (wall.end.y - wall.start.y).atan2(wall.end.x - wall.start.x),
+            translation: Vec3::new(wall.start().x, wall.start().y, elevation),
+            rotation_z: (wall.end().y - wall.start().y).atan2(wall.end().x - wall.start().x),
         },
     })
 }

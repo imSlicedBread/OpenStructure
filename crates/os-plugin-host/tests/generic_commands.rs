@@ -34,8 +34,10 @@ fn read_access_to_native_wall_does_not_authorize_another_owner_to_edit_it() {
         os_plugin_api::wall::TYPE,
         os_model::WallParams {
             name: "Wall".into(),
-            start: os_core::Point2::new(0.0, 0.0),
-            end: os_core::Point2::new(5.0, 0.0),
+            path: os_model::WallPath::Straight {
+                start: os_core::Point2::new(0.0, 0.0),
+                end: os_core::Point2::new(5.0, 0.0),
+            },
             thickness: 0.2,
             height: 3.0,
             level: *doc.model().levels.keys().next().unwrap(),

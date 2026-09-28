@@ -4,7 +4,8 @@ OpenStructure can transfer one authored native door or window type between
 projects using a bounded `.osot` file. The Manage ribbon imports a package; the
 selected opening type's Properties panel exports one. The package is portable
 JSON, independent of the project model schema, and contains the type parameters
-plus exact snapshots of only the referenced panel/pane and frame materials.
+plus exact snapshots of only the referenced panel/pane, frame and optional
+fixed-lite materials.
 It does not include placed openings, hosts, levels, or other project entities.
 
 Manage also provides a local package browser. Enter one directory, scan it, and
@@ -41,7 +42,15 @@ an existing package and writes through a temporary sibling for atomic replacemen
 
 ## Format and limits
 
-Format identifier: `OpenStructure.OpeningTypePackage`, version 1. Reads reject
+Format identifier: `OpenStructure.OpeningTypePackage`, version 3. Version-1
+packages remain importable and are upgraded as single-panel families (family
+version 4 to 5 with `side_lite: null`); version-1 and version-2 imports default
+window operation to Fixed. Version 2 can carry the optional two-bay
+side/lite-width/mullion settings and an independent lite material reference.
+Version 3 adds required type-level Fixed/Sliding/Casement window-operation
+metadata. It affects plan symbols only; generated 3D panes remain static.
+Export includes exact material snapshots when set; import remaps them with the
+panel/frame dependencies and applies the same collision rules. Reads reject
 unknown fields, duplicate JSON keys, malformed or excessively deep JSON, invalid
 opening profiles/material references, unsupported versions and files over 1
 MiB. Material snapshots are deduplicated and UUID-sorted; encoding is
@@ -56,7 +65,8 @@ Acceptance evidence:
 
 - `crates/os-storage/tests/opening_type_package.rs`: door/window round trips,
   exact dependencies, strict parsing, deterministic encoding, atomic writes and
-  size limits.
+  size limits; `two_bay_packages_v1_v2_upgrade_to_v3_strict_and_three_materials`
+  checks legacy defaults, strict current fields and all three material dependencies.
 - `crates/os-ui/src/desktop_tests/opening_type_package_tests.rs`: import/export
   at 1280×800/100% and 1000×650/150%, material conflict remapping, no mutation
   during preview, update identity and pinned dimensions, one-step undo/redo,
@@ -67,7 +77,8 @@ Acceptance evidence:
   cancellation and door/window import at both DPI profiles.
 
 This increment is a local single-folder browser, not an office/cloud content
-service or Revit-compatible family system. Bulk packages, office/cloud catalogs,
-catalog revisions, selective field merge, nested families, multiple solids,
-constrained sketches, formulas and graphical side-by-side update previews remain
-future work. See the [2D coverage ledger](2d-coverage.md).
+service or Revit-compatible family system. The optional side lite is a bounded
+two-bay composition, not arbitrary or nested family content. Bulk packages,
+office/cloud catalogs, catalog revisions, selective field merge, general nested
+families, multiple authored solids, constrained sketches, formulas and graphical
+side-by-side update previews remain future work. See the [2D coverage ledger](2d-coverage.md).

@@ -11,8 +11,10 @@ fn setup() -> (Model, OpeningTag) {
         "org.openstructure.walls.wall",
         WallParams {
             name: "Host".into(),
-            start: Point2::new(0., 0.),
-            end: Point2::new(8., 0.),
+            path: os_model::WallPath::Straight {
+                start: Point2::new(0., 0.),
+                end: Point2::new(8., 0.),
+            },
             thickness: 0.2,
             height: 3.,
             level,
@@ -22,6 +24,7 @@ fn setup() -> (Model, OpeningTag) {
     let ty = OpeningType::new(
         "core.opening_type",
         OpeningTypeParams {
+            window_operation: Default::default(),
             name: "D900".into(),
             family: OpeningFamily::default(),
             kind: OpeningKind::Door,
@@ -41,6 +44,8 @@ fn setup() -> (Model, OpeningTag) {
             width_override: None,
             height_override: None,
             sill_override: None,
+            pane_position_override: None,
+            lite_side_override: None,
             hinge: DoorHinge::Start,
             swing: DoorSwing::Left,
         },

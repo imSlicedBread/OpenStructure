@@ -1,7 +1,9 @@
 use os_core::{Id, Point2};
 use os_document::Command;
 use os_geometry::{GeometryKernel, PrismKernel};
-use os_model::{DoorHinge, DoorSwing, OpeningType, OpeningTypeParams, WindowPanePosition};
+use os_model::{
+    DoorHinge, DoorSwing, OpeningType, OpeningTypeParams, WindowOperation, WindowPanePosition,
+};
 use os_model::{Opening, OpeningDefinition, OpeningKind, OpeningParams, Wall, WallParams};
 use os_ui::Editor;
 
@@ -13,8 +15,10 @@ fn setup() -> (Editor, Id, Id, Opening, Opening) {
         os_walls::WALL_TYPE,
         WallParams {
             name: "Host".into(),
-            start: Point2::new(0.0, 0.0),
-            end: Point2::new(6.0, 0.0),
+            path: os_model::WallPath::Straight {
+                start: Point2::new(0.0, 0.0),
+                end: Point2::new(6.0, 0.0),
+            },
             thickness: 0.2,
             height: 3.0,
             level,
@@ -30,6 +34,8 @@ fn setup() -> (Editor, Id, Id, Opening, Opening) {
                 width_override: None,
                 height_override: None,
                 sill_override: None,
+                pane_position_override: None,
+                lite_side_override: None,
                 hinge: Default::default(),
                 swing: Default::default(),
                 name: format!("{kind:?}"),
@@ -124,7 +130,7 @@ fn opening_validation_history_invalidation_and_roundtrip() {
     }
     assert!(e.command("Remove host", Command::RemoveWall(host)).is_err());
     let mut short = created.walls[&host].parameters.clone();
-    short.end.x = 2.0;
+    short.path.straight_end_mut().unwrap().x = 2.0;
     assert!(
         e.command(
             "Short host",
@@ -148,8 +154,8 @@ fn opening_validation_history_invalidation_and_roundtrip() {
         .is_err()
     );
     let mut moved = created.walls[&host].parameters.clone();
-    moved.start.y = 2.0;
-    moved.end.y = 2.0;
+    moved.path.straight_start_mut().unwrap().y = 2.0;
+    moved.path.straight_end_mut().unwrap().y = 2.0;
     e.document
         .execute(
             "Move host",
@@ -285,10 +291,13 @@ fn door_hinge_swing_all_combinations_both_host_directions_match_arc_and_3d_leaf(
             let (mut e, host, view, mut door, window) = setup();
             // Diagonal hosts catch accidental world-axis interpretation.
             let mut wall = e.document.model().walls[&host].parameters.clone();
-            wall.start = Point2::new(1.0, 2.0);
-            wall.end = Point2::new(4.6, 6.8);
+            *wall.path.straight_start_mut().unwrap() = Point2::new(1.0, 2.0);
+            *wall.path.straight_end_mut().unwrap() = Point2::new(4.6, 6.8);
             if reverse {
-                std::mem::swap(&mut wall.start, &mut wall.end);
+                wall.path = os_model::WallPath::Straight {
+                    start: wall.end(),
+                    end: wall.start(),
+                };
             }
             e.command(
                 "Direction",
@@ -299,17 +308,18 @@ fn door_hinge_swing_all_combinations_both_host_directions_match_arc_and_3d_leaf(
             )
             .unwrap();
             let world = |x: f64, y: f64| {
-                let dx = (wall.end.x - wall.start.x) / wall.length();
-                let dy = (wall.end.y - wall.start.y) / wall.length();
+                let dx = (wall.end().x - wall.start().x) / wall.length();
+                let dy = (wall.end().y - wall.start().y) / wall.length();
                 Point2::new(
-                    wall.start.x + dx * x - dy * y,
-                    wall.start.y + dy * x + dx * y,
+                    wall.start().x + dx * x - dy * y,
+                    wall.start().y + dy * x + dx * y,
                 )
             };
             if typed {
                 let ty = OpeningType::new(
                     "core.opening_type",
                     OpeningTypeParams {
+                        window_operation: Default::default(),
                         family: Default::default(),
                         name: "Shared".into(),
                         pane_position: Default::default(),
@@ -330,8 +340,8 @@ fn door_hinge_swing_all_combinations_both_host_directions_match_arc_and_3d_leaf(
             let original_window = e.scene[&window.id()].clone();
             let types = e.document.model().opening_types.clone();
             let mut expected_window = wall.clone();
-            expected_window.start = world(3.0, 0.0);
-            expected_window.end = world(4.0, 0.0);
+            *expected_window.path.straight_start_mut().unwrap() = world(3.0, 0.0);
+            *expected_window.path.straight_end_mut().unwrap() = world(4.0, 0.0);
             expected_window.height = 1.8;
             expected_window.thickness = 0.025;
             assert_eq!(
@@ -359,8 +369,8 @@ fn door_hinge_swing_all_combinations_both_host_directions_match_arc_and_3d_leaf(
                     let h = world(x, -side * 0.1);
                     let tip = world(x, side * 0.9);
                     let mut expected_panel = wall.clone();
-                    expected_panel.start = h;
-                    expected_panel.end = tip;
+                    *expected_panel.path.straight_start_mut().unwrap() = h;
+                    *expected_panel.path.straight_end_mut().unwrap() = tip;
                     expected_panel.height = 1.8;
                     expected_panel.thickness = 0.025;
                     assert_eq!(
@@ -433,6 +443,96 @@ fn door_hinge_swing_all_combinations_both_host_directions_match_arc_and_3d_leaf(
 }
 
 #[test]
+fn window_operation_is_plan_only_preserves_existing_symbols_and_leaves_meshes_unchanged() {
+    let (mut e, host, view, _, mut window) = setup();
+    let mut wall = e.document.model().walls[&host].parameters.clone();
+    *wall.path.straight_start_mut().unwrap() = Point2::new(1.0, 1.0);
+    *wall.path.straight_end_mut().unwrap() = Point2::new(5.0, 4.0);
+    e.command(
+        "Rotate host",
+        Command::UpdateWall {
+            id: host,
+            parameters: wall,
+        },
+    )
+    .unwrap();
+
+    let ty = OpeningType::new(
+        "core.opening_type",
+        OpeningTypeParams {
+            family: Default::default(),
+            name: "Casement symbol window".into(),
+            kind: OpeningKind::Window,
+            width: 1.0,
+            height: 1.2,
+            sill: 0.8,
+            pane_position: WindowPanePosition::Center,
+            window_operation: WindowOperation::Fixed,
+        },
+    );
+    let type_id = ty.id();
+    window.parameters.definition = OpeningDefinition::Typed { type_id };
+    e.document
+        .execute(
+            "Create typed window",
+            vec![
+                Command::AddOpeningType(ty),
+                Command::AddOpening(window.clone()),
+            ],
+        )
+        .unwrap();
+    e.regenerate().unwrap();
+    let host_mesh = e.scene[&host].clone();
+    let opening_mesh = e.scene[&window.id()].clone();
+    let plan_lines = |editor: &Editor| {
+        let context = editor.native_plan_context(view).unwrap();
+        editor
+            .native_wall_plan(view)
+            .unwrap()
+            .provider_lines(context)
+            .unwrap()
+            .iter()
+            .filter(|line| line.entity == window.id())
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    let fixed = plan_lines(&e);
+    assert_eq!(fixed.len(), 5);
+
+    for (operation, added_lines) in [
+        (WindowOperation::Sliding, 4),
+        (WindowOperation::Casement, 1),
+    ] {
+        let mut parameters = e.document.model().opening_types[&type_id]
+            .parameters
+            .clone();
+        parameters.window_operation = operation;
+        e.command(
+            "Set window operation symbol",
+            Command::UpdateOpeningType {
+                id: type_id,
+                parameters,
+            },
+        )
+        .unwrap();
+        e.regenerate().unwrap();
+        let edited = plan_lines(&e);
+        assert_eq!(edited.len(), fixed.len() + added_lines);
+        assert_eq!(&edited[..fixed.len()], fixed.as_slice());
+        assert_eq!(
+            e.document
+                .model()
+                .resolve_opening(&e.document.model().openings[&window.id()].parameters)
+                .unwrap()
+                .window_operation,
+            operation
+        );
+        assert_eq!(e.scene[&host], host_mesh);
+        assert_eq!(e.scene[&window.id()], opening_mesh);
+    }
+}
+
+#[test]
 fn typed_window_pane_faces_match_plan_and_3d_for_both_wall_directions() {
     for reverse in [false, true] {
         let (mut e, host, view, _, _) = setup();
@@ -440,6 +540,7 @@ fn typed_window_pane_faces_match_plan_and_3d_for_both_wall_directions() {
         let invalid_door = OpeningType::new(
             "core.opening_type",
             OpeningTypeParams {
+                window_operation: Default::default(),
                 family: Default::default(),
                 name: "Invalid offset door".into(),
                 kind: OpeningKind::Door,
@@ -456,7 +557,10 @@ fn typed_window_pane_faces_match_plan_and_3d_for_both_wall_directions() {
         assert_eq!(e.document.model(), &original_model);
         let mut wall = e.document.model().walls[&host].parameters.clone();
         if reverse {
-            std::mem::swap(&mut wall.start, &mut wall.end);
+            wall.path = os_model::WallPath::Straight {
+                start: wall.end(),
+                end: wall.start(),
+            };
             e.command(
                 "Reverse host",
                 Command::UpdateWall {
@@ -467,16 +571,17 @@ fn typed_window_pane_faces_match_plan_and_3d_for_both_wall_directions() {
             .unwrap();
         }
         let world = |x: f64, y: f64| {
-            let dx = (wall.end.x - wall.start.x) / wall.length();
-            let dy = (wall.end.y - wall.start.y) / wall.length();
+            let dx = (wall.end().x - wall.start().x) / wall.length();
+            let dy = (wall.end().y - wall.start().y) / wall.length();
             Point2::new(
-                wall.start.x + dx * x - dy * y,
-                wall.start.y + dy * x + dx * y,
+                wall.start().x + dx * x - dy * y,
+                wall.start().y + dy * x + dx * y,
             )
         };
         let ty = OpeningType::new(
             "core.opening_type",
             OpeningTypeParams {
+                window_operation: Default::default(),
                 family: Default::default(),
                 name: "Face-aligned window".into(),
                 kind: OpeningKind::Window,
@@ -494,6 +599,8 @@ fn typed_window_pane_faces_match_plan_and_3d_for_both_wall_directions() {
                     width_override: None,
                     height_override: None,
                     sill_override: None,
+                    pane_position_override: None,
+                    lite_side_override: None,
                     name: "Shared window".into(),
                     host,
                     offset,
@@ -560,8 +667,10 @@ fn typed_window_pane_faces_match_plan_and_3d_for_both_wall_directions() {
                     WindowPanePosition::RightFace => -face_offset,
                 };
                 let mut panel = wall.clone();
-                panel.start = world(opening.parameters.offset, pane_y);
-                panel.end = world(opening.parameters.offset + resolved.width, pane_y);
+                *panel.path.straight_start_mut().unwrap() =
+                    world(opening.parameters.offset, pane_y);
+                *panel.path.straight_end_mut().unwrap() =
+                    world(opening.parameters.offset + resolved.width, pane_y);
                 panel.height = resolved.height;
                 panel.thickness = panel_thickness;
                 let expected = PrismKernel

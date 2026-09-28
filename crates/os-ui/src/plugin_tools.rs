@@ -62,16 +62,20 @@ impl ToolDraft {
                 e.payload.clone()
             } else if let Some(w) = document.model().walls.get(&id) {
                 ensure(
+                    w.parameters.path.is_straight(),
+                    "installed API-2 commands cannot project or edit circular walls",
+                )?;
+                ensure(
                     owner == os_plugin_api::wall::OWNER
                         && descriptor.element_type == os_plugin_api::wall::TYPE
                         && w.header.type_id == descriptor.element_type,
                     "selected wall belongs to another tool type",
                 )?;
                 serde_json::to_value(os_plugin_api::wall::Parameters {
-                    start_x: w.parameters.start.x,
-                    start_y: w.parameters.start.y,
-                    end_x: w.parameters.end.x,
-                    end_y: w.parameters.end.y,
+                    start_x: w.parameters.start().x,
+                    start_y: w.parameters.start().y,
+                    end_x: w.parameters.end().x,
+                    end_y: w.parameters.end().y,
                     thickness: w.parameters.thickness,
                     height: w.parameters.height,
                     level: w.parameters.level.to_string(),

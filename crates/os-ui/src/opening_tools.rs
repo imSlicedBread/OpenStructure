@@ -4,9 +4,11 @@ use os_core::ensure;
 use os_geometry::openings::{component_point, frame_offset, frame_thickness, pane_offset, world};
 use os_model::{
     DoorHinge, DoorSwing, Opening, OpeningDefinition, OpeningKind, OpeningParams, OpeningType,
-    OpeningTypeParams, ResolvedOpening,
+    OpeningTypeParams, ResolvedOpening, WindowPanePosition,
 };
 use os_render::plan::{PlanContext, PlanLine};
+
+pub(super) mod spacing;
 
 #[cfg(test)]
 #[path = "opening_sill_tests.rs"]
@@ -229,8 +231,8 @@ impl OpeningMove {
         let point = self.context.basis.plane_to_world(point)?;
         let anchor = self.context.basis.plane_to_world(self.anchor)?;
         let station = |p: Point2| {
-            ((p.x - wall.start.x) * (wall.end.x - wall.start.x)
-                + (p.y - wall.start.y) * (wall.end.y - wall.start.y))
+            ((p.x - wall.start().x) * (wall.end().x - wall.start().x)
+                + (p.y - wall.start().y) * (wall.end().y - wall.start().y))
                 / wall.length()
         };
         // Retain the press-to-grip station offset, so an off-center grab never jumps.
@@ -310,7 +312,7 @@ impl OpeningMove {
 }
 
 /// Derive replacement host graphics and the selected symbol from a disposable model.
-fn opening_edit_preview(
+pub(super) fn opening_edit_preview(
     model: &Model,
     id: Id,
     hosts: &[Id],
@@ -440,6 +442,8 @@ fn opening_jambs(
 pub(super) enum DoorFlip {
     Hinge,
     Swing,
+    Pane,
+    Lite,
 }
 
 impl DoorFlip {
@@ -447,12 +451,44 @@ impl DoorFlip {
         match self {
             Self::Hinge => "Flip door hinge",
             Self::Swing => "Flip door swing",
+            Self::Pane => "Flip window side",
+            Self::Lite => "Flip lite",
         }
     }
 
-    fn parameters(self, original: &OpeningParams) -> OpeningParams {
+    fn parameters(
+        self,
+        original: &OpeningParams,
+        resolved: &ResolvedOpening,
+    ) -> Result<OpeningParams> {
         let mut parameters = original.clone();
+        ensure(
+            if self == Self::Lite {
+                resolved.type_id.is_some() && resolved.family.side_lite.is_some()
+            } else if self == Self::Pane {
+                resolved.kind == OpeningKind::Window
+                    && resolved.type_id.is_some()
+                    && resolved.pane_position != WindowPanePosition::Center
+            } else {
+                resolved.kind == OpeningKind::Door
+            },
+            "Select an opening with an available flip action",
+        )?;
         match self {
+            Self::Lite => {
+                parameters.lite_side_override =
+                    Some(match resolved.family.side_lite.as_ref().unwrap().side {
+                        os_model::LiteSide::Start => os_model::LiteSide::End,
+                        os_model::LiteSide::End => os_model::LiteSide::Start,
+                    });
+            }
+            Self::Pane => {
+                parameters.pane_position_override = Some(match resolved.pane_position {
+                    WindowPanePosition::LeftFace => WindowPanePosition::RightFace,
+                    WindowPanePosition::RightFace => WindowPanePosition::LeftFace,
+                    WindowPanePosition::Center => unreachable!("center has no flip action"),
+                });
+            }
             Self::Hinge => {
                 parameters.hinge = match parameters.hinge {
                     DoorHinge::Start => DoorHinge::End,
@@ -466,7 +502,7 @@ impl DoorFlip {
                 };
             }
         }
-        parameters
+        Ok(parameters)
     }
 }
 
@@ -501,13 +537,15 @@ impl OpeningFlip {
     ) -> Result<()> {
         ensure(
             self.current(editor, view, selected, drawing),
-            "Door flip is stale",
+            "Opening flip is stale",
         )?;
-        let parameters = self.control.parameters(&self.snapshot.original);
-        ensure(
-            editor.document.model().resolve_opening(&parameters)?.kind == OpeningKind::Door,
-            "Select a door to flip",
-        )?;
+        let resolved = editor
+            .document
+            .model()
+            .resolve_opening(&self.snapshot.original)?;
+        let parameters = self
+            .control
+            .parameters(&self.snapshot.original, &resolved)?;
         editor.command(
             self.control.label(),
             Command::UpdateOpening {
@@ -525,18 +563,16 @@ fn flip_rects(
     context: PlanContext,
     camera: os_render::plan::PlanCamera,
     canvas: egui::Rect,
-) -> Option<[(DoorFlip, egui::Rect); 2]> {
+) -> Option<Vec<(DoorFlip, egui::Rect)>> {
     let model = editor.document.model();
-    if model
+    let resolved = model
         .resolve_opening(&model.openings.get(&id)?.parameters)
+        .ok()?;
+    if !drawing
+        .provider_lines(context)
         .ok()?
-        .kind
-        != OpeningKind::Door
-        || !drawing
-            .provider_lines(context)
-            .ok()?
-            .iter()
-            .any(|l| l.entity == id)
+        .iter()
+        .any(|l| l.entity == id)
     {
         return None;
     }
@@ -562,17 +598,41 @@ fn flip_rects(
     )?;
     let center = start.lerp(end, 0.5);
     let row = egui::pos2(center.x, start.y.min(end.y) - 30.0);
-    let controls = [
-        (
-            DoorFlip::Hinge,
-            egui::Rect::from_center_size(row + egui::vec2(-32.0, 0.0), egui::vec2(58.0, 24.0)),
-        ),
-        (
-            DoorFlip::Swing,
-            egui::Rect::from_center_size(row + egui::vec2(32.0, 0.0), egui::vec2(58.0, 24.0)),
-        ),
-    ];
-    (!controls[0].1.intersects(controls[1].1)
+    let mut controls = if resolved.kind == OpeningKind::Window {
+        if resolved.type_id.is_some() && resolved.pane_position != WindowPanePosition::Center {
+            vec![(
+                DoorFlip::Pane,
+                egui::Rect::from_center_size(row, egui::vec2(58.0, 24.0)),
+            )]
+        } else {
+            vec![]
+        }
+    } else {
+        vec![
+            (
+                DoorFlip::Hinge,
+                egui::Rect::from_center_size(row + egui::vec2(-32.0, 0.0), egui::vec2(58.0, 24.0)),
+            ),
+            (
+                DoorFlip::Swing,
+                egui::Rect::from_center_size(row + egui::vec2(32.0, 0.0), egui::vec2(58.0, 24.0)),
+            ),
+        ]
+    };
+    if resolved.type_id.is_some() && resolved.family.side_lite.is_some() {
+        let position = if controls.is_empty() {
+            row
+        } else {
+            row + egui::vec2(0.0, -28.0)
+        };
+        controls.push((
+            DoorFlip::Lite,
+            egui::Rect::from_center_size(position, egui::vec2(68.0, 24.0)),
+        ));
+    }
+    (controls
+        .windows(2)
+        .all(|pair| !pair[0].1.intersects(pair[1].1))
         && controls.iter().all(|(_, rect)| {
             canvas.contains_rect(rect.expand(4.0))
                 && [start, center, end].iter().all(|p| {
@@ -607,7 +667,9 @@ pub(super) fn flip_input(
         !d.current(editor, Some(context.view_id), selected, Some(drawing))
             || d.camera != camera
             || d.canvas != canvas
-            || !controls.is_some_and(|controls| controls.contains(&(d.control, d.rect)))
+            || !controls
+                .as_ref()
+                .is_some_and(|controls| controls.contains(&(d.control, d.rect)))
     }) || ui.input(|i| {
         i.key_pressed(egui::Key::Escape)
             || i.events
@@ -681,6 +743,8 @@ pub(super) fn paint_flip_controls(
             match control {
                 DoorFlip::Hinge => "Hinge",
                 DoorFlip::Swing => "Swing",
+                DoorFlip::Pane => "Side",
+                DoorFlip::Lite => "Flip lite",
             },
             egui::FontId::proportional(12.0),
             visuals.text_color(),
@@ -688,6 +752,8 @@ pub(super) fn paint_flip_controls(
         response.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(match control {
             DoorFlip::Hinge => "Flip door hinge: wall start ↔ wall end. Uses the host's stored start → end direction.",
             DoorFlip::Swing => "Flip door swing: left ↔ right of wall. Uses the host's stored start → end direction.",
+            DoorFlip::Pane => "Flip window side: left ↔ right of wall. Pins this instance's pane position.",
+            DoorFlip::Lite => "Flip fixed lite: start ↔ end along the host wall. Pins this instance's lite side.",
         });
     }
 }
@@ -698,24 +764,41 @@ fn host_axis_snap(
     editor: &Editor,
     draft: &OpeningMove,
     drawing: &os_render::plan::PlanDrawing,
+    query: os_render::snapping::SnapQuery,
+    point: Point2,
+) -> Result<Point2> {
+    opening_axis_snap(
+        editor.document.model(),
+        draft.original.host,
+        Some(draft.id),
+        draft.context,
+        drawing,
+        query,
+        point,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn opening_axis_snap(
+    model: &Model,
+    host: Id,
+    exclude: Option<Id>,
+    context: PlanContext,
+    drawing: &os_render::plan::PlanDrawing,
     mut query: os_render::snapping::SnapQuery,
     point: Point2,
 ) -> Result<Point2> {
     use os_render::snapping::{SnapScene, SnapSegment};
-    let model = editor.document.model();
-    let wall = &model.walls[&draft.original.host].parameters;
-    let context = draft.context;
+    let wall = &model.walls[&host].parameters;
     let mut segments = vec![SnapSegment {
-        entity: draft.original.host,
+        entity: host,
         feature: 0,
-        start: context.basis.world_to_plane(wall.start)?,
-        end: context.basis.world_to_plane(wall.end)?,
+        start: context.basis.world_to_plane(wall.start())?,
+        end: context.basis.world_to_plane(wall.end())?,
     }];
     segments.extend(drawing.provider_lines(context)?.iter().filter_map(|line| {
         let opening = model.openings.get(&line.entity)?;
-        (line.entity != draft.id
-            && opening.parameters.host == draft.original.host
-            && line.feature < 2)
+        (Some(line.entity) != exclude && opening.parameters.host == host && line.feature < 2)
             .then_some(SnapSegment {
                 entity: line.entity,
                 feature: line.feature,
@@ -724,7 +807,7 @@ fn host_axis_snap(
             })
     }));
     query.pointer = query.camera.project(point, query.viewport)?;
-    query.exclude_entity = Some(draft.id);
+    query.exclude_entity = exclude;
     Ok(SnapScene::new(context, segments)?
         .query(context, query)?
         .candidate(context, query)?
@@ -978,6 +1061,8 @@ pub(super) fn plan_symbol(
         return Ok(vec![]);
     };
     let half = wall.thickness / 2.0;
+    let bays = p.family.bays(p.width)?;
+    let primary = os_geometry::openings::primary_bay(p)?;
     let spans =
         os_geometry::openings::plan_spans(p, elevation, context.range.cut, context.range.depth)?;
     let mut pairs = Vec::new();
@@ -991,6 +1076,19 @@ pub(super) fn plan_symbol(
     }
     match p.kind {
         OpeningKind::Window => {
+            let spans = if spans.is_empty() {
+                spans
+            } else {
+                bays.map_or_else(
+                    || spans.clone(),
+                    |b| {
+                        vec![
+                            (b.primary.0 / p.width, b.primary.1 / p.width),
+                            (b.lite.0 / p.width, b.lite.1 / p.width),
+                        ]
+                    },
+                )
+            };
             for y in [-half * 0.5, pane_offset(p, wall), half * 0.5] {
                 for &(a, b) in &spans {
                     pairs.push((
@@ -1001,6 +1099,17 @@ pub(super) fn plan_symbol(
             }
         }
         OpeningKind::Door => {
+            let p = &primary;
+            let spans = if bays.is_some() {
+                os_geometry::openings::plan_spans(
+                    p,
+                    elevation,
+                    context.range.cut,
+                    context.range.depth,
+                )?
+            } else {
+                spans
+            };
             let hinge = component_point(p, wall, 0.);
             for &(a, b) in &spans {
                 pairs.push((component_point(p, wall, a), component_point(p, wall, b)));
@@ -1033,6 +1142,33 @@ pub(super) fn plan_symbol(
             }
         }
     }
+    if let Some(bays) = bays {
+        let bottom = elevation
+            + p.sill
+            + if p.kind == OpeningKind::Window {
+                p.family.frame_width
+            } else {
+                0.
+            };
+        let top = elevation + p.sill + p.height - p.family.frame_width;
+        if context.range.cut >= bottom && context.range.depth <= top {
+            if p.kind == OpeningKind::Door {
+                pairs.push((
+                    Point2::new(p.offset + bays.lite.0, pane_offset(p, wall)),
+                    Point2::new(p.offset + bays.lite.1, pane_offset(p, wall)),
+                ));
+            }
+            let y = frame_offset(p, wall);
+            let d = frame_thickness(p, wall) / 2.;
+            let (a, b) = (p.offset + bays.mullion.0, p.offset + bays.mullion.1);
+            pairs.extend([
+                (Point2::new(a, y - d), Point2::new(b, y - d)),
+                (Point2::new(b, y - d), Point2::new(b, y + d)),
+                (Point2::new(b, y + d), Point2::new(a, y + d)),
+                (Point2::new(a, y + d), Point2::new(a, y - d)),
+            ]);
+        }
+    }
     if p.family.frame_width > 0.0 {
         let half_frame_depth = frame_thickness(p, wall) / 2.;
         let frame_center = frame_offset(p, wall);
@@ -1050,6 +1186,33 @@ pub(super) fn plan_symbol(
                 (Point2::new(x1, frame_y[1]), Point2::new(x0, frame_y[1])),
                 (Point2::new(x0, frame_y[1]), Point2::new(x0, frame_y[0])),
             ]);
+        }
+    }
+    // Append marks so existing frame, lite and pane feature identities stay stable.
+    // These are plan symbols only; the primary bay's visible spans bound every mark.
+    if p.kind == OpeningKind::Window {
+        use os_model::WindowOperation;
+        for (a, b) in os_geometry::openings::plan_spans(
+            &primary,
+            elevation,
+            context.range.cut,
+            context.range.depth,
+        )? {
+            let x0 = primary.offset + a * primary.width;
+            let x1 = primary.offset + b * primary.width;
+            let at = |t: f64, y: f64| Point2::new(x0 + t * (x1 - x0), y * half);
+            match p.window_operation {
+                WindowOperation::Fixed => {}
+                WindowOperation::Sliding => pairs.extend([
+                    (at(0., -0.35), at(0.6, -0.35)),
+                    (at(0.6, -0.35), at(0.6, 0.)),
+                    (at(0.4, 0.35), at(1., 0.35)),
+                    (at(0.4, 0.), at(0.4, 0.35)),
+                ]),
+                // Start-side convention in the stored host frame: -normal at
+                // the primary start jamb, +normal at its end jamb.
+                WindowOperation::Casement => pairs.push((at(0., -0.5), at(1., 0.5))),
+            }
         }
     }
     pairs
@@ -1185,6 +1348,8 @@ impl OpeningDraft {
                 width_override: None,
                 height_override: None,
                 sill_override: None,
+                pane_position_override: None,
+                lite_side_override: None,
                 hinge: Default::default(),
                 swing: Default::default(),
                 name: format!("{kind:?}"),
@@ -1195,6 +1360,21 @@ impl OpeningDraft {
             let resolved = model.resolve_opening(&parameters)?;
             (Id::new(), parameters, resolved)
         };
+        ensure(
+            model.views[&view]
+                .parameters
+                .plan
+                .unwrap()
+                .visibility
+                .shows_opening(resolved.kind),
+            "This opening category is hidden in the plan",
+        )?;
+        if editing {
+            ensure(
+                editor.native_drawing(view)?.is_native_line(id),
+                "Opening is hidden in this plan",
+            )?;
+        }
         let values = [
             params.offset,
             resolved.width,
@@ -1333,6 +1513,7 @@ impl OpeningDraft {
                 let opening_type = OpeningType::new(
                     "core.opening_type",
                     OpeningTypeParams {
+                        window_operation: Default::default(),
                         family: Default::default(),
                         name: match resolved.kind {
                             OpeningKind::Door => "Basic Door 900 × 2100".into(),
@@ -1392,14 +1573,20 @@ impl DesktopApp {
             ui.vertical(|ui| {
                 ui.horizontal(|ui| {
                     if ui
-                        .button("Door")
+                        .add_enabled(
+                            self.plan_shows_opening_kind(OpeningKind::Door),
+                            egui::Button::new("Door"),
+                        )
                         .on_hover_text("Place a door by clicking a visible wall")
                         .clicked()
                     {
                         self.begin_opening_placement(OpeningKind::Door);
                     }
                     if ui
-                        .button("Window")
+                        .add_enabled(
+                            self.plan_shows_opening_kind(OpeningKind::Window),
+                            egui::Button::new("Window"),
+                        )
                         .on_hover_text("Place a window by clicking a visible wall")
                         .clicked()
                     {
@@ -1408,11 +1595,23 @@ impl DesktopApp {
                 });
                 ui.horizontal(|ui| {
                     ui.menu_button("Exact new…", |ui| {
-                        if ui.button("Door dimensions…").clicked() {
+                        if ui
+                            .add_enabled(
+                                self.plan_shows_opening_kind(OpeningKind::Door),
+                                egui::Button::new("Door dimensions…"),
+                            )
+                            .clicked()
+                        {
                             self.begin_opening(Some(OpeningKind::Door));
                             ui.close();
                         }
-                        if ui.button("Window dimensions…").clicked() {
+                        if ui
+                            .add_enabled(
+                                self.plan_shows_opening_kind(OpeningKind::Window),
+                                egui::Button::new("Window dimensions…"),
+                            )
+                            .clicked()
+                        {
                             self.begin_opening(Some(OpeningKind::Window));
                             ui.close();
                         }
@@ -1525,7 +1724,38 @@ impl DesktopApp {
                                 });
                                 ui.end_row();
                             }
+                            if let Some(lite) = defaults.family.side_lite.as_ref() {
+                                ui.label("Lite side");
+                                ui.vertical(|ui| {
+                                    for (value, label) in [(None, "Inherit lite side"), (Some(os_model::LiteSide::Start), "Lite at start"), (Some(os_model::LiteSide::End), "Lite at end")] {
+                                        ui.radio_value(&mut draft.params.lite_side_override, value, label);
+                                    }
+                                    let effective = draft.params.lite_side_override.unwrap_or(lite.side);
+                                    ui.label(format!("Effective lite: {effective:?} · type {:?}", lite.side));
+                                    if ui.button("Reset lite to type default").clicked() {
+                                        draft.params.lite_side_override = None;
+                                    }
+                                });
+                                ui.end_row();
+                            }
                             if resolved.kind == OpeningKind::Window {
+                                ui.label("Pane position");
+                                ui.vertical(|ui| {
+                                    ui.radio_value(&mut draft.params.pane_position_override, None, "Inherit pane position");
+                                    for (position, label) in [
+                                        (WindowPanePosition::Center, "Center"),
+                                        (WindowPanePosition::LeftFace, "Left face"),
+                                        (WindowPanePosition::RightFace, "Right face"),
+                                    ] {
+                                        ui.radio_value(&mut draft.params.pane_position_override, Some(position), label);
+                                    }
+                                    let effective = draft.params.pane_position_override.unwrap_or(defaults.pane_position);
+                                    ui.label(format!("Effective pane: {effective:?} · default {:?}", defaults.pane_position));
+                                    if ui.button("Reset pane to type default").clicked() {
+                                        draft.params.pane_position_override = None;
+                                    }
+                                });
+                                ui.end_row();
                                 ui.label("Sill mode");
                                 ui.vertical(|ui| {
                                     ui.radio_value(&mut draft.override_sill, false, "Use type default");

@@ -19,6 +19,7 @@ fn fixture(
         p.height_override = Some(1.8);
         if kind == OpeningKind::Window {
             p.sill_override = Some(0.7);
+            p.pane_position_override = Some(os_model::WindowPanePosition::RightFace);
         }
     }
     let tag = OpeningTag::new(
@@ -105,14 +106,14 @@ fn opening_array_properties_tags_preview_history_and_split_geometry() {
                         assert!(
                             (copy_tag.parameters.position.x
                                 - tag.parameters.position.x
-                                - (wall.end.x - wall.start.x) / wall.length() * delta)
+                                - (wall.end().x - wall.start().x) / wall.length() * delta)
                                 .abs()
                                 < 1e-10
                         );
                         assert!(
                             (copy_tag.parameters.position.y
                                 - tag.parameters.position.y
-                                - (wall.end.y - wall.start.y) / wall.length() * delta)
+                                - (wall.end().y - wall.start().y) / wall.length() * delta)
                                 .abs()
                                 < 1e-10
                         );
@@ -320,7 +321,14 @@ fn opening_array_existing_collision_family_fit_and_tag_limit() {
     d.copy_tag = false;
     d.count = 256;
     d.spacing = 1.1;
-    model.walls.get_mut(&h.wall).unwrap().parameters.end = Point2::new(300.0, 200.0);
+    *model
+        .walls
+        .get_mut(&h.wall)
+        .unwrap()
+        .parameters
+        .path
+        .straight_end_mut()
+        .unwrap() = Point2::new(300.0, 200.0);
     assert_eq!(d.preview(&model).unwrap().openings.len(), 255);
 }
 

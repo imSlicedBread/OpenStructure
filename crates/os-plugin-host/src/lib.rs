@@ -183,11 +183,11 @@ impl PluginHost {
         }
         ensure(
             p.manifest.api_version == API_VERSION,
-            "native Model request requires API 26/schema 45; rebuild and reinstall older guests",
+            "native Model request requires API 35/schema 54; rebuild and reinstall older guests",
         )?;
         ensure(
             model.schema_version == REQUIRED_MODEL_SCHEMA_VERSION,
-            "native Model request requires schema 45",
+            "native Model request requires schema 54",
         )?;
         require(p, Permission::ModelRead)?;
         let geometry = matches!(request, Request::GenerateWall { .. });
@@ -467,8 +467,10 @@ mod tests {
             let model = document.model().clone();
             let request = Request::CreateWall(os_model::WallParams {
                 name: "Wall".into(),
-                start: os_core::Point2::new(0.0, 0.0),
-                end: os_core::Point2::new(5.0, 0.0),
+                path: os_model::WallPath::Straight {
+                    start: os_core::Point2::new(0.0, 0.0),
+                    end: os_core::Point2::new(5.0, 0.0),
+                },
                 thickness: 0.2,
                 height: 3.0,
                 level: *model.levels.keys().next().unwrap(),
@@ -577,8 +579,10 @@ mod tests {
             .unwrap();
             let params = os_model::WallParams {
                 name: "W".into(),
-                start: os_core::Point2::new(0.0, 0.0),
-                end: os_core::Point2::new(1.0, 0.0),
+                path: os_model::WallPath::Straight {
+                    start: os_core::Point2::new(0.0, 0.0),
+                    end: os_core::Point2::new(1.0, 0.0),
+                },
                 thickness: 0.2,
                 height: 3.0,
                 level: *doc.model().levels.keys().next().unwrap(),
@@ -640,8 +644,10 @@ mod tests {
             .unwrap();
             let parameters = os_model::WallParams {
                 name: "W".into(),
-                start: os_core::Point2::new(0., 0.),
-                end: os_core::Point2::new(1., 0.),
+                path: os_model::WallPath::Straight {
+                    start: os_core::Point2::new(0., 0.),
+                    end: os_core::Point2::new(1., 0.),
+                },
                 thickness: 0.2,
                 height: 3.,
                 level: *model.levels.keys().next().unwrap(),

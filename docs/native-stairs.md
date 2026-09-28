@@ -35,7 +35,7 @@ and staged plugin-project open regenerate the 3D mesh.
 
 Model schema 37 adds a required `stairs` map; the atomic 36→37 migration inserts
 an empty map and advances native headers. At introduction, native full-model
-plugins used API 18/schema 37; current guests require API 26/schema 45. Generic
+plugins used API 18/schema 37; current guests require API 32/schema 51. Generic
 API 2 and the `.osb` container version do not change. The
 bounded IFC writer refuses projects containing native stairs rather than
 silently dropping them.

@@ -2,7 +2,7 @@
 use os_core::{Point2, Result, ensure};
 use serde::{Deserialize, Serialize};
 
-pub const PLAN_SETTINGS_VERSION: u32 = 3;
+pub const PLAN_SETTINGS_VERSION: u32 = 4;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PlanViewType {
@@ -123,6 +123,8 @@ fn strict_point<'de, D: serde::Deserializer<'de>>(
 #[serde(deny_unknown_fields)]
 pub struct PlanVisibility {
     pub walls: bool,
+    pub doors: bool,
+    pub windows: bool,
     pub ceilings: bool,
     pub extensions: bool,
 }
@@ -130,8 +132,19 @@ impl Default for PlanVisibility {
     fn default() -> Self {
         Self {
             walls: true,
+            doors: true,
+            windows: true,
             ceilings: true,
             extensions: true,
+        }
+    }
+}
+
+impl PlanVisibility {
+    pub fn shows_opening(self, kind: crate::OpeningKind) -> bool {
+        match kind {
+            crate::OpeningKind::Door => self.doors,
+            crate::OpeningKind::Window => self.windows,
         }
     }
 }
@@ -237,6 +250,18 @@ impl PlanSettings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn opening_visibility_defaults_and_required_booleans() {
+        let settings = PlanSettings::default();
+        assert_eq!(settings.schema_version, 4);
+        assert!(settings.visibility.doors && settings.visibility.windows);
+        for field in ["doors", "windows"] {
+            let mut value = serde_json::to_value(settings).unwrap();
+            value["visibility"].as_object_mut().unwrap().remove(field);
+            assert!(serde_json::from_value::<PlanSettings>(value).is_err());
+        }
+    }
 
     #[test]
     fn reflected_range_maps_upward_semantics_to_geometry_order() {

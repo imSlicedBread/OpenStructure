@@ -33,6 +33,7 @@ fn schema_eleven_migration_preserves_dimension_and_all_headers() {
     migrate(&mut value, 11).unwrap();
     assert_eq!(value["schema_version"], SCHEMA_VERSION);
     let mut expected = original.clone();
+    common::apply_wall_paths(&mut expected);
     set_version(&mut expected, SCHEMA_VERSION);
     expected["opening_tags"] = json!({});
     expected["room_tags"] = json!({});
@@ -67,7 +68,10 @@ fn schema_eleven_migration_preserves_dimension_and_all_headers() {
     assert_eq!(prior.parameters.resolve(&model).unwrap().length_metres, 4.0);
     let first = model.walls.values().next().unwrap().clone();
     let mut parameters = first.parameters.clone();
-    parameters.end = Point2::new(0.0, 4.0);
+    parameters.path = os_model::WallPath::Straight {
+        start: parameters.start(),
+        end: Point2::new(0.0, 4.0),
+    };
     let second = Wall::new(&first.header.type_id, parameters);
     let second_id = second.id();
     model.walls.insert(second_id, second);

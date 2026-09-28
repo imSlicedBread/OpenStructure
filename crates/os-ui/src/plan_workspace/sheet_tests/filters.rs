@@ -37,6 +37,8 @@ fn opening_schedule_filters_propagate_to_paper_table_sheet_preview_and_vector_pd
                 width_override: None,
                 height_override: None,
                 sill_override: None,
+                pane_position_override: None,
+                lite_side_override: None,
                 hinge: Default::default(),
                 swing: Default::default(),
             },

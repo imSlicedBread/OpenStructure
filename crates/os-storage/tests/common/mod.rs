@@ -1,7 +1,51 @@
 use serde_json::Value;
 
+/// Test-only reversal of the documented 53 -> 54 representation change.
+/// Assert Straight: a legacy fixture must never silently chord-convert an arc.
+#[allow(dead_code)]
+pub fn reverse_wall_paths(value: &mut Value) {
+    if let Some(walls) = value.get_mut("walls").and_then(Value::as_object_mut) {
+        for wall in walls.values_mut() {
+            let p = wall["parameters"].as_object_mut().unwrap();
+            if let Some(path) = p.remove("path") {
+                assert_eq!(path["kind"], "Straight");
+                assert!(!p.contains_key("start") && !p.contains_key("end"));
+                p.insert("start".into(), path["start"].clone());
+                p.insert("end".into(), path["end"].clone());
+            }
+        }
+    }
+}
+#[allow(dead_code)]
+pub fn apply_wall_paths(value: &mut Value) {
+    if let Some(walls) = value.get_mut("walls").and_then(Value::as_object_mut) {
+        for wall in walls.values_mut() {
+            let p = wall["parameters"].as_object_mut().unwrap();
+            if !p.contains_key("path") {
+                let start = p.remove("start").unwrap();
+                let end = p.remove("end").unwrap();
+                p.insert(
+                    "path".into(),
+                    serde_json::json!({"kind":"Straight","start":start,"end":end}),
+                );
+            }
+        }
+    }
+}
+
 #[allow(dead_code)]
 pub fn remove_phase_fields(value: &mut Value) {
+    reverse_wall_paths(value);
+    remove_grouping(value);
+    remove_window_operation(value);
+    if let Some(openings) = value.get_mut("openings").and_then(Value::as_object_mut) {
+        for opening in openings.values_mut() {
+            opening["parameters"]
+                .as_object_mut()
+                .unwrap()
+                .remove("pane_position_override");
+        }
+    }
     if let Some(views) = value["views"].as_object_mut() {
         for view in views.values_mut() {
             if let Some(plan) = view["parameters"]["plan"].as_object_mut() {
@@ -16,6 +60,23 @@ pub fn remove_phase_fields(value: &mut Value) {
     if let Some(object) = value.as_object_mut() {
         object.remove("phases");
         object.remove("element_lifecycles");
+    }
+}
+
+#[allow(dead_code)]
+pub fn remove_window_operation(value: &mut Value) {
+    if let Some(types) = value
+        .get_mut("opening_types")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        for ty in types.values_mut() {
+            if let Some(parameters) = ty
+                .get_mut("parameters")
+                .and_then(serde_json::Value::as_object_mut)
+            {
+                parameters.remove("window_operation");
+            }
+        }
     }
 }
 
@@ -66,11 +127,13 @@ pub fn apply_schema_38_defaults(model: &mut Value) {
                 .and_then(|parameters| parameters.get_mut("plan"))
                 .filter(|plan| !plan.is_null())
             {
-                plan["schema_version"] = 3.into();
+                plan["schema_version"] = 4.into();
                 plan["target_phase"] = latest.clone();
                 plan["phase_filter"] = "ShowAll".into();
                 plan["view_type"] = "FloorPlan".into();
                 plan["visibility"]["ceilings"] = true.into();
+                plan["visibility"]["doors"] = true.into();
+                plan["visibility"]["windows"] = true.into();
             }
         }
     }
@@ -78,6 +141,40 @@ pub fn apply_schema_38_defaults(model: &mut Value) {
 
 #[allow(dead_code)]
 pub fn reverse_schema_38_migration(model: &mut Value, original: &Value) {
+    if original["schema_version"].as_u64().is_some_and(|v| v < 54) {
+        reverse_wall_paths(model);
+    }
+    if original["schema_version"].as_u64().is_some_and(|v| v < 52)
+        && let Some(types) = model
+            .get_mut("opening_types")
+            .and_then(serde_json::Value::as_object_mut)
+    {
+        for ty in types.values_mut() {
+            ty["parameters"]
+                .as_object_mut()
+                .unwrap()
+                .remove("window_operation");
+        }
+    }
+    if original["schema_version"].as_u64().is_some_and(|v| v < 51) {
+        remove_lite_override(model);
+    }
+    if original["schema_version"].as_u64().is_some_and(|v| v < 48) {
+        remove_schedule_phase(model);
+    }
+    if original["schema_version"].as_u64().is_some_and(|v| v < 47) {
+        remove_grouping(model);
+    }
+    if original["schema_version"].as_u64().is_some_and(|v| v < 46)
+        && let Some(openings) = model.get_mut("openings").and_then(Value::as_object_mut)
+    {
+        for opening in openings.values_mut() {
+            opening["parameters"]
+                .as_object_mut()
+                .unwrap()
+                .remove("pane_position_override");
+        }
+    }
     if original["schema_version"]
         .as_u64()
         .is_some_and(|version| version < 44)
@@ -132,6 +229,115 @@ pub fn reverse_schema_38_migration(model: &mut Value, original: &Value) {
             {
                 parameters.insert("plan".into(), original_plan.clone());
             }
+        }
+    }
+}
+
+#[allow(dead_code)]
+pub fn remove_grouping(value: &mut Value) {
+    remove_schedule_phase(value);
+    if let Some(schedules) = value.get_mut("schedules").and_then(Value::as_object_mut) {
+        for schedule in schedules.values_mut() {
+            schedule["parameters"]
+                .as_object_mut()
+                .unwrap()
+                .remove("group_by");
+        }
+    }
+}
+
+#[allow(dead_code)]
+pub fn remove_schedule_phase(value: &mut Value) {
+    remove_opening_visibility(value);
+    if let Some(schedules) = value.get_mut("schedules").and_then(Value::as_object_mut) {
+        for schedule in schedules.values_mut() {
+            schedule["parameters"]
+                .as_object_mut()
+                .unwrap()
+                .remove("phase");
+        }
+    }
+}
+
+#[allow(dead_code)]
+pub fn remove_opening_visibility(value: &mut Value) {
+    remove_window_operation(value);
+    remove_lite_override(value);
+    if let Some(types) = value
+        .get_mut("opening_types")
+        .and_then(Value::as_object_mut)
+    {
+        for ty in types.values_mut() {
+            let family = &mut ty["parameters"]["family"];
+            if family["version"] == 5 {
+                family["version"] = 4.into();
+            }
+            family.as_object_mut().unwrap().remove("side_lite");
+        }
+    }
+    if let Some(views) = value["views"].as_object_mut() {
+        for view in views.values_mut() {
+            if let Some(plan) = view["parameters"]["plan"].as_object_mut() {
+                if plan["schema_version"] == 4 {
+                    plan.insert("schema_version".into(), 3.into());
+                }
+                if let Some(visibility) = plan.get_mut("visibility").and_then(Value::as_object_mut)
+                {
+                    visibility.remove("doors");
+                    visibility.remove("windows");
+                }
+            }
+        }
+    }
+}
+
+#[allow(dead_code)]
+pub fn apply_opening_visibility(value: &mut Value) {
+    if let Some(types) = value
+        .get_mut("opening_types")
+        .and_then(Value::as_object_mut)
+    {
+        for ty in types.values_mut() {
+            ty["parameters"]["window_operation"] = "Fixed".into();
+        }
+    }
+    apply_lite_override(value);
+    if let Some(types) = value
+        .get_mut("opening_types")
+        .and_then(Value::as_object_mut)
+    {
+        for ty in types.values_mut() {
+            ty["parameters"]["family"]["version"] = 5.into();
+            ty["parameters"]["family"]["side_lite"] = Value::Null;
+        }
+    }
+    for view in value["views"].as_object_mut().unwrap().values_mut() {
+        let plan = &mut view["parameters"]["plan"];
+        if !plan.is_null() {
+            plan["schema_version"] = 4.into();
+            plan["visibility"]["doors"] = true.into();
+            plan["visibility"]["windows"] = true.into();
+        }
+    }
+}
+
+#[allow(dead_code)]
+pub fn remove_lite_override(value: &mut Value) {
+    if let Some(openings) = value.get_mut("openings").and_then(Value::as_object_mut) {
+        for opening in openings.values_mut() {
+            opening["parameters"]
+                .as_object_mut()
+                .unwrap()
+                .remove("lite_side_override");
+        }
+    }
+}
+
+#[allow(dead_code)]
+pub fn apply_lite_override(value: &mut Value) {
+    if let Some(openings) = value.get_mut("openings").and_then(Value::as_object_mut) {
+        for opening in openings.values_mut() {
+            opening["parameters"]["lite_side_override"] = Value::Null;
         }
     }
 }

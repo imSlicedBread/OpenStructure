@@ -103,7 +103,7 @@ named_parameters!(PhaseParams, order);
 // Plan settings contain only fixed-size scalars/points/options; inline entity
 // size already accounts for them. Keep this pattern exhaustive on schema changes.
 named_parameters!(ViewParams, kind, level, settings_revision, plan, section);
-named_parameters!(WallParams, start, end, thickness, height, level, material);
+named_parameters!(WallParams, path, thickness, height, level, material);
 named_parameters!(
     StairParams,
     lower_level,
@@ -133,12 +133,15 @@ named_parameters!(
     width_override,
     height_override,
     sill_override,
+    pane_position_override,
+    lite_side_override,
     hinge,
     swing
 );
 // Family profile allocation is counted explicitly below.
 named_parameters!(
     OpeningTypeParams,
+    window_operation,
     kind,
     width,
     height,
@@ -401,7 +404,14 @@ impl Model {
                 columns,
                 sort: _,
                 filters,
+                group_by,
+                phase: _,
             } = &schedule.parameters;
+            estimate.add(
+                group_by
+                    .capacity()
+                    .saturating_mul(size_of::<ScheduleGroupField>()),
+            );
             estimate.add(name.capacity());
             estimate.add(
                 filters
@@ -497,6 +507,7 @@ mod tests {
         let ty = OpeningType::new(
             "core.opening_type",
             OpeningTypeParams {
+                window_operation: Default::default(),
                 family: Default::default(),
                 name: "Door".into(),
                 pane_position: Default::default(),

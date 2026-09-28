@@ -47,6 +47,7 @@ fn opening_tag_typed_window_live_rehost_orphan_and_sheet_vector_output() {
         let ty = OpeningType::new(
             "core.opening_type",
             OpeningTypeParams {
+                window_operation: Default::default(),
                 name: "W900".into(),
                 family: OpeningFamily::default(),
                 kind: OpeningKind::Window,
@@ -113,7 +114,7 @@ fn opening_tag_typed_window_live_rehost_orphan_and_sheet_vector_output() {
             .model()
             .walls
             .values()
-            .find(|w| w.parameters.start == Point2::new(4., 3.))
+            .find(|w| w.parameters.start() == Point2::new(4., 3.))
             .unwrap()
             .id();
         let mut parameters = h.app.editor.document.model().openings[&opening]
@@ -267,8 +268,7 @@ fn setup(size: egui::Vec2, scale: f32) -> (Harness, Id, Id) {
                     "org.openstructure.walls.wall",
                     WallParams {
                         name: "Boundary".into(),
-                        start,
-                        end,
+                        path: os_model::WallPath::Straight { start, end },
                         height: 3.,
                         thickness: 0.2,
                         level,
@@ -289,7 +289,7 @@ fn setup(size: egui::Vec2, scale: f32) -> (Harness, Id, Id) {
         .walls
         .values()
         .find(|w| {
-            w.parameters.start == Point2::new(0., 0.) && w.parameters.end == Point2::new(4., 0.)
+            w.parameters.start() == Point2::new(0., 0.) && w.parameters.end() == Point2::new(4., 0.)
         })
         .unwrap()
         .id();
@@ -308,6 +308,8 @@ fn setup(size: egui::Vec2, scale: f32) -> (Harness, Id, Id) {
             width_override: None,
             height_override: None,
             sill_override: None,
+            pane_position_override: None,
+            lite_side_override: None,
             hinge: Default::default(),
             swing: Default::default(),
         },
@@ -967,7 +969,7 @@ fn opening_tag_drag_wins_over_overlapping_selected_wall_endpoint() {
             .model()
             .walls
             .values()
-            .find(|w| w.parameters.start == Point2::new(0., 0.))
+            .find(|w| w.parameters.start() == Point2::new(0., 0.))
             .unwrap()
             .id();
         h.app.opening_tag_position = Point2::new(0., 0.);
@@ -1049,8 +1051,8 @@ fn opening_tag_source_move_rotated_plane_crop_and_orphan_at_both_dpis() {
         let mut model = h.app.editor.document.model().clone();
         let host = model.openings[&opening].parameters.host;
         let wall = &mut model.walls.get_mut(&host).unwrap().parameters;
-        wall.start = Point2::new(1., 1.);
-        wall.end = Point2::new(4., 5.);
+        *wall.path.straight_start_mut().unwrap() = Point2::new(1., 1.);
+        *wall.path.straight_end_mut().unwrap() = Point2::new(4., 5.);
         let derived =
             crate::plan::opening_tag_graphic(&model, tag, &saved.parameters, context).unwrap();
         assert!(

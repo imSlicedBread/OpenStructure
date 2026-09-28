@@ -9,8 +9,10 @@ fn setup() -> (Document, Room, Wall) {
         "org.openstructure.walls.wall",
         WallParams {
             name: "Partition".into(),
-            start: Point2::new(5., 0.),
-            end: Point2::new(5., 8.),
+            path: os_model::WallPath::Straight {
+                start: Point2::new(5., 0.),
+                end: Point2::new(5., 8.),
+            },
             height: 3.,
             thickness: 0.2,
             level,
@@ -228,8 +230,8 @@ fn moved_deleted_and_releveled_walls_invalidate_rooms_without_rewriting_intent()
     .unwrap();
     doc.drain_events();
     let mut moved = wall.parameters.clone();
-    moved.start.x = 1.;
-    moved.end.x = 1.;
+    moved.path.straight_start_mut().unwrap().x = 1.;
+    moved.path.straight_end_mut().unwrap().x = 1.;
     doc.execute(
         "Cross seed",
         vec![Command::UpdateWall {

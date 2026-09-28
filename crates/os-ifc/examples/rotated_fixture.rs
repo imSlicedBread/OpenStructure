@@ -28,8 +28,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "org.openstructure.walls.wall",
             WallParams {
                 name: "Rotated wall".into(),
-                start,
-                end,
+                path: os_model::WallPath::Straight { start, end },
                 thickness: 0.3,
                 height: 3.5,
                 level,

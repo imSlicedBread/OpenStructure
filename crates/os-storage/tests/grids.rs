@@ -20,6 +20,7 @@ fn frozen_three_migration_and_grid_save_reopen_preserve_original() {
     assert_eq!(migrated["schema_version"], SCHEMA_VERSION);
     assert_eq!(migrated["grids"], json!({}));
     let mut expected = original.clone();
+    common::apply_wall_paths(&mut expected);
     expected["schema_version"] = json!(SCHEMA_VERSION);
     expected["stairs"] = json!({});
     expected["roofs"] = json!({});

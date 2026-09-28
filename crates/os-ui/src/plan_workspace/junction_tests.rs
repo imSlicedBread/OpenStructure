@@ -11,16 +11,22 @@ fn fixture(
     let mut h = Harness::new(size, scale);
     let mut model = h.app.editor.document.model().clone();
     let a = &mut model.walls.get_mut(&h.wall).unwrap().parameters;
-    a.start = Point2::new(-1.0, 0.0);
-    a.end = Point2::new(0.0, 0.0);
+    *a.path.straight_start_mut().unwrap() = Point2::new(-1.0, 0.0);
+    *a.path.straight_end_mut().unwrap() = Point2::new(0.0, 0.0);
     if reverse_a {
-        std::mem::swap(&mut a.start, &mut a.end);
+        a.path = os_model::WallPath::Straight {
+            start: a.end(),
+            end: a.start(),
+        };
     }
     let mut b = a.clone();
-    b.start = Point2::new(0.0, 0.0);
-    b.end = Point2::new(1.0, 0.0);
+    *b.path.straight_start_mut().unwrap() = Point2::new(0.0, 0.0);
+    *b.path.straight_end_mut().unwrap() = Point2::new(1.0, 0.0);
     if reverse_b {
-        std::mem::swap(&mut b.start, &mut b.end);
+        b.path = os_model::WallPath::Straight {
+            start: b.end(),
+            end: b.start(),
+        };
     }
     let b = os_model::Wall::new(os_walls::WALL_TYPE, b);
     let anchors = [
@@ -73,8 +79,8 @@ fn perpendicular_fixture(
     let mut model = h.app.editor.document.model().clone();
     let join = *model.wall_joins.keys().next().unwrap();
     let b = &mut model.walls.get_mut(&anchors[1].wall).unwrap().parameters;
-    b.start = Point2::new(0.0, if reverse_b { 1.0 } else { 0.0 });
-    b.end = Point2::new(0.0, if reverse_b { 0.0 } else { 1.0 });
+    *b.path.straight_start_mut().unwrap() = Point2::new(0.0, if reverse_b { 1.0 } else { 0.0 });
+    *b.path.straight_end_mut().unwrap() = Point2::new(0.0, if reverse_b { 0.0 } else { 1.0 });
     model.wall_joins.get_mut(&join).unwrap().parameters = if kind == "corner" {
         WallJoinParams::Corner {
             a: anchors[0],
@@ -83,8 +89,10 @@ fn perpendicular_fixture(
         }
     } else {
         let host = &mut model.walls.get_mut(&anchors[0].wall).unwrap().parameters;
-        host.start = Point2::new(if reverse_a { 1.0 } else { -1.0 }, 0.0);
-        host.end = Point2::new(if reverse_a { -1.0 } else { 1.0 }, 0.0);
+        *host.path.straight_start_mut().unwrap() =
+            Point2::new(if reverse_a { 1.0 } else { -1.0 }, 0.0);
+        *host.path.straight_end_mut().unwrap() =
+            Point2::new(if reverse_a { -1.0 } else { 1.0 }, 0.0);
         WallJoinParams::Tee {
             host: anchors[0].wall,
             station: 1.0,
@@ -199,12 +207,14 @@ fn junction_corner_both_owners_directions_and_selected_roles_preserve_identity_a
                         let mut expected = before.clone();
                         let wall = &mut expected.walls.get_mut(&selected.wall).unwrap().parameters;
                         match selected.endpoint {
-                            WallEndpoint::Start => wall.start = node,
-                            WallEndpoint::End => wall.end = node,
+                            WallEndpoint::Start => *wall.path.straight_start_mut().unwrap() = node,
+                            WallEndpoint::End => *wall.path.straight_end_mut().unwrap() = node,
                         }
                         let wall = &mut expected.walls.get_mut(&peer.wall).unwrap().parameters;
-                        wall.start = Point2::new(wall.start.x + node.x, wall.start.y + node.y);
-                        wall.end = Point2::new(wall.end.x + node.x, wall.end.y + node.y);
+                        *wall.path.straight_start_mut().unwrap() =
+                            Point2::new(wall.start().x + node.x, wall.start().y + node.y);
+                        *wall.path.straight_end_mut().unwrap() =
+                            Point2::new(wall.end().x + node.x, wall.end().y + node.y);
                         expected
                             .openings
                             .get_mut(&selected_opening)
@@ -297,8 +307,8 @@ fn junction_tee_host_station_and_branch_grips_reversed_axes_exact_contact_and_at
                         branch,
                     };
                     let wall = &mut expected.walls.get_mut(&branch.wall).unwrap().parameters;
-                    wall.start.x += node.x;
-                    wall.end.x += node.x;
+                    wall.path.straight_start_mut().unwrap().x += node.x;
+                    wall.path.straight_end_mut().unwrap().x += node.x;
                     assert_eq!(after, expected);
                     assert_eq!(
                         world_opening(&after, host_opening),
@@ -368,8 +378,12 @@ fn junction_drag_both_dpis_reversed_axes_preview_identity_and_atomic_history() {
                     let old = &before.walls[&anchor.wall];
                     let mut expected = old.clone();
                     match anchor.endpoint {
-                        WallEndpoint::Start => expected.parameters.start = node,
-                        WallEndpoint::End => expected.parameters.end = node,
+                        WallEndpoint::Start => {
+                            *expected.parameters.path.straight_start_mut().unwrap() = node
+                        }
+                        WallEndpoint::End => {
+                            *expected.parameters.path.straight_end_mut().unwrap() = node
+                        }
                     }
                     assert_eq!(wall, &expected);
                     assert_eq!(
@@ -407,6 +421,8 @@ fn add_opening(h: &mut Harness, host: Id) -> Id {
             width_override: None,
             height_override: None,
             sill_override: None,
+            pane_position_override: None,
+            lite_side_override: None,
             hinge: Default::default(),
             swing: Default::default(),
         },
@@ -651,8 +667,8 @@ fn junction_drag_rejects_competing_third_wall_atomically() {
     let (mut h, _) = fixture(PROFILES[0].0, 1.0, false, false);
     let mut model = h.app.editor.document.model().clone();
     let mut params = model.walls[&h.wall].parameters.clone();
-    params.start = Point2::new(0.5, 0.0);
-    params.end = Point2::new(0.5, 1.0);
+    *params.path.straight_start_mut().unwrap() = Point2::new(0.5, 0.0);
+    *params.path.straight_end_mut().unwrap() = Point2::new(0.5, 1.0);
     let wall = os_model::Wall::new(os_walls::WALL_TYPE, params);
     model.walls.insert(wall.id(), wall);
     h.app.editor.document = Document::from_model(model).unwrap();
@@ -686,8 +702,8 @@ fn junction_drag_chain_acquires_and_far_endpoint_never_acquires_single_wall_resi
         let mut model = h.app.editor.document.model().clone();
         if kind == "chain" {
             let mut params = model.walls[&h.wall].parameters.clone();
-            params.start = Point2::new(1.0, 0.0);
-            params.end = Point2::new(2.0, 0.0);
+            *params.path.straight_start_mut().unwrap() = Point2::new(1.0, 0.0);
+            *params.path.straight_end_mut().unwrap() = Point2::new(2.0, 0.0);
             let third = os_model::Wall::new(os_walls::WALL_TYPE, params);
             let join = WallJoin::new(
                 "core.wall_join",
@@ -812,11 +828,12 @@ fn junction_perpendicular_invalid_clearance_third_wall_and_connected_graphs_are_
                 } else if case == "third" || case == "chain" {
                     let branch = *parameters.anchors().last().unwrap();
                     let mut params = model.walls[&branch.wall].parameters.clone();
-                    params.start = Point2::new(
+                    *params.path.straight_start_mut().unwrap() = Point2::new(
                         if case == "third" { 0.5 } else { 0.0 },
                         if case == "third" { 0.0 } else { 1.0 },
                     );
-                    params.end = Point2::new(params.start.x, params.start.y + 1.0);
+                    *params.path.straight_end_mut().unwrap() =
+                        Point2::new(params.start().x, params.start().y + 1.0);
                     let wall = os_model::Wall::new(os_walls::WALL_TYPE, params);
                     if case == "chain" {
                         let join = WallJoin::new(
@@ -1030,10 +1047,13 @@ fn graph_wall(
     reverse: bool,
 ) -> [WallAnchor; 2] {
     let mut parameters = model.walls[&template].parameters.clone();
-    parameters.start = Point2::new(start.0, start.1);
-    parameters.end = Point2::new(end.0, end.1);
+    *parameters.path.straight_start_mut().unwrap() = Point2::new(start.0, start.1);
+    *parameters.path.straight_end_mut().unwrap() = Point2::new(end.0, end.1);
     if reverse {
-        std::mem::swap(&mut parameters.start, &mut parameters.end);
+        parameters.path = os_model::WallPath::Straight {
+            start: parameters.end(),
+            end: parameters.start(),
+        };
     }
     let wall = os_model::Wall::new(os_walls::WALL_TYPE, parameters);
     let id = wall.id();
@@ -1099,8 +1119,9 @@ fn graph_drag(h: &mut Harness, origin: Point2, target: Point2, valid: bool) -> o
         }
         let mut metadata = after.clone();
         for (id, wall) in &mut metadata.walls {
-            wall.parameters.start = before.walls[id].parameters.start;
-            wall.parameters.end = before.walls[id].parameters.end;
+            *wall.parameters.path.straight_start_mut().unwrap() =
+                before.walls[id].parameters.start();
+            *wall.parameters.path.straight_end_mut().unwrap() = before.walls[id].parameters.end();
         }
         for (id, opening) in &mut metadata.openings {
             opening.parameters.offset = before.openings[id].parameters.offset;
@@ -1148,7 +1169,9 @@ fn junction_graph_butt_chain_start_opening_and_hosted_tee_station() {
             .get_mut(&anchors[1].wall)
             .unwrap()
             .parameters
-            .end
+            .path
+            .straight_end_mut()
+            .unwrap()
             .x = 2.0;
         let branch = graph_wall(&mut model, h.wall, (1.3, 0.0), (1.3, 1.0), true);
         let tee = graph_join(
@@ -1270,9 +1293,9 @@ fn junction_graph_tee_path_reconnects_to_fixed_host() {
                 let mut model = h.app.editor.document.model().clone();
                 let host = &mut model.walls.get_mut(&h.wall).unwrap().parameters;
                 if reverse {
-                    host.start.x = 2.0;
+                    host.path.straight_start_mut().unwrap().x = 2.0;
                 } else {
-                    host.end.x = 2.0;
+                    host.path.straight_end_mut().unwrap().x = 2.0;
                 }
                 // Changing reversed host start also changes the original station.
                 for join in model.wall_joins.values_mut() {
@@ -1362,7 +1385,7 @@ fn junction_graph_snap_excludes_downstream_walls_and_ranks_only_legal_points() {
                 axis_extensions: false,
             };
             let after = graph_drag(&mut h, Point2::new(0.0, 0.0), Point2::new(0.98, 0.0), true);
-            let node = after.walls[&h.wall].parameters.end;
+            let node = after.walls[&h.wall].parameters.end();
             assert!(
                 (node.x - if with_grids { 0.94 } else { 0.98 }).abs() < 1e-6,
                 "{node:?}"

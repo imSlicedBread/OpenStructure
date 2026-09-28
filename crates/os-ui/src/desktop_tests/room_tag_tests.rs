@@ -40,8 +40,7 @@ fn setup(size: egui::Vec2, scale: f32) -> (Harness, Id, Id) {
                     "org.openstructure.walls.wall",
                     WallParams {
                         name: "Boundary".into(),
-                        start,
-                        end,
+                        path: os_model::WallPath::Straight { start, end },
                         height: 3.,
                         thickness: 0.2,
                         level,
@@ -561,7 +560,7 @@ fn room_tag_drag_wins_over_overlapping_selected_wall_endpoint() {
             .model()
             .walls
             .values()
-            .find(|w| w.parameters.start == Point2::new(0., 0.))
+            .find(|w| w.parameters.start() == Point2::new(0., 0.))
             .unwrap()
             .id();
         h.app.room_tag_position = Point2::new(0., 0.);

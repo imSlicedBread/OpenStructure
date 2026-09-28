@@ -30,7 +30,7 @@ impl Plugin for WallsPlugin {
             .ok_or_else(|| Error::Permission("wall plugin requires model.read".into()))?;
         ensure(
             model.schema_version == REQUIRED_MODEL_SCHEMA_VERSION,
-            "native Model request requires schema 45",
+            "native Model request requires schema 54",
         )?;
         let response = match request.request {
             Request::CreateWall(parameters) => {
@@ -75,8 +75,10 @@ mod tests {
             WALL_TYPE,
             WallParams {
                 name: "A".into(),
-                start: Point2::new(0., 0.),
-                end: Point2::new(3., 0.),
+                path: os_model::WallPath::Straight {
+                    start: Point2::new(0., 0.),
+                    end: Point2::new(3., 0.),
+                },
                 height: 3.,
                 thickness: 0.2,
                 level,
@@ -87,8 +89,10 @@ mod tests {
             WALL_TYPE,
             WallParams {
                 name: "B".into(),
-                start: Point2::new(6., 0.),
-                end: Point2::new(3., 0.),
+                path: os_model::WallPath::Straight {
+                    start: Point2::new(6., 0.),
+                    end: Point2::new(3., 0.),
+                },
                 ..a.parameters.clone()
             },
         );
@@ -134,7 +138,15 @@ mod tests {
                     .unwrap()[0]
             );
         }
-        model.walls.get_mut(&bid).unwrap().parameters.end.x += 0.1;
+        model
+            .walls
+            .get_mut(&bid)
+            .unwrap()
+            .parameters
+            .path
+            .straight_end_mut()
+            .unwrap()
+            .x += 0.1;
         assert!(WallsPlugin.invoke_json(&request(model, aid)).is_err());
     }
     use os_geometry::{GeometryKernel, PrismKernel};
@@ -142,8 +154,10 @@ mod tests {
     fn wall_regenerates_after_parameter_and_elevation_changes() {
         let mut wall = WallParams {
             name: "W".into(),
-            start: Point2::new(2.0, 3.0),
-            end: Point2::new(5.0, 7.0),
+            path: os_model::WallPath::Straight {
+                start: Point2::new(2.0, 3.0),
+                end: Point2::new(5.0, 7.0),
+            },
             thickness: 0.2,
             height: 3.0,
             level: os_core::Id::new(),

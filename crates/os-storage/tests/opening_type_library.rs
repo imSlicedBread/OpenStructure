@@ -11,6 +11,7 @@ fn package_bytes(kind: OpeningKind) -> Vec<u8> {
     let ty = OpeningType::new(
         "core.opening_type",
         OpeningTypeParams {
+            window_operation: Default::default(),
             name: format!("Library {kind:?}"),
             kind,
             width: 1.2,

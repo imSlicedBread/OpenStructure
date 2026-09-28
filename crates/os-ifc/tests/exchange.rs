@@ -34,8 +34,7 @@ fn model() -> Model {
             "org.openstructure.walls.wall",
             WallParams {
                 name: "Wall 'α'".into(),
-                start,
-                end,
+                path: os_model::WallPath::Straight { start, end },
                 thickness: 0.3,
                 height: 3.5,
                 level,
@@ -354,6 +353,7 @@ fn hosted(kind: OpeningKind, typed: bool, hinge: DoorHinge, swing: DoorSwing) ->
     let ty = OpeningType::new(
         "core.opening_type",
         OpeningTypeParams {
+            window_operation: Default::default(),
             name: "Shared 'type' 窓".into(),
             kind,
             width: 0.8,
@@ -371,6 +371,8 @@ fn hosted(kind: OpeningKind, typed: bool, hinge: DoorHinge, swing: DoorSwing) ->
                     width_override: None,
                     height_override: None,
                     sill_override: None,
+                    pane_position_override: None,
+                    lite_side_override: None,
                     name: format!("Opening 'α' {offset}"),
                     host: *host,
                     offset,
@@ -756,7 +758,10 @@ fn hosted_round_trips_preserve_semantics_types_and_regenerated_holes() {
                     let mut m = hosted(kind, typed, hinge, swing);
                     if reverse_host {
                         for w in m.walls.values_mut() {
-                            std::mem::swap(&mut w.parameters.start, &mut w.parameters.end);
+                            w.parameters.path = os_model::WallPath::Straight {
+                                start: w.parameters.end(),
+                                end: w.parameters.start(),
+                            };
                         }
                     }
                     let out = WallIfc.export_report(&m).unwrap();
@@ -906,6 +911,36 @@ fn custom_families_profiles_pane_alignment_and_unused_types_are_rejected() {
             WallIfc.export_report(&m),
             Err(os_core::Error::Unsupported(_))
         ));
+    }
+}
+
+#[test]
+fn two_bay_ifc_export_fails_without_partial_output_or_model_mutation() {
+    for kind in [OpeningKind::Door, OpeningKind::Window] {
+        for side in [os_model::LiteSide::Start, os_model::LiteSide::End] {
+            let mut model = hosted(kind, true, DoorHinge::Start, DoorSwing::Left);
+            model
+                .opening_types
+                .values_mut()
+                .next()
+                .unwrap()
+                .parameters
+                .family
+                .side_lite = Some(os_model::SideLite {
+                side,
+                width_fraction: 0.25,
+                mullion_width: 0.05,
+                material: None,
+            });
+            model.validate().unwrap();
+            let before = model.clone();
+            // The exporter returns bytes only on success; errors yield no partial file payload.
+            assert!(matches!(
+                WallIfc.export_report(&model),
+                Err(os_core::Error::Unsupported(_))
+            ));
+            assert_eq!(model, before);
+        }
     }
 }
 
@@ -1204,7 +1239,10 @@ fn independently_validate_hosted_ifc4_schema_geometry_and_identity() {
                     let mut m = hosted(kind, typed, hinge, swing);
                     if reversed {
                         for w in m.walls.values_mut() {
-                            std::mem::swap(&mut w.parameters.start, &mut w.parameters.end);
+                            w.parameters.path = os_model::WallPath::Straight {
+                                start: w.parameters.end(),
+                                end: w.parameters.start(),
+                            };
                         }
                     }
                     if typed && kind == OpeningKind::Door {
@@ -1231,7 +1269,7 @@ fn independently_validate_hosted_ifc4_schema_geometry_and_identity() {
                         source.push_str(&format!("{}\t{}\t{}\t{:?}\t{}\t{}\t{}\t{}\t{:?}\t{:?}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
                             o.id(), p.name, p.host, p.kind, p.offset, p.sill, p.width, p.height, p.hinge, p.swing,
                             p.type_id.map(|id| id.to_string()).unwrap_or_default(), p.type_name.unwrap_or_default(),
-                            w.start.x, w.start.y, w.end.x, w.end.y, m.levels[&w.level].parameters.elevation));
+                            w.start().x, w.start().y, w.end().x, w.end().y, m.levels[&w.level].parameters.elevation));
                     }
                     std::fs::write(path.with_extension("tsv"), source).unwrap();
                     command.arg(path);

@@ -19,7 +19,7 @@ The atomic 33→34 migration derives each material's color from its existing UUI
 `SurfaceIdentity.color()` swatch. It advances native headers and the model root,
 leaves opaque extension data alone, and rejects any pre-existing `color` field
 in schema 33, even a valid one. Missing or malformed current-schema RGB arrays
-are rejected. Current native full-model plugins require API 26/schema 45; generic
+are rejected. Current native full-model plugins require API 32/schema 51; generic
 API 2 and container 2 are unchanged. Older native guests must rebuild/reinstall.
 
 ## Automated coverage

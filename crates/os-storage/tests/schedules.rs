@@ -42,6 +42,7 @@ fn migration_preserves_ids_metadata_and_opaque_data_then_multiple_definitions_ro
     let mut migrated = original.clone();
     migrate(&mut migrated, 15).unwrap();
     let mut expected = original;
+    common::apply_wall_paths(&mut expected);
     expected["schema_version"] = json!(SCHEMA_VERSION);
     for room in expected["rooms"].as_object_mut().unwrap().values_mut() {
         for field in [

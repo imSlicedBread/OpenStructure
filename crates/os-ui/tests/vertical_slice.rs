@@ -133,8 +133,10 @@ fn complete_edit_regenerate_history_save_and_reopen_flow() {
     let ground = *editor.document.model().levels.keys().next().unwrap();
     let wall = WallParams {
         name: "Test wall".into(),
-        start: Point2::new(1.0, 2.0),
-        end: Point2::new(4.0, 6.0),
+        path: os_model::WallPath::Straight {
+            start: Point2::new(1.0, 2.0),
+            end: Point2::new(4.0, 6.0),
+        },
         thickness: 0.2,
         height: 3.0,
         level: ground,
@@ -219,8 +221,10 @@ fn failed_edits_and_opens_preserve_the_working_document() {
     let original = editor.document.model().clone();
     let invalid = WallParams {
         name: "Invalid".into(),
-        start: Point2::new(0.0, 0.0),
-        end: Point2::new(5.0, 0.0),
+        path: os_model::WallPath::Straight {
+            start: Point2::new(0.0, 0.0),
+            end: Point2::new(5.0, 0.0),
+        },
         thickness: 0.2,
         height: 3.0,
         level: Id::new(),
@@ -248,8 +252,10 @@ fn failed_regeneration_cannot_overwrite_a_reopenable_project() {
             "Create",
             Request::CreateWall(WallParams {
                 name: "Valid wall".into(),
-                start: Point2::new(0.0, 0.0),
-                end: Point2::new(5.0, 0.0),
+                path: os_model::WallPath::Straight {
+                    start: Point2::new(0.0, 0.0),
+                    end: Point2::new(5.0, 0.0),
+                },
                 thickness: 0.2,
                 height: 3.0,
                 level,
@@ -265,7 +271,7 @@ fn failed_regeneration_cannot_overwrite_a_reopenable_project() {
     let mut parameters = editor.document.model().walls[&id].parameters.clone();
     // Finite semantic parameters can still exceed a kernel's numerical range.
     parameters.height = 1e200;
-    parameters.end.x = 1e200;
+    parameters.path.straight_end_mut().unwrap().x = 1e200;
     assert!(
         editor
             .wall_command("Unrenderable", Request::EditWall { id, parameters })

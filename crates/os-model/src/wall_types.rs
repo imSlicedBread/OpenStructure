@@ -146,6 +146,15 @@ impl Model {
             }]
         };
         parameters.validate()?;
+        if !parameters.path.is_straight() {
+            let count = parameters
+                .path
+                .display_segments(parameters.thickness / 2.0)?;
+            ensure(
+                count.saturating_mul(layers.len()) <= 8192,
+                "compound circular wall exceeds 8192 display cells",
+            )?;
+        }
         Ok(ResolvedWall { parameters, layers })
     }
 }

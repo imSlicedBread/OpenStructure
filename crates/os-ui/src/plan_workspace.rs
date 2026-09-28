@@ -254,9 +254,12 @@ fn endpoint_handles(
     camera: PlanCamera,
     rect: egui::Rect,
 ) -> Vec<(WallEdit, egui::Pos2)> {
+    if !wall.path.is_straight() {
+        return Vec::new();
+    }
     [
-        (WallEdit::ResizeStart, wall.start),
-        (WallEdit::ResizeEnd, wall.end),
+        (WallEdit::ResizeStart, wall.start()),
+        (WallEdit::ResizeEnd, wall.end()),
     ]
     .into_iter()
     .filter_map(|(mode, point)| {
@@ -821,6 +824,8 @@ pub(super) struct PlanWorkspace {
     opening_move_claimed: bool,
     opening_flip: Option<crate::opening_tools::OpeningFlip>,
     opening_flip_claimed: bool,
+    opening_spacing: Option<crate::opening_tools::spacing::Draft>,
+    opening_spacing_claimed: bool,
     opening_rehost: Option<crate::opening_tools::OpeningRehost>,
     opening_rehost_claimed: bool,
     opening_array: Option<opening_array::Draft>,
@@ -840,6 +845,7 @@ pub(super) struct PlanWorkspace {
     dimension_draft: Option<DimensionDraft>,
     dimension_repair_claimed: bool,
     opening_placement: Option<OpeningPlacementDraft>,
+    opening_width_claimed: bool,
     floor_sketch: Option<FloorSketchDraft>,
     floor_hole_sketch: Option<FloorHoleSketchDraft>,
     column_placement: Option<columns::Placement>,
@@ -947,6 +953,18 @@ struct OpeningPlacementDraft {
     kind: OpeningKind,
     type_id: Option<Id>,
     source: Option<Id>,
+    draw_width: bool,
+    width_drag: Option<OpeningWidthDrag>,
+}
+
+#[derive(Clone)]
+struct OpeningWidthDrag {
+    host: Id,
+    start: f64,
+    end: Option<f64>,
+    drawing: Id,
+    camera: PlanCamera,
+    canvas: egui::Rect,
 }
 
 struct FloorSketchDraft {
@@ -1127,6 +1145,7 @@ fn trim_extend_reference_wall(
                 && item.footprint.contains(pointer)
                 && model.walls.get(&item.entity).is_some_and(|wall| {
                     wall.header.type_id == os_walls::WALL_TYPE
+                        && wall.parameters.path.is_straight()
                         && wall.parameters.level == source_wall.parameters.level
                 })
         })
@@ -1371,12 +1390,16 @@ pub(super) fn opening_host_hit(
         })
     });
     let host_candidate = if let Some(host) = picked_host {
+        os_core::ensure(
+            model.walls[&host].parameters.path.is_straight(),
+            "Doors and windows require a straight host; circular-wall hosting is not supported",
+        )?;
         model.walls.get(&host).and_then(|wall| {
             if wall.parameters.level != level || !visible.contains(&host) {
                 return None;
             }
-            let start = context.basis.world_to_plane(wall.parameters.start).ok()?;
-            let end = context.basis.world_to_plane(wall.parameters.end).ok()?;
+            let start = context.basis.world_to_plane(wall.parameters.start()).ok()?;
+            let end = context.basis.world_to_plane(wall.parameters.end()).ok()?;
             let (t, distance) = project_to_segment(point, start, end);
             let distance_pixels = distance * camera.pixels_per_metre;
             (distance_pixels <= wall.parameters.thickness * camera.pixels_per_metre * 0.5 + 8.0)
@@ -1391,9 +1414,10 @@ pub(super) fn opening_host_hit(
             .walls
             .iter()
             .filter(|(id, wall)| wall.parameters.level == level && visible.contains(id))
+            .filter(|(_, wall)| wall.parameters.path.is_straight())
             .filter_map(|(id, wall)| {
-                let start = context.basis.world_to_plane(wall.parameters.start).ok()?;
-                let end = context.basis.world_to_plane(wall.parameters.end).ok()?;
+                let start = context.basis.world_to_plane(wall.parameters.start()).ok()?;
+                let end = context.basis.world_to_plane(wall.parameters.end()).ok()?;
                 let (t, distance) = project_to_segment(point, start, end);
                 let distance_pixels = distance * camera.pixels_per_metre;
                 (distance_pixels <= wall.parameters.thickness * camera.pixels_per_metre * 0.5 + 8.0)
@@ -1460,6 +1484,8 @@ fn opening_placement_preview(
                 width_override: None,
                 height_override: None,
                 sill_override: None,
+                pane_position_override: None,
+                lite_side_override: None,
                 hinge: Default::default(),
                 swing: Default::default(),
                 name: format!("{kind:?}"),
@@ -1472,6 +1498,22 @@ fn opening_placement_preview(
     };
     parameters.host = host;
     parameters.offset = station - width * 0.5;
+    if draft.draw_width {
+        let Some(drag) = &draft.width_drag else {
+            return Ok(None);
+        };
+        let Some(end) = drag.end else { return Ok(None) };
+        if host != drag.host {
+            return Ok(None);
+        }
+        let width = (end - drag.start).abs();
+        os_core::ensure(width >= 0.001, "Draw a nonzero opening width")?;
+        parameters.offset = drag.start.min(end);
+        match &mut parameters.definition {
+            OpeningDefinition::Legacy { width: value, .. } => *value = width,
+            OpeningDefinition::Typed { .. } => parameters.width_override = Some(width),
+        }
+    }
     let resolved = model.resolve_opening(&parameters)?;
     let message = resolved
         .validate_host(wall)
@@ -1498,6 +1540,40 @@ fn opening_placement_preview(
         resolved,
         message,
     }))
+}
+
+fn opening_width_station(
+    model: &Model,
+    drawing: &PlanDrawing,
+    context: PlanContext,
+    query: os_render::snapping::SnapQuery,
+) -> Result<Option<(Id, f64)>> {
+    let Some((host, station)) = opening_host_hit(
+        model,
+        drawing,
+        context,
+        query.camera,
+        query.viewport,
+        query.pointer,
+    )?
+    else {
+        return Ok(None);
+    };
+    let wall = &model.walls[&host].parameters;
+    let projected = context
+        .basis
+        .world_to_plane(os_geometry::openings::world(wall, station, 0.0))?;
+    let point = crate::opening_tools::opening_axis_snap(
+        model, host, None, context, drawing, query, projected,
+    )?;
+    let world = context.basis.plane_to_world(point)?;
+    let station = ((world.x - wall.start().x) * (wall.end().x - wall.start().x)
+        + (world.y - wall.start().y) * (wall.end().y - wall.start().y))
+        / wall.length();
+    let point = context
+        .basis
+        .world_to_plane(os_geometry::openings::world(wall, station, 0.0))?;
+    Ok(point_in_plan_crop(context, point).then_some((host, station)))
 }
 impl PlanWorkspace {
     pub(super) fn sheet_pdf_pending(&self) -> bool {
@@ -2529,6 +2605,15 @@ impl DesktopApp {
     }
 
     pub(super) fn begin_opening_placement(&mut self, kind: OpeningKind) {
+        if !self.plan_shows_opening_kind(kind) {
+            self.report(
+                Err(Error::Invalid(
+                    "This opening category is hidden in the plan".into(),
+                )),
+                "",
+            );
+            return;
+        }
         self.plans.opening_rehost = None;
         let Some(view) = self.plans.active else {
             self.report(Err(Error::Invalid("Open a floor plan first".into())), "");
@@ -2567,6 +2652,8 @@ impl DesktopApp {
                     kind,
                     type_id,
                     source: None,
+                    draw_width: false,
+                    width_drag: None,
                 });
                 self.report(
                     Ok(()),
@@ -2637,6 +2724,12 @@ impl DesktopApp {
         self.plans.opening_array = None;
         self.plans.opening_rehost = None;
         self.plans.opening_placement = None;
+    }
+
+    pub(super) fn cancel_opening_controls(&mut self) {
+        self.plans.opening_move = None;
+        self.plans.opening_flip = None;
+        self.plans.opening_spacing = None;
     }
 
     fn begin_section_placement(&mut self, view: Id) {
@@ -2928,6 +3021,7 @@ impl DesktopApp {
             return Err(Error::Invalid(message));
         }
         let kind = preview.resolved.kind;
+        let placed_width = preview.resolved.width;
         let resolved_type = preview.resolved.type_id;
         let mut parameters = preview.parameters;
         let mut commands = Vec::new();
@@ -2940,13 +3034,14 @@ impl DesktopApp {
             let opening_type = OpeningType::new(
                 "core.opening_type",
                 OpeningTypeParams {
+                    window_operation: Default::default(),
                     family: Default::default(),
                     name: match resolved.kind {
                         OpeningKind::Door => "Basic Door 900 × 2100".into(),
                         OpeningKind::Window => "Basic Window 1200 × 1200".into(),
                     },
                     kind: resolved.kind,
-                    width: resolved.width,
+                    width: if kind == OpeningKind::Door { 0.9 } else { 1.2 },
                     height: resolved.height,
                     sill: resolved.sill,
                     pane_position: resolved.pane_position,
@@ -2957,6 +3052,9 @@ impl DesktopApp {
             Some(id)
         };
         if source.is_none() {
+            if draft.draw_width {
+                parameters.width_override = Some(placed_width);
+            }
             parameters.definition = OpeningDefinition::Typed {
                 type_id: type_id.expect("new placements always have a reusable type"),
             };
@@ -3151,7 +3249,9 @@ impl DesktopApp {
                             .model()
                             .walls
                             .get(&item.entity)
-                            .is_some_and(|w| w.parameters.level == level)
+                            .is_some_and(|w| {
+                                w.parameters.level == level && w.parameters.path.is_straight()
+                            })
                 })
                 .ok_or_else(|| Error::Invalid("Choose a visible native wall body".into()))?;
             return Ok(DimensionAnchorDraft {
@@ -3164,12 +3264,15 @@ impl DesktopApp {
         }
         let mut candidates = Vec::new();
         for (id, wall) in &self.editor.document.model().walls {
-            if wall.parameters.level != level || !visible.contains(id) {
+            if wall.parameters.level != level
+                || !visible.contains(id)
+                || !wall.parameters.path.is_straight()
+            {
                 continue;
             }
             for (endpoint, world) in [
-                (DimensionEndpoint::Start, wall.parameters.start),
-                (DimensionEndpoint::End, wall.parameters.end),
+                (DimensionEndpoint::Start, wall.parameters.start()),
+                (DimensionEndpoint::End, wall.parameters.end()),
             ] {
                 let point = context.basis.world_to_plane(world)?;
                 if !point_in_plan_crop(context, point) {
@@ -3221,6 +3324,71 @@ impl DesktopApp {
                 }
             }
         }
+        // Endpoint/jamb acquisition retains priority over continuous wall faces.
+        if candidates.is_empty() {
+            let viewport = [f64::from(rect.width()), f64::from(rect.height())];
+            let plane = camera.unproject(local, viewport)?;
+            os_core::ensure(point_in_plan_crop(context, plane), "face pick outside crop")?;
+            let world = context.basis.plane_to_world(plane)?;
+            // Respect foreground symbols and geometry at the actual pointer.
+            let foreground = drawing.pick_screen(context, camera, viewport, local, 0.01)?;
+            for (id, wall) in &self.editor.document.model().walls {
+                if !wall.parameters.path.is_straight()
+                    || wall.parameters.level != level
+                    || !visible.contains(id)
+                    || foreground.is_some_and(|hit| hit != *id)
+                {
+                    continue;
+                }
+                let start = wall.parameters.start();
+                let end = wall.parameters.end();
+                let length = start.distance(end);
+                if !length.is_finite() || length <= 1e-6 {
+                    continue;
+                }
+                let station_m = ((world.x - start.x) * (end.x - start.x)
+                    + (world.y - start.y) * (end.y - start.y))
+                    / length;
+                if !(0.0..=length).contains(&station_m) {
+                    continue;
+                }
+                for side in [
+                    os_model::DimensionWallSide::Left,
+                    os_model::DimensionWallSide::Right,
+                ] {
+                    let reference = DimensionReference::WallFace {
+                        wall: *id,
+                        side,
+                        station_m,
+                    };
+                    let Ok(world) = reference.resolve(self.editor.document.model(), level) else {
+                        continue;
+                    };
+                    let point = context.basis.world_to_plane(world)?;
+                    // The resolved face must belong to a real clipped wall body,
+                    // not an axis extension or an opening void.
+                    if !point_in_plan_crop(context, point)
+                        || !drawing
+                            .items(context)?
+                            .iter()
+                            .any(|item| item.entity == *id && item.footprint.contains(point))
+                    {
+                        continue;
+                    }
+                    let distance = local.distance(camera.project(point, viewport)?);
+                    if distance <= 12.0 {
+                        candidates.push((
+                            distance,
+                            *id,
+                            side == os_model::DimensionWallSide::Right,
+                            2u8,
+                            reference,
+                            point,
+                        ));
+                    }
+                }
+            }
+        }
         let (_, _, _, _, reference, point) = candidates
             .into_iter()
             .min_by(|a, b| {
@@ -3230,12 +3398,50 @@ impl DesktopApp {
                     .then_with(|| a.3.cmp(&b.3))
             })
             .ok_or_else(|| {
-                Error::Invalid("Choose a visible wall endpoint or opening jamb within 12 px".into())
+                Error::Invalid(
+                    "Choose a visible wall endpoint, opening jamb, or wall face within 12 px"
+                        .into(),
+                )
             })?;
         Ok(DimensionAnchorDraft { reference, point })
     }
 
     pub(super) fn finish_endpoint_input(&mut self, ctx: &egui::Context) {
+        if !ctx.input(|i| i.pointer.primary_down() || i.pointer.primary_released()) {
+            self.plans.opening_width_claimed = false;
+        }
+        let spacing_drawing = self.plans.drawing.as_ref();
+        #[cfg(feature = "external-plugins")]
+        let spacing_drawing = self
+            .plans
+            .active
+            .and_then(|view| self.plans.providers.drawing(&self.editor, view))
+            .or(spacing_drawing);
+        if self.selected_ids.len() != 1
+            || !self
+                .selected
+                .is_some_and(|id| self.selected_ids.contains(&id))
+            || self.plans.active_sheet.is_some()
+            || ctx.input(|i| {
+                i.key_pressed(egui::Key::Escape)
+                    || i.events
+                        .iter()
+                        .any(|e| matches!(e, egui::Event::PointerGone))
+            })
+            || self.plans.opening_spacing.as_ref().is_some_and(|d| {
+                !d.current(
+                    &self.editor,
+                    self.plans.active,
+                    self.selected,
+                    spacing_drawing,
+                )
+            })
+        {
+            self.plans.opening_spacing = None;
+        }
+        if !ctx.input(|i| i.pointer.primary_down()) {
+            self.plans.opening_spacing_claimed = false;
+        }
         if self.plans.dimension_draft.as_ref().is_some_and(|d| {
             d.repair.is_some()
                 && (!self.dimension_repair_current(d)
@@ -3383,6 +3589,45 @@ impl DesktopApp {
         }
     }
 
+    fn begin_plan_arc(&mut self, view: Id) {
+        #[cfg(feature = "external-plugins")]
+        if self.editor.plugin_work_pending()
+            || self
+                .editor
+                .host
+                .worker_supported(os_plugin_api::wall::OWNER)
+        {
+            self.report(Err(Error::Unsupported("Finish pending plugin work and use the bundled Wall provider for arcs; installed Wall workers currently accept straight paths only".into())), "");
+            return;
+        }
+        if !self
+            .editor
+            .host
+            .manifests()
+            .any(|m| m.id == os_walls::PLUGIN_ID && m.entrypoint == "builtin:os-walls")
+        {
+            self.report(Err(Error::Unsupported("Arc authoring requires the bundled native Wall provider; installed API-2 wall commands cannot carry an analytic circular path".into())), "");
+            return;
+        }
+        self.cancel_plan_wall();
+        self.cancel_aligned_dimension();
+        self.cancel_opening_placement();
+        self.plans.room_placement_active = false;
+        let mut parameters = self.draft.clone();
+        parameters.path = os_model::WallPath::Straight {
+            start: Point2::new(0.0, 0.0),
+            end: Point2::new(1.0, 0.0),
+        };
+        let result = crate::plan_gesture::WallGesture::begin(&self.editor, view, parameters);
+        match result {
+            Ok(mut gesture) => {
+                gesture.arc = true;
+                self.wall_gesture = Some(gesture);
+            }
+            Err(error) => self.report(Err(error), ""),
+        }
+    }
+
     fn begin_plan_wall_edit(&mut self, view: Id, id: Id, mode: crate::plan_gesture::WallEdit) {
         self.plans.transform = None;
         self.cancel_aligned_dimension();
@@ -3434,6 +3679,15 @@ impl DesktopApp {
             return;
         };
         let trim_extend = gesture.is_trim_extend();
+        let old_arc_ids = gesture.arc.then(|| {
+            self.editor
+                .document
+                .model()
+                .walls
+                .keys()
+                .copied()
+                .collect::<std::collections::BTreeSet<_>>()
+        });
         #[cfg(feature = "external-plugins")]
         if gesture.is_installed() {
             let prepared = gesture.installed_command(&self.editor, self.plans.active, point);
@@ -3453,7 +3707,19 @@ impl DesktopApp {
         let result = gesture.commit(&mut self.editor, self.plans.active, point);
         if result.is_ok() {
             self.cancel_plan_wall();
-            self.select(self.selected);
+            let selected = old_arc_ids
+                .as_ref()
+                .and_then(|old| {
+                    self.editor
+                        .document
+                        .model()
+                        .walls
+                        .keys()
+                        .find(|id| !old.contains(id))
+                        .copied()
+                })
+                .or(self.selected);
+            self.select(selected);
         }
         self.report(
             result,
@@ -3494,6 +3760,64 @@ impl DesktopApp {
             .and_then(|v| v.parameters.level)
         {
             self.set_active_level(level);
+        }
+    }
+    pub(super) fn plan_shows_opening_kind(&self, kind: OpeningKind) -> bool {
+        self.plans
+            .active
+            .and_then(|id| self.editor.document.model().views.get(&id))
+            .and_then(|view| view.parameters.plan)
+            .is_some_and(|plan| plan.visibility.shows_opening(kind))
+    }
+
+    pub(super) fn discard_hidden_opening_interaction(&mut self) {
+        let Some(settings) = self
+            .plans
+            .active
+            .and_then(|id| self.editor.document.model().views.get(&id))
+            .and_then(|view| view.parameters.plan)
+        else {
+            return;
+        };
+        if settings.visibility.doors && settings.visibility.windows {
+            return;
+        }
+        let model = self.editor.document.model();
+        let hidden: std::collections::BTreeSet<_> = model
+            .openings
+            .values()
+            .filter(|opening| {
+                model
+                    .resolve_opening(&opening.parameters)
+                    .is_ok_and(|opening| !settings.visibility.shows_opening(opening.kind))
+            })
+            .map(|opening| opening.id())
+            .collect();
+        let affected = |id: &Id| {
+            hidden.contains(id)
+                || model
+                    .opening_tags
+                    .get(id)
+                    .is_some_and(|tag| hidden.contains(&tag.parameters.opening))
+                || model.dimensions.get(id).is_some_and(|dimension| {
+                    dimension
+                        .parameters
+                        .references()
+                        .any(|reference| hidden.contains(&reference.entity()))
+                })
+        };
+        if self.selected.as_ref().is_some_and(affected) || self.selected_ids.iter().any(affected) {
+            self.select(None);
+            self.cancel_opening_placement();
+            self.cancel_opening_controls();
+        }
+        if self
+            .plans
+            .opening_placement
+            .as_ref()
+            .is_some_and(|draft| !settings.visibility.shows_opening(draft.kind))
+        {
+            self.cancel_opening_placement();
         }
     }
     pub(super) fn plan_workspace(&mut self, ctx: &egui::Context) {
@@ -3879,6 +4203,7 @@ impl DesktopApp {
                             self.begin_plan_wall(view);
                         }
                         use crate::plan_gesture::WallEdit;
+                        if ui.add_enabled(self.plans.active.is_some(),egui::Button::new("Draw arc wall")).on_hover_text("Click start, a point on the curve, then end. Edit radius, center and sweep in Properties.").clicked() && let Some(view)=self.plans.active { self.begin_plan_arc(view); }
                         if let (Some(view),Some(id))=(self.plans.active,self.selected)
                             && self.editor.document.model().walls.contains_key(&id) {
                             for (label,mode) in [("Move wall",WallEdit::Move),("Resize start",WallEdit::ResizeStart),("Resize end",WallEdit::ResizeEnd),("Trim/Extend start",WallEdit::TrimStart),("Trim/Extend end",WallEdit::TrimEnd),("Offset wall",WallEdit::OffsetCopy)] {
@@ -3892,7 +4217,7 @@ impl DesktopApp {
                         ui.horizontal(|ui| {
                             let gesture = self.wall_gesture.as_mut().unwrap();
                             ui.label(gesture.prompt());
-                            if !gesture.is_trim_extend() {
+                            if !gesture.is_trim_extend() && !gesture.arc {
                                 let offset = gesture.edit_mode()
                                     == Some(crate::plan_gesture::WallEdit::OffsetCopy);
                                 ui.label(if offset {
@@ -4087,6 +4412,7 @@ impl DesktopApp {
         }
         let stale_opening = self.plans.opening_placement.as_ref().is_some_and(|draft| {
             self.plans.active != Some(draft.context.view_id)
+                || (draft.width_drag.is_some() && pointer_gone)
                 || self.editor.native_plan_context(draft.context.view_id).ok()
                     != Some(draft.context)
                 || self.editor.host.activation_id(os_walls::PLUGIN_ID) != draft.activation
@@ -4307,6 +4633,14 @@ impl DesktopApp {
                         "Fit plan"
                     })
                     .clicked();
+                if let Some(draft) = self.plans.opening_placement.as_mut()
+                    && draft.source.is_none()
+                {
+                    ui.add_enabled_ui(!self.plans.opening_width_claimed, |ui| {
+                        ui.checkbox(&mut draft.draw_width, "Draw opening width")
+                            .on_hover_text("Drag from the first jamb to the second on one visible wall. Escape cancels.");
+                    });
+                }
                 ui.label(if self.plans.crop.mode.is_some() {
                     "Crop: boundary-only preview; geometry updates on release · Escape exits"
                 } else if self.plans.floor_hole_sketch.is_some() {
@@ -4322,7 +4656,9 @@ impl DesktopApp {
                 } else if self.plans.room_placement_active {
                     "Room: click inside an enclosed space · Escape to exit"
                 } else if let Some(draft) = &self.plans.opening_placement {
-                    match (draft.kind, draft.source.is_some()) {
+                    if draft.draw_width {
+                        "Drag between jambs on one wall · Escape exits"
+                    } else { match (draft.kind, draft.source.is_some()) {
                         (OpeningKind::Door, false) => {
                             "Door: hover a visible wall · click to place · Escape exits"
                         }
@@ -4335,7 +4671,7 @@ impl DesktopApp {
                         (OpeningKind::Window, true) => {
                             "Copy window: hover a visible wall · click to place · Escape exits"
                         }
-                    }
+                    } }
                 } else if self.plans.dimension_draft.is_some() {
                     "Dimension: two wall endpoints, then line position · Escape to cancel"
                 } else {
@@ -4987,8 +5323,119 @@ impl DesktopApp {
                 exclude_entity: self.selected,
             },
         );
-        let opening_move_input =
-            self.plans.opening_move_claimed || self.plans.opening_flip_claimed || rehost_input;
+        let (spacing_controls, spacing_input) = crate::opening_tools::spacing::input(
+            &self.editor,
+            &mut self.plans.opening_spacing,
+            &mut self.plans.opening_spacing_claimed,
+            drawing,
+            context,
+            *camera,
+            rect,
+            ui,
+            self.selected,
+            allow_opening_move
+                && self.selected_ids.len() == 1
+                && self
+                    .selected
+                    .is_some_and(|id| self.selected_ids.contains(&id))
+                && !self.plans.opening_move_claimed
+                && !self.plans.opening_flip_claimed
+                && !detail_input
+                && !separator_input
+                && self.plans.junction_drag.is_none(),
+        );
+        // Own the complete press, including invalid acquisition and cancellation.
+        // Release always recomputes the candidate from this frame's pointer.
+        let width_pointer = ctx
+            .input(|i| i.pointer.interact_pos())
+            .filter(|p| rect.contains(*p));
+        if let Some(draft) = self.plans.opening_placement.as_mut()
+            && draft.draw_width
+        {
+            if draft.width_drag.as_ref().is_some_and(|drag| {
+                drag.drawing != drawing.identity() || drag.camera != *camera || drag.canvas != rect
+            }) || cancelled
+                || pointer_gone
+            {
+                draft.width_drag = None;
+            }
+            let query = width_pointer.map(|p| os_render::snapping::SnapQuery {
+                camera: *camera,
+                viewport: size,
+                pointer: Point2::new(f64::from(p.x - rect.left()), f64::from(p.y - rect.top())),
+                radius_pixels: 10.0,
+                endpoints: self.plans.snaps.enabled && self.plans.snaps.endpoints,
+                midpoints: self.plans.snaps.enabled && self.plans.snaps.midpoints,
+                intersections: self.plans.snaps.enabled && self.plans.snaps.intersections,
+                perpendicular_from: None,
+                nearest: self.plans.snaps.enabled && self.plans.snaps.nearest,
+                axis_extensions: false,
+                exclude_entity: None,
+            });
+            let hit = query.and_then(|q| {
+                opening_width_station(self.editor.document.model(), drawing, context, q)
+                    .ok()
+                    .flatten()
+            });
+            if !cancelled
+                && !pointer_gone
+                && !self.plans.opening_width_claimed
+                && response.contains_pointer()
+                && ctx.input(|i| i.pointer.primary_pressed())
+            {
+                self.plans.opening_width_claimed = true;
+                draft.width_drag = hit.map(|(host, station)| OpeningWidthDrag {
+                    host,
+                    start: station,
+                    end: None,
+                    drawing: drawing.identity(),
+                    camera: *camera,
+                    canvas: rect,
+                });
+            }
+            if let Some(drag) = draft.width_drag.as_mut() {
+                drag.end = hit
+                    .filter(|(host, _)| *host == drag.host)
+                    .map(|(_, station)| station);
+            }
+        }
+        let width_preview = self
+            .plans
+            .opening_placement
+            .as_ref()
+            .filter(|d| d.draw_width && !cancelled)
+            .zip(width_pointer)
+            .and_then(|(draft, p)| {
+                opening_placement_preview(
+                    self.editor.document.model(),
+                    drawing,
+                    context,
+                    *camera,
+                    size,
+                    Point2::new(f64::from(p.x - rect.left()), f64::from(p.y - rect.top())),
+                    draft,
+                )
+                .ok()
+                .flatten()
+            });
+        let width_drawing = width_preview
+            .as_ref()
+            .filter(|p| p.message.is_none())
+            .and_then(|p| {
+                let mut model = self.editor.document.model().clone();
+                let opening = Opening::new("core.opening", p.parameters.clone());
+                let id = opening.id();
+                model.openings.insert(id, opening);
+                model.validate().ok()?;
+                crate::opening_tools::opening_edit_preview(&model, id, &[p.host], context)
+                    .ok()
+                    .map(|drawing| (id, p.host, drawing))
+            });
+        let opening_move_input = self.plans.opening_width_claimed
+            || self.plans.opening_move_claimed
+            || self.plans.opening_flip_claimed
+            || rehost_input
+            || spacing_input;
         let idle_selection = !cancelled
             && !opening_move_input
             && !tag_input
@@ -5076,6 +5523,11 @@ impl DesktopApp {
                     .as_ref()
                     .zip(opening_move_preview.as_ref().and_then(|p| p.as_ref().ok()))
                     .map(|(d, preview)| (d.id, d.host(), d.host(), preview))
+            })
+            .or_else(|| {
+                width_drawing
+                    .as_ref()
+                    .map(|(id, host, drawing)| (*id, *host, *host, drawing))
             });
         // Replace only the selected symbol and host cells in the paint stream.
         // Cached drawing, picking, model, history and the 3D scene stay untouched.
@@ -5103,6 +5555,7 @@ impl DesktopApp {
             (items, provider_lines)
         };
         if response.dragged()
+            && self.wall_gesture.is_none()
             && !self.plans.area_selection.claimed
             && !opening_move_input
             && !tag_input
@@ -5813,6 +6266,9 @@ impl DesktopApp {
             let screen = rect.min + egui::vec2(screen.x as f32, screen.y as f32);
             painter.circle_stroke(screen, 7.0, egui::Stroke::new(2.0, theme::ACCENT));
             let label = match anchor.reference {
+                DimensionReference::WallFace {
+                    side, station_m, ..
+                } => format!("Wall {side:?} face at {station_m:.3} m"),
                 DimensionReference::WallEndpoint { endpoint, .. } => format!("Wall {endpoint:?}"),
                 DimensionReference::OpeningJamb { jamb, .. } => format!("Opening {jamb:?} jamb"),
             };
@@ -6251,29 +6707,30 @@ impl DesktopApp {
                 }
             }
         }
-        let opening_preview = self
-            .plans
-            .opening_placement
-            .as_ref()
-            .filter(|_| !cancelled && response.hovered())
-            .and_then(|draft| {
-                let pointer = response.hover_pos()?;
-                let local = Point2::new(
-                    f64::from(pointer.x - rect.left()),
-                    f64::from(pointer.y - rect.top()),
-                );
-                opening_placement_preview(
-                    self.editor.document.model(),
-                    drawing,
-                    context,
-                    camera,
-                    size,
-                    local,
-                    draft,
-                )
-                .ok()
-                .flatten()
-            });
+        let opening_preview = width_preview.or_else(|| {
+            self.plans
+                .opening_placement
+                .as_ref()
+                .filter(|draft| !draft.draw_width && !cancelled && response.hovered())
+                .and_then(|draft| {
+                    let pointer = response.hover_pos()?;
+                    let local = Point2::new(
+                        f64::from(pointer.x - rect.left()),
+                        f64::from(pointer.y - rect.top()),
+                    );
+                    opening_placement_preview(
+                        self.editor.document.model(),
+                        drawing,
+                        context,
+                        camera,
+                        size,
+                        local,
+                        draft,
+                    )
+                    .ok()
+                    .flatten()
+                })
+        });
         if let Some(preview) = &opening_preview {
             let model = self.editor.document.model();
             if let Some(wall) = model.walls.get(&preview.host)
@@ -6430,6 +6887,12 @@ impl DesktopApp {
             opening_move_error.as_deref(),
         );
         crate::opening_tools::paint_flip_controls(ui, &painter, flip_controls);
+        let spacing_commit = crate::opening_tools::spacing::paint(
+            ui,
+            &painter,
+            &spacing_controls,
+            &mut self.plans.opening_spacing,
+        );
         self.plans.area_selection.paint(&painter);
         self.plans.overlap_selection.paint(
             &painter,
@@ -6509,6 +6972,26 @@ impl DesktopApp {
             self.finish_endpoint_input(ctx);
             return;
         }
+        if self.plans.opening_width_claimed {
+            if ctx.input(|i| i.pointer.primary_released()) {
+                let result = opening_preview
+                    .ok_or_else(|| {
+                        Error::Invalid("Draw a valid width on the same visible wall".into())
+                    })
+                    .and_then(|preview| self.commit_opening_placement(preview));
+                if let Some(draft) = self.plans.opening_placement.as_mut() {
+                    draft.width_drag = None;
+                }
+                if !cancelled {
+                    self.report(
+                        result.map(|_| ()),
+                        "Opening placed · drag another width or Escape to finish.",
+                    );
+                }
+            }
+            self.finish_endpoint_input(ctx);
+            return;
+        }
         if self.plans.opening_flip_claimed {
             if opening_flip_release && let Some(draft) = self.plans.opening_flip.take() {
                 let result = draft.commit(
@@ -6574,6 +7057,30 @@ impl DesktopApp {
                     self.plans.opening_rehost = None;
                 }
                 self.report(result, "Opening rehosted.");
+                ctx.request_repaint();
+            }
+            self.finish_endpoint_input(ctx);
+            return;
+        }
+        if spacing_input {
+            if spacing_commit && let Some(draft) = self.plans.opening_spacing.as_ref() {
+                let result = draft.commit(
+                    &mut self.editor,
+                    self.plans.active,
+                    self.selected,
+                    Some(drawing),
+                );
+                match result {
+                    Ok(()) => {
+                        self.plans.opening_spacing = None;
+                        self.status = "Opening spacing updated.".into();
+                        self.status_error = false;
+                    }
+                    Err(error) => {
+                        self.plans.opening_spacing.as_mut().unwrap().error =
+                            Some(error.to_string());
+                    }
+                }
                 ctx.request_repaint();
             }
             self.finish_endpoint_input(ctx);
@@ -6905,7 +7412,9 @@ impl DesktopApp {
                         );
                     }
                     let gesture = self.wall_gesture.as_mut().unwrap();
-                    let preview = if gesture.start.is_some() {
+                    let preview = if gesture.start.is_some()
+                        && (!gesture.arc || gesture.arc_bulge.is_some())
+                    {
                         Some(gesture.parameters(point))
                     } else {
                         None
@@ -6914,14 +7423,38 @@ impl DesktopApp {
                         if let (Ok(a), Ok(b)) = (
                             context
                                 .basis
-                                .world_to_plane(parameters.start)
+                                .world_to_plane(parameters.start())
                                 .and_then(project),
                             context
                                 .basis
-                                .world_to_plane(parameters.end)
+                                .world_to_plane(parameters.end())
                                 .and_then(project),
                         ) {
-                            painter.line_segment([a, b], egui::Stroke::new(2.0_f32, theme::ACCENT));
+                            if parameters.path.is_straight() {
+                                painter.line_segment(
+                                    [a, b],
+                                    egui::Stroke::new(2.0_f32, theme::ACCENT),
+                                );
+                            } else if let Ok(count) =
+                                parameters.path.display_segments(parameters.thickness / 2.0)
+                            {
+                                let points = (0..=count)
+                                    .map(|i| {
+                                        context
+                                            .basis
+                                            .world_to_plane(parameters.path.point(
+                                                parameters.length() * i as f64 / count as f64,
+                                            ))
+                                            .and_then(project)
+                                    })
+                                    .collect::<Result<Vec<_>>>();
+                                if let Ok(points) = points {
+                                    painter.add(egui::Shape::line(
+                                        points,
+                                        egui::Stroke::new(2.0, theme::ACCENT),
+                                    ));
+                                }
+                            }
                             if let Some(distance) = gesture.offset_measurement(parameters) {
                                 painter.text(
                                     a + egui::vec2(9.0, -9.0),
@@ -6970,6 +7503,8 @@ impl DesktopApp {
                     {
                         if gesture.start.is_none() {
                             gesture.start = Some(point);
+                        } else if gesture.arc && gesture.arc_bulge.is_none() {
+                            gesture.arc_bulge = Some(point);
                         } else {
                             self.commit_plan_wall(point);
                         }
@@ -7188,7 +7723,11 @@ impl DesktopApp {
                 }
                 Err(error) => self.report(Err(error), ""),
             }
-        } else if self.plans.opening_placement.is_some()
+        } else if self
+            .plans
+            .opening_placement
+            .as_ref()
+            .is_some_and(|d| !d.draw_width)
             && self.wall_gesture.is_none()
             && !self.plans.endpoint_pointer_claimed
             && !cancelled

@@ -240,6 +240,11 @@ impl DesktopApp {
             );
             for (index, reference) in parameters.references().enumerate() {
                 let target = match reference {
+                    os_model::DimensionReference::WallFace {
+                        side, station_m, ..
+                    } => {
+                        format!("Wall {side:?} face at {station_m:.3} m")
+                    }
                     os_model::DimensionReference::WallEndpoint { endpoint, .. } => {
                         format!("Wall endpoint {endpoint:?}")
                     }
@@ -827,20 +832,35 @@ impl DesktopApp {
                 );
                 ui.end_row();
             });
-        theme::section(ui, "Endpoints");
+        theme::section(ui, "Wall path");
         egui::Grid::new("wall_endpoints")
             .num_columns(2)
             .min_col_width(78.0)
             .spacing([8.0, 4.0])
             .show(ui, |ui| {
-                for (label, value) in [
-                    ("Start X", &mut self.draft.start.x),
-                    ("Start Y", &mut self.draft.start.y),
-                    ("End X", &mut self.draft.end.x),
-                    ("End Y", &mut self.draft.end.y),
-                ] {
+                let fields: Vec<(&str, &mut f64)> = match &mut self.draft.path {
+                    os_model::WallPath::Straight { start, end } => vec![
+                        ("Start X", &mut start.x),
+                        ("Start Y", &mut start.y),
+                        ("End X", &mut end.x),
+                        ("End Y", &mut end.y),
+                    ],
+                    os_model::WallPath::CircularArc {
+                        center,
+                        radius,
+                        start_angle_rad,
+                        signed_sweep_rad,
+                    } => vec![
+                        ("Center X (m)", &mut center.x),
+                        ("Center Y (m)", &mut center.y),
+                        ("Radius (m)", radius),
+                        ("Start (rad)", start_angle_rad),
+                        ("Sweep (rad)", signed_sweep_rad),
+                    ],
+                };
+                for (label, value) in fields {
                     ui.label(label);
-                    ui.add(egui::DragValue::new(value).speed(0.1).suffix(" m"));
+                    ui.add(egui::DragValue::new(value).speed(0.01));
                     ui.end_row();
                 }
             });
@@ -1050,6 +1070,8 @@ impl DesktopApp {
                         for (id, dimension) in &model.dimensions {
                             let anchor_label = |reference: os_model::DimensionReference| {
                                 match reference {
+                                    os_model::DimensionReference::WallFace { wall, side, station_m } =>
+                                        format!("{} {side:?} face at {station_m:.3} m", model.walls.get(&wall).map_or("Missing wall", |w| w.parameters.name.as_str())),
                                     os_model::DimensionReference::WallEndpoint { wall, endpoint } =>
                                         format!("{} {endpoint:?}", model.walls.get(&wall).map_or("Missing wall", |w| w.parameters.name.as_str())),
                                     os_model::DimensionReference::OpeningJamb { opening, jamb } =>

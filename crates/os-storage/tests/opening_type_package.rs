@@ -35,6 +35,7 @@ fn fixture(kind: OpeningKind) -> (Model, Id) {
     let mut ty = OpeningType::new(
         "core.opening_type",
         OpeningTypeParams {
+            window_operation: Default::default(),
             name: format!("Authored {kind:?}"),
             kind,
             width: 1.2,
@@ -58,6 +59,89 @@ fn fixture(kind: OpeningKind) -> (Model, Id) {
 fn valid_json() -> Value {
     let (model, ty) = fixture(OpeningKind::Door);
     serde_json::from_slice(&export_opening_type_package(&model, ty).unwrap()).unwrap()
+}
+
+#[test]
+fn two_bay_packages_v1_v2_upgrade_to_v3_strict_and_three_materials() {
+    for kind in [OpeningKind::Door, OpeningKind::Window] {
+        let (mut model, ty) = fixture(kind);
+        let mut v1: Value =
+            serde_json::from_slice(&export_opening_type_package(&model, ty).unwrap()).unwrap();
+        v1["version"] = 1.into();
+        v1["parameters"]["family"]["version"] = 4.into();
+        v1["parameters"]["family"]
+            .as_object_mut()
+            .unwrap()
+            .remove("side_lite");
+        v1["parameters"]
+            .as_object_mut()
+            .unwrap()
+            .remove("window_operation");
+        let imported = parse_opening_type_package(&serde_json::to_vec(&v1).unwrap()).unwrap();
+        assert_eq!(imported.parameters, model.opening_types[&ty].parameters);
+        v1["parameters"]["family"]["side_lite"] = Value::Null;
+        rejected(v1);
+        for side in [os_model::LiteSide::Start, os_model::LiteSide::End] {
+            model
+                .opening_types
+                .get_mut(&ty)
+                .unwrap()
+                .parameters
+                .family
+                .side_lite = Some(os_model::SideLite {
+                side,
+                width_fraction: 0.25,
+                mullion_width: 0.05,
+                material: Some(id(3)),
+            });
+            let bytes = export_opening_type_package(&model, ty).unwrap();
+            let imported = parse_opening_type_package(&bytes).unwrap();
+            assert_eq!(imported.materials.len(), 3);
+            assert_eq!(imported.parameters, model.opening_types[&ty].parameters);
+            let mut value: Value = serde_json::from_slice(&bytes).unwrap();
+            value["parameters"]["family"]
+                .as_object_mut()
+                .unwrap()
+                .remove("side_lite");
+            rejected(value);
+            let mut value: Value = serde_json::from_slice(&bytes).unwrap();
+            value["parameters"]["family"]["side_lite"]["unknown"] = true.into();
+            rejected(value);
+        }
+    }
+}
+
+#[test]
+fn v2_window_type_import_defaults_operation_and_v3_round_trips_it() {
+    let (model, ty) = fixture(OpeningKind::Window);
+    let mut v2: Value =
+        serde_json::from_slice(&export_opening_type_package(&model, ty).unwrap()).unwrap();
+    v2["version"] = json!(2);
+    v2["parameters"]
+        .as_object_mut()
+        .unwrap()
+        .remove("window_operation");
+    let imported = parse_opening_type_package(&serde_json::to_vec(&v2).unwrap()).unwrap();
+    assert_eq!(
+        imported.parameters.window_operation,
+        os_model::WindowOperation::Fixed
+    );
+    let encoded = serde_json::to_value(&imported.parameters).unwrap();
+    assert_eq!(encoded["window_operation"], json!("Fixed"));
+
+    v2["parameters"]["window_operation"] = json!("Sliding");
+    rejected(v2);
+
+    let mut v3: Value =
+        serde_json::from_slice(&export_opening_type_package(&model, ty).unwrap()).unwrap();
+    v3["parameters"]["window_operation"] = json!("Casement");
+    assert_eq!(
+        parse_opening_type_package(&serde_json::to_vec(&v3).unwrap())
+            .unwrap()
+            .parameters
+            .window_operation,
+        os_model::WindowOperation::Casement
+    );
 }
 
 fn rejected(value: Value) {
@@ -204,7 +288,7 @@ fn rejects_corrupt_duplicate_escaped_duplicate_and_deep_json() {
         vec![0xff],
         b"null".to_vec(),
         format!("{raw} {{}}").into_bytes(),
-        raw.replacen("\"version\":1", "\"version\":1,\"version\":1", 1)
+        raw.replacen("\"version\":3", "\"version\":3,\"version\":3", 1)
             .into_bytes(),
         raw.replacen(
             "\"density_kg_m3\":720.0",
@@ -251,7 +335,7 @@ fn rejects_unknown_fields_at_every_object_layer() {
 fn rejects_unknown_format_version_missing_fields_and_wrong_shapes() {
     for version in [
         json!(0),
-        json!(2),
+        json!(4),
         json!(-1),
         json!(1.5),
         json!("1"),

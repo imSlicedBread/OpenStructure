@@ -84,7 +84,8 @@ impl Model {
             .walls
             .values()
             .filter(|w| w.parameters.level == level)
-            .map(|w| (w.id(), w.parameters.start, w.parameters.end))
+            .filter(|w| w.parameters.path.is_straight())
+            .map(|w| (w.id(), w.parameters.start(), w.parameters.end()))
             .chain(
                 self.room_separation_lines
                     .values()
