@@ -159,6 +159,7 @@ impl OpeningRehost {
             .get_mut(&self.id)
             .ok_or_else(|| Error::Invalid("Opening no longer exists".into()))?
             .parameters = parameters.clone();
+        model.settle_opening_clearances(editor.document.model())?;
         model.validate()?;
         let preview =
             opening_edit_preview(&model, self.id, &[self.original.host, host], self.context)?;
@@ -230,11 +231,7 @@ impl OpeningMove {
         let wall = &editor.document.model().walls[&self.original.host].parameters;
         let point = self.context.basis.plane_to_world(point)?;
         let anchor = self.context.basis.plane_to_world(self.anchor)?;
-        let station = |p: Point2| {
-            ((p.x - wall.start().x) * (wall.end().x - wall.start().x)
-                + (p.y - wall.start().y) * (wall.end().y - wall.start().y))
-                / wall.length()
-        };
+        let station = |p: Point2| wall.path.project(p);
         // Retain the press-to-grip station offset, so an off-center grab never jumps.
         let delta = station(point) - station(anchor);
         self.offset = self.original.offset;
@@ -257,6 +254,17 @@ impl OpeningMove {
         } else {
             self.width = target - self.original.offset;
         }
+        // A jamb grip authors width. The persistent endpoint owns the resulting
+        // offset; a center grip remains an explicit move and must conflict.
+        if self.handle != OpeningAnchor::Center
+            && editor
+                .document
+                .model()
+                .opening_clearances
+                .contains_key(&self.id)
+        {
+            self.offset = self.original.offset;
+        }
         Ok(())
     }
 
@@ -267,6 +275,7 @@ impl OpeningMove {
             .get_mut(&self.id)
             .ok_or_else(|| Error::Invalid("Opening no longer exists".into()))?;
         opening.parameters = self.parameters();
+        model.settle_opening_clearances(editor.document.model())?;
         model.validate()?;
         Ok(model)
     }
@@ -318,6 +327,15 @@ pub(super) fn opening_edit_preview(
     hosts: &[Id],
     context: PlanContext,
 ) -> Result<os_render::plan::PlanDrawing> {
+    opening_batch_preview(model, &[id], hosts, context)
+}
+
+pub(super) fn opening_batch_preview(
+    model: &Model,
+    ids: &[Id],
+    hosts: &[Id],
+    context: PlanContext,
+) -> Result<os_render::plan::PlanDrawing> {
     let mut host_cells = std::collections::BTreeMap::new();
     let mut host_seams = std::collections::BTreeMap::new();
     for &host in hosts {
@@ -345,17 +363,18 @@ pub(super) fn opening_edit_preview(
         host_cells.insert(host, cells);
         host_seams.insert(host, seams);
     }
-    let resolved = model.resolve_opening(&model.openings[&id].parameters)?;
-    let wall = os_geometry::walls::NativeWall::from_model(model, resolved.host)?;
-    os_render::plan::PlanDrawing::from_layered_footprints(context, &host_cells, vec![id])?
+    let mut lines = std::collections::BTreeMap::new();
+    for &id in ids {
+        let resolved = model.resolve_opening(&model.openings[&id].parameters)?;
+        let wall = os_geometry::walls::NativeWall::from_model(model, resolved.host)?;
+        lines.insert(
+            id,
+            plan_symbol(id, &resolved, &wall.parameters, wall.elevation, context)?,
+        );
+    }
+    os_render::plan::PlanDrawing::from_layered_footprints(context, &host_cells, ids.to_vec())?
         .without_wall_seams(&host_seams)?
-        .with_native_lines(
-            [(
-                id,
-                plan_symbol(id, &resolved, &wall.parameters, wall.elevation, context)?,
-            )]
-            .into(),
-        )
+        .with_native_lines(lines)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -447,6 +466,17 @@ pub(super) enum DoorFlip {
 }
 
 impl DoorFlip {
+    pub(super) fn available(self, resolved: &ResolvedOpening) -> bool {
+        match self {
+            Self::Lite => resolved.type_id.is_some() && resolved.family.side_lite.is_some(),
+            Self::Pane => {
+                resolved.kind == OpeningKind::Window
+                    && resolved.type_id.is_some()
+                    && resolved.pane_position != WindowPanePosition::Center
+            }
+            Self::Hinge | Self::Swing => resolved.kind == OpeningKind::Door,
+        }
+    }
     fn label(self) -> &'static str {
         match self {
             Self::Hinge => "Flip door hinge",
@@ -456,22 +486,14 @@ impl DoorFlip {
         }
     }
 
-    fn parameters(
+    pub(super) fn parameters(
         self,
         original: &OpeningParams,
         resolved: &ResolvedOpening,
     ) -> Result<OpeningParams> {
         let mut parameters = original.clone();
         ensure(
-            if self == Self::Lite {
-                resolved.type_id.is_some() && resolved.family.side_lite.is_some()
-            } else if self == Self::Pane {
-                resolved.kind == OpeningKind::Window
-                    && resolved.type_id.is_some()
-                    && resolved.pane_position != WindowPanePosition::Center
-            } else {
-                resolved.kind == OpeningKind::Door
-            },
+            self.available(resolved),
             "Select an opening with an available flip action",
         )?;
         match self {
@@ -546,6 +568,26 @@ impl OpeningFlip {
         let parameters = self
             .control
             .parameters(&self.snapshot.original, &resolved)?;
+        if matches!(
+            editor
+                .document
+                .model()
+                .resolve_wall(resolved.host)?
+                .parameters
+                .path,
+            os_model::WallPath::CircularArc { .. }
+        ) {
+            // Arc flips can change the tessellated component's radius or bay
+            // placement. Check its geometry budget before command commits history.
+            let mut candidate = editor.document.model().clone();
+            candidate
+                .openings
+                .get_mut(&self.snapshot.id)
+                .unwrap()
+                .parameters = parameters.clone();
+            candidate.validate()?;
+            panel_mesh(&candidate, self.snapshot.id)?;
+        }
         editor.command(
             self.control.label(),
             Command::UpdateOpening {
@@ -596,10 +638,25 @@ fn flip_rects(
         camera,
         canvas,
     )?;
+    if matches!(
+        model.resolve_wall(resolved.host).ok()?.parameters.path,
+        os_model::WallPath::CircularArc { .. }
+    ) {
+        let center = opening_grip(
+            editor,
+            id,
+            None,
+            OpeningAnchor::Center,
+            context,
+            camera,
+            canvas,
+        )?;
+        return arc_flip_rects(&resolved, [start, center, end], canvas);
+    }
     let center = start.lerp(end, 0.5);
     let row = egui::pos2(center.x, start.y.min(end.y) - 30.0);
     let mut controls = if resolved.kind == OpeningKind::Window {
-        if resolved.type_id.is_some() && resolved.pane_position != WindowPanePosition::Center {
+        if DoorFlip::Pane.available(&resolved) {
             vec![(
                 DoorFlip::Pane,
                 egui::Rect::from_center_size(row, egui::vec2(58.0, 24.0)),
@@ -619,7 +676,7 @@ fn flip_rects(
             ),
         ]
     };
-    if resolved.type_id.is_some() && resolved.family.side_lite.is_some() {
+    if DoorFlip::Lite.available(&resolved) {
         let position = if controls.is_empty() {
             row
         } else {
@@ -642,6 +699,74 @@ fn flip_rects(
                 })
         }))
     .then_some(controls)
+}
+
+fn arc_flip_rects(
+    resolved: &ResolvedOpening,
+    anchors: [egui::Pos2; 3],
+    canvas: egui::Rect,
+) -> Option<Vec<(DoorFlip, egui::Rect)>> {
+    let [start, center, end] = anchors;
+    // Use the analytic center grip and clear every anchor, including the arc's
+    // bulge. Rows and padding are logical pixels, independent of display scale.
+    for (y, outward) in [
+        (start.y.min(center.y).min(end.y) - 30.0, -1.0),
+        (start.y.max(center.y).max(end.y) + 30.0, 1.0),
+    ] {
+        let row = egui::pos2(center.x, y);
+        let mut controls = if resolved.kind == OpeningKind::Window {
+            if DoorFlip::Pane.available(resolved) {
+                vec![(
+                    DoorFlip::Pane,
+                    egui::Rect::from_center_size(row, egui::vec2(58.0, 24.0)),
+                )]
+            } else {
+                vec![]
+            }
+        } else {
+            vec![
+                (
+                    DoorFlip::Hinge,
+                    egui::Rect::from_center_size(
+                        row + egui::vec2(-32.0, 0.0),
+                        egui::vec2(58.0, 24.0),
+                    ),
+                ),
+                (
+                    DoorFlip::Swing,
+                    egui::Rect::from_center_size(
+                        row + egui::vec2(32.0, 0.0),
+                        egui::vec2(58.0, 24.0),
+                    ),
+                ),
+            ]
+        };
+        if DoorFlip::Lite.available(resolved) {
+            let position = if controls.is_empty() {
+                row
+            } else {
+                row + egui::vec2(0.0, outward * 28.0)
+            };
+            controls.push((
+                DoorFlip::Lite,
+                egui::Rect::from_center_size(position, egui::vec2(68.0, 24.0)),
+            ));
+        }
+        if controls.iter().enumerate().all(|(i, (_, rect))| {
+            controls[i + 1..]
+                .iter()
+                .all(|(_, other)| !rect.intersects(*other))
+                && canvas.contains_rect(rect.expand(4.0))
+                && anchors.iter().all(|p| {
+                    !rect
+                        .expand(4.0)
+                        .intersects(egui::Rect::from_center_size(*p, egui::vec2(20.0, 20.0)))
+                })
+        }) {
+            return Some(controls);
+        }
+    }
+    None
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -788,14 +913,30 @@ pub(super) fn opening_axis_snap(
     mut query: os_render::snapping::SnapQuery,
     point: Point2,
 ) -> Result<Point2> {
-    use os_render::snapping::{SnapScene, SnapSegment};
+    use os_render::snapping::{SnapArc, SnapScene, SnapSegment};
     let wall = &model.walls[&host].parameters;
-    let mut segments = vec![SnapSegment {
-        entity: host,
-        feature: 0,
-        start: context.basis.world_to_plane(wall.start())?,
-        end: context.basis.world_to_plane(wall.end())?,
-    }];
+    let mut segments = Vec::new();
+    let mut arcs = Vec::new();
+    match wall.path {
+        os_model::WallPath::Straight { start, end } => segments.push(SnapSegment {
+            entity: host,
+            feature: 0,
+            start: context.basis.world_to_plane(start)?,
+            end: context.basis.world_to_plane(end)?,
+        }),
+        os_model::WallPath::CircularArc {
+            center,
+            radius,
+            start_angle_rad,
+            signed_sweep_rad,
+        } => arcs.push(SnapArc {
+            entity: host,
+            center: context.basis.world_to_plane(center)?,
+            radius,
+            start_angle_rad: start_angle_rad - context.basis.rotation,
+            signed_sweep_rad,
+        }),
+    }
     segments.extend(drawing.provider_lines(context)?.iter().filter_map(|line| {
         let opening = model.openings.get(&line.entity)?;
         (Some(line.entity) != exclude && opening.parameters.host == host && line.feature < 2)
@@ -809,6 +950,7 @@ pub(super) fn opening_axis_snap(
     query.pointer = query.camera.project(point, query.viewport)?;
     query.exclude_entity = exclude;
     Ok(SnapScene::new(context, segments)?
+        .with_arcs(arcs)?
         .query(context, query)?
         .candidate(context, query)?
         .map_or(point, |candidate| candidate.point))
@@ -1049,23 +1191,37 @@ pub(super) fn plan_symbol(
     elevation: f64,
     context: PlanContext,
 ) -> Result<Vec<PlanLine>> {
-    let mut aperture = os_walls::wall_solid(wall, elevation + p.sill)?;
-    aperture.height = p.height;
-    aperture.profile.vertices[0].x = p.offset;
-    aperture.profile.vertices[3].x = p.offset;
-    aperture.profile.vertices[1].x = p.offset + p.width;
-    aperture.profile.vertices[2].x = p.offset + p.width;
-    let Some(footprint) =
-        os_geometry::plan::rectangular_plan(&aperture, context.range, context.basis, None)?
-    else {
+    // Draft symbols must still paint at an invalid offset/clearance so the UI
+    // can show the candidate in error color. Model commits validate the host.
+    context.range.validate()?;
+    context.basis.validate()?;
+    let base = elevation + p.sill;
+    let top = base + p.height;
+    let tolerance = os_geometry::plan::PLAN_TOLERANCE;
+    let role = if top <= context.range.depth + tolerance || base >= context.range.top - tolerance {
+        None
+    } else if base <= context.range.cut + tolerance && top > context.range.cut + tolerance {
+        Some(os_geometry::plan::PlanRole::Cut)
+    } else if top <= context.range.cut + tolerance && top > context.range.bottom + tolerance {
+        Some(os_geometry::plan::PlanRole::Projected)
+    } else if top <= context.range.bottom + tolerance && top > context.range.depth + tolerance {
+        Some(os_geometry::plan::PlanRole::Depth)
+    } else {
+        None
+    };
+    let Some(role) = role else {
         return Ok(vec![]);
     };
     let half = wall.thickness / 2.0;
     let bays = p.family.bays(p.width)?;
     let primary = os_geometry::openings::primary_bay(p)?;
+    let posed_sash = p.supports_open_state(wall)
+        && matches!(p.open_state,
+        os_model::OpeningState::SlidingFraction(v) | os_model::OpeningState::CasementAngle(v) if v != 0.);
     let spans =
         os_geometry::openings::plan_spans(p, elevation, context.range.cut, context.range.depth)?;
     let mut pairs = Vec::new();
+    let mut rigid_pairs = std::collections::BTreeMap::<usize, (Point2, Point2)>::new();
     for (a, b) in
         os_geometry::openings::cut_plan_spans(p, elevation, context.range.cut, context.range.depth)?
     {
@@ -1075,6 +1231,28 @@ pub(super) fn plan_symbol(
         }
     }
     match p.kind {
+        OpeningKind::Door
+            if matches!(p.family.door_leaves, os_model::DoorLeaves::Paired { .. }) =>
+        {
+            if !spans.is_empty() {
+                for leaf in os_geometry::openings::door_pair(p)?.unwrap() {
+                    pairs.push((
+                        component_point(&leaf, wall, 0.),
+                        component_point(&leaf, wall, 1.),
+                    ));
+                    for i in 0..SWING_SEGMENTS {
+                        let point = |step: usize| {
+                            let mut pose = leaf.clone();
+                            pose.open_state = os_model::OpeningState::DoorAngle(
+                                leaf.door_angle(wall) * step as f64 / SWING_SEGMENTS as f64,
+                            );
+                            component_point(&pose, wall, 1.)
+                        };
+                        pairs.push((point(i), point(i + 1)));
+                    }
+                }
+            }
+        }
         OpeningKind::Window => {
             let spans = if spans.is_empty() {
                 spans
@@ -1089,12 +1267,61 @@ pub(super) fn plan_symbol(
                     },
                 )
             };
-            for y in [-half * 0.5, pane_offset(p, wall), half * 0.5] {
-                for &(a, b) in &spans {
-                    pairs.push((
+            for (row, y) in [-half * 0.5, pane_offset(p, wall), half * 0.5]
+                .into_iter()
+                .enumerate()
+            {
+                for (span, &(a, b)) in spans.iter().enumerate() {
+                    let mut ends = (
                         Point2::new(p.offset + a * p.width, y),
                         Point2::new(p.offset + b * p.width, y),
-                    ));
+                    );
+                    let is_primary = bays.is_none() || span == 0;
+                    if posed_sash && is_primary {
+                        let bay = os_geometry::openings::sash_bay(p)?;
+                        let d = os_geometry::openings::depth(p, wall);
+                        let center = pane_offset(p, wall);
+                        if p.window_operation == os_model::WindowOperation::Sliding && row < 2 {
+                            let rail = 0.05_f64.min(bay.width * 0.1).min(bay.height * 0.1);
+                            let (start, end, track_y) = if row == 0 {
+                                (0., (bay.width + rail) / 2., center - d * 0.275)
+                            } else {
+                                ((bay.width - rail) / 2., bay.width, center + d * 0.275)
+                            };
+                            ends = (
+                                os_geometry::openings::sash_point(
+                                    p,
+                                    &bay,
+                                    wall,
+                                    row,
+                                    bay.offset + start,
+                                    track_y,
+                                ),
+                                os_geometry::openings::sash_point(
+                                    p,
+                                    &bay,
+                                    wall,
+                                    row,
+                                    bay.offset + end,
+                                    track_y,
+                                ),
+                            );
+                        } else if p.window_operation == os_model::WindowOperation::Casement {
+                            let y = center + (row as f64 - 1.) * d / 2.;
+                            ends = (
+                                os_geometry::openings::sash_point(p, &bay, wall, 0, bay.offset, y),
+                                os_geometry::openings::sash_point(
+                                    p,
+                                    &bay,
+                                    wall,
+                                    0,
+                                    bay.offset + bay.width,
+                                    y,
+                                ),
+                            );
+                        }
+                    }
+                    pairs.push(ends);
                 }
             }
         }
@@ -1110,12 +1337,6 @@ pub(super) fn plan_symbol(
             } else {
                 spans
             };
-            let hinge = component_point(p, wall, 0.);
-            for &(a, b) in &spans {
-                pairs.push((component_point(p, wall, a), component_point(p, wall, b)));
-            }
-            let radius = spans.last().map_or(0., |s| s.1 * p.width);
-            let tip = component_point(p, wall, radius / p.width);
             let closed = if p.hinge == DoorHinge::Start {
                 1.0
             } else {
@@ -1126,10 +1347,55 @@ pub(super) fn plan_symbol(
             } else {
                 -1.0
             };
+            let is_arc = matches!(wall.path, os_model::WallPath::CircularArc { .. });
+            let station = p.offset
+                + if p.hinge == DoorHinge::End {
+                    p.width
+                } else {
+                    0.0
+                };
+            let hinge = component_point(p, wall, 0.);
+            let tangent = wall.path.tangent(station);
+            let normal = Point2::new(-tangent.y, tangent.x);
+            let center = wall.path.point(station);
+            let hinge_world = Point2::new(
+                center.x - side * half * normal.x,
+                center.y - side * half * normal.y,
+            );
+            let leaf_point = |u: f64| {
+                Point2::new(
+                    hinge_world.x + side * u * p.width * normal.x,
+                    hinge_world.y + side * u * p.width * normal.y,
+                )
+            };
+            for &(a, b) in &spans {
+                if is_arc {
+                    let index = pairs.len();
+                    pairs.push((Point2::default(), Point2::default()));
+                    rigid_pairs.insert(index, (leaf_point(a), leaf_point(b)));
+                } else {
+                    pairs.push((component_point(p, wall, a), component_point(p, wall, b)));
+                }
+            }
+            let radius = spans.last().map_or(0., |s| s.1 * p.width);
+            let tip = if is_arc {
+                leaf_point(radius / p.width)
+            } else {
+                component_point(p, wall, radius / p.width)
+            };
             let point = |i: usize| {
-                let angle = std::f64::consts::FRAC_PI_2 * i as f64 / SWING_SEGMENTS as f64;
+                let angle = p.door_angle(wall).to_radians() * i as f64 / SWING_SEGMENTS as f64;
                 if i == SWING_SEGMENTS {
                     tip
+                } else if is_arc {
+                    Point2::new(
+                        hinge_world.x
+                            + closed * radius * angle.cos() * tangent.x
+                            + side * radius * angle.sin() * normal.x,
+                        hinge_world.y
+                            + closed * radius * angle.cos() * tangent.y
+                            + side * radius * angle.sin() * normal.y,
+                    )
                 } else {
                     Point2::new(
                         hinge.x + closed * radius * angle.cos(),
@@ -1138,7 +1404,13 @@ pub(super) fn plan_symbol(
                 }
             };
             for i in 0..if radius > 0. { SWING_SEGMENTS } else { 0 } {
-                pairs.push((point(i), point(i + 1)));
+                if is_arc {
+                    let index = pairs.len();
+                    pairs.push((Point2::default(), Point2::default()));
+                    rigid_pairs.insert(index, (point(i), point(i + 1)));
+                } else {
+                    pairs.push((point(i), point(i + 1)));
+                }
             }
         }
     }
@@ -1201,6 +1473,7 @@ pub(super) fn plan_symbol(
             let x0 = primary.offset + a * primary.width;
             let x1 = primary.offset + b * primary.width;
             let at = |t: f64, y: f64| Point2::new(x0 + t * (x1 - x0), y * half);
+            let marks_start = pairs.len();
             match p.window_operation {
                 WindowOperation::Fixed => {}
                 WindowOperation::Sliding => pairs.extend([
@@ -1213,28 +1486,85 @@ pub(super) fn plan_symbol(
                 // the primary start jamb, +normal at its end jamb.
                 WindowOperation::Casement => pairs.push((at(0., -0.5), at(1., 0.5))),
             }
+            if posed_sash {
+                let bay = os_geometry::openings::sash_bay(p)?;
+                for (i, (a, b)) in pairs[marks_start..].iter_mut().enumerate() {
+                    let track = usize::from(i >= 2);
+                    let pose = |v: Point2| {
+                        let x = bay.offset + (v.x - x0) / (x1 - x0) * bay.width;
+                        let y = pane_offset(p, wall)
+                            + v.y / half * os_geometry::openings::depth(p, wall);
+                        os_geometry::openings::sash_point(p, &bay, wall, track, x, y)
+                    };
+                    *a = pose(*a);
+                    *b = pose(*b);
+                }
+            }
         }
     }
-    pairs
-        .into_iter()
-        .enumerate()
-        .map(|(feature, (a, b))| {
-            let start = context.basis.world_to_plane(world(wall, a.x, a.y))?;
-            let end = context.basis.world_to_plane(world(wall, b.x, b.y))?;
-            Ok(
-                crate::plan_workspace::clip_plan_segment(start, end, context.crop).map(
-                    |(start, end)| PlanLine {
-                        entity: id,
-                        feature: feature as u32,
-                        start,
-                        end,
-                        role: footprint.role,
-                    },
-                ),
-            )
-        })
-        .collect::<Result<Vec<_>>>()
-        .map(|lines| lines.into_iter().flatten().collect())
+    let mut lines = Vec::new();
+    let mut feature = 0u32;
+    for (index, (a, b)) in pairs.into_iter().enumerate() {
+        if let Some((start, end)) = rigid_pairs.get(&index).copied() {
+            let start = context.basis.world_to_plane(start)?;
+            let end = context.basis.world_to_plane(end)?;
+            let line_feature = feature;
+            feature = feature
+                .checked_add(1)
+                .ok_or_else(|| Error::Invalid("opening symbol feature limit exceeded".into()))?;
+            if start.distance(end) <= 1e-10 {
+                continue;
+            }
+            if let Some((start, end)) =
+                crate::plan_workspace::clip_plan_segment(start, end, context.crop)
+            {
+                lines.push(PlanLine {
+                    entity: id,
+                    feature: line_feature,
+                    start,
+                    end,
+                    role,
+                });
+            }
+            continue;
+        }
+        let steps = match wall.path {
+            os_model::WallPath::Straight { .. } => 1,
+            path @ os_model::WallPath::CircularArc { .. } => {
+                let max_offset = a.y.abs().max(b.y.abs());
+                let total = path.display_segments(max_offset)?;
+                let fraction = (b.x - a.x).abs() / path.length();
+                ((total as f64 * fraction).ceil() as usize).clamp(1, total)
+            }
+        };
+        for step in 0..steps {
+            let t0 = step as f64 / steps as f64;
+            let t1 = (step + 1) as f64 / steps as f64;
+            let local = |t: f64| Point2::new(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t);
+            let start = context
+                .basis
+                .world_to_plane(world(wall, local(t0).x, local(t0).y))?;
+            let end = context
+                .basis
+                .world_to_plane(world(wall, local(t1).x, local(t1).y))?;
+            let line_feature = feature;
+            feature = feature
+                .checked_add(1)
+                .ok_or_else(|| Error::Invalid("opening symbol feature limit exceeded".into()))?;
+            if let Some((start, end)) =
+                crate::plan_workspace::clip_plan_segment(start, end, context.crop)
+            {
+                lines.push(PlanLine {
+                    entity: id,
+                    feature: line_feature,
+                    start,
+                    end,
+                    role,
+                });
+            }
+        }
+    }
+    Ok(lines)
 }
 
 const LABELS: [&str; 4] = [
@@ -1244,6 +1574,16 @@ const LABELS: [&str; 4] = [
     "Sill above floor (m)",
 ];
 pub(super) struct OpeningDraft {
+    state_supported: bool,
+    state_operation: os_model::WindowOperation,
+    state_override: bool,
+    state_value: String,
+    paired: bool,
+    inactive_state_value: String,
+    context: PlanContext,
+    providers: Vec<(String, Id)>,
+    clearance_end: Option<os_model::ClearanceEnd>,
+    clearance_value: String,
     session: Id,
     revision: u64,
     view: Id,
@@ -1277,23 +1617,18 @@ impl OpeningDraft {
         let wall = model
             .walls
             .get(&host)
-            .ok_or_else(|| Error::Invalid("Select a native straight wall".into()))?;
+            .ok_or_else(|| Error::Invalid("Select a native wall".into()))?;
         ensure(
             model.views[&view].parameters.level == Some(wall.parameters.level),
             "Use a floor plan on the host wall level",
         )?;
+        let drawing = editor.native_wall_plan(view)?;
         ensure(
             context.show_walls
-                && os_geometry::plan::rectangular_plan(
-                    &os_walls::wall_solid(
-                        &wall.parameters,
-                        model.levels[&wall.parameters.level].parameters.elevation,
-                    )?,
-                    context.range,
-                    context.basis,
-                    context.crop,
-                )?
-                .is_some(),
+                && drawing
+                    .items(context)?
+                    .iter()
+                    .any(|item| item.entity == host),
             "Host wall is hidden in this plan",
         )?;
         let editing = kind.is_none();
@@ -1322,7 +1657,7 @@ impl OpeningDraft {
                         .map(|(id, _)| *id)
                 });
             let dimensions =
-                type_id.and_then(|id| model.opening_types.get(&id).map(|t| t.parameters.clone()));
+                type_id.and_then(|id| model.resolve_opening_type(id).ok().map(|t| t.parameters));
             let width = dimensions.as_ref().map_or_else(
                 || if kind == OpeningKind::Door { 0.9 } else { 1.2 },
                 |p| p.width,
@@ -1345,6 +1680,7 @@ impl OpeningDraft {
                 |type_id| OpeningDefinition::Typed { type_id },
             );
             let parameters = OpeningParams {
+                open_state: Default::default(),
                 width_override: None,
                 height_override: None,
                 sill_override: None,
@@ -1383,6 +1719,37 @@ impl OpeningDraft {
         ]
         .map(|n| n.to_string());
         Ok(Self {
+            state_supported: resolved.supports_open_state(&wall.parameters),
+            paired: matches!(
+                resolved.family.door_leaves,
+                os_model::DoorLeaves::Paired { .. }
+            ),
+            inactive_state_value: match params.open_state {
+                os_model::OpeningState::DoorPairAngles {
+                    inactive_degrees, ..
+                } => inactive_degrees,
+                os_model::OpeningState::DoorAngle(v) => v,
+                _ => 90.,
+            }
+            .to_string(),
+            state_operation: resolved.window_operation,
+            state_override: params.open_state != os_model::OpeningState::Default,
+            state_value: match params.open_state {
+                os_model::OpeningState::DoorPairAngles { active_degrees, .. } => active_degrees,
+                os_model::OpeningState::Default => {
+                    if resolved.kind == OpeningKind::Door {
+                        90.
+                    } else {
+                        0.
+                    }
+                }
+                os_model::OpeningState::DoorAngle(v)
+                | os_model::OpeningState::SlidingFraction(v)
+                | os_model::OpeningState::CasementAngle(v) => v,
+            }
+            .to_string(),
+            context,
+            providers: crate::plan_workspace::plan_provider_signature(editor),
             session: editor.document.session_id(),
             revision: editor.document.revision(),
             view,
@@ -1390,6 +1757,12 @@ impl OpeningDraft {
             activation: editor.host.activation_id(os_walls::PLUGIN_ID),
             id,
             editing,
+            clearance_end: model.opening_clearances.get(&id).map(|c| c.end),
+            clearance_value: model
+                .opening_clearances
+                .get(&id)
+                .map_or(params.offset, |c| c.distance)
+                .to_string(),
             kind: resolved.kind,
             type_id: resolved.type_id,
             dimension_overrides: [
@@ -1408,7 +1781,16 @@ impl OpeningDraft {
             && view == Some(self.view)
             && selected == Some(self.selection)
             && self.activation == editor.host.activation_id(os_walls::PLUGIN_ID)
+            && editor.native_plan_context(self.view).ok() == Some(self.context)
+            && crate::plan_workspace::plan_provider_signature(editor) == self.providers
     }
+
+    #[cfg(test)]
+    pub(super) fn set_open_state_for_test(&mut self, value: &str) {
+        self.state_override = true;
+        self.state_value = value.into();
+    }
+
     fn parameters(&self) -> Result<OpeningParams> {
         let mut values = [0.0; 4];
         for (i, text) in self.values.iter().enumerate() {
@@ -1427,6 +1809,32 @@ impl OpeningDraft {
                 .map_err(|_| Error::Invalid(format!("{} needs a number", LABELS[i])))?;
         }
         let mut p = self.params.clone();
+        if self.state_supported {
+            p.open_state = if self.state_override {
+                let value =
+                    self.state_value.trim().parse::<f64>().map_err(|_| {
+                        Error::Invalid("Opening state needs a finite number".into())
+                    })?;
+                if self.kind == OpeningKind::Door {
+                    if self.paired {
+                        os_model::OpeningState::DoorPairAngles {
+                            active_degrees: value,
+                            inactive_degrees: self.inactive_state_value.trim().parse().map_err(
+                                |_| Error::Invalid("Inactive leaf angle needs a number".into()),
+                            )?,
+                        }
+                    } else {
+                        os_model::OpeningState::DoorAngle(value)
+                    }
+                } else if self.state_operation == os_model::WindowOperation::Sliding {
+                    os_model::OpeningState::SlidingFraction(value)
+                } else {
+                    os_model::OpeningState::CasementAngle(value)
+                }
+            } else {
+                os_model::OpeningState::Default
+            };
+        }
         p.offset = values[0];
         if self.type_id.is_some() {
             p.width_override = self.dimension_overrides[0].then_some(values[1]);
@@ -1451,6 +1859,21 @@ impl OpeningDraft {
         Ok(p)
     }
 
+    fn clearance(&self) -> Result<Option<os_model::OpeningClearance>> {
+        self.clearance_end
+            .map(|end| {
+                let distance = self.clearance_value.trim().parse::<f64>().map_err(|_| {
+                    Error::Invalid("Clearance needs a finite number of metres".into())
+                })?;
+                ensure(
+                    distance.is_finite() && distance >= 0.,
+                    "Clearance must be finite and nonnegative",
+                )?;
+                Ok(os_model::OpeningClearance { end, distance })
+            })
+            .transpose()
+    }
+
     /// Validate a disposable candidate. Preview never changes model or history.
     fn preview(
         &self,
@@ -1464,7 +1887,6 @@ impl OpeningDraft {
         )?;
         let mut model = editor.document.model().clone();
         let params = self.parameters()?;
-        let resolved = model.resolve_opening(&params)?;
         if self.editing {
             model.openings.get_mut(&self.id).unwrap().parameters = params;
         } else {
@@ -1472,7 +1894,22 @@ impl OpeningDraft {
             opening.header.id = self.id;
             model.openings.insert(self.id, opening);
         }
+        if let Some(lock) = self.clearance()? {
+            model.opening_clearances.insert(self.id, lock);
+        } else {
+            model.opening_clearances.remove(&self.id);
+        }
+        model.settle_opening_clearances(editor.document.model())?;
         model.validate()?;
+        let resolved = model.resolve_opening(&model.openings[&self.id].parameters)?;
+        host_mesh(&model, resolved.host)?;
+        for opening in model
+            .openings
+            .values()
+            .filter(|o| o.parameters.host == resolved.host)
+        {
+            panel_mesh(&model, opening.id())?;
+        }
         let wall = &model.walls[&resolved.host].parameters;
         let context = editor.native_plan_context(self.view)?;
         plan_symbol(
@@ -1498,14 +1935,23 @@ impl OpeningDraft {
             ensure(self.editing, "Only an existing opening can be deleted")?;
             editor.command("Delete opening", Command::RemoveOpening(self.id))?;
         } else if self.editing {
-            editor.command(
+            self.preview(editor, view, selected)?;
+            editor.document.execute(
                 "Edit opening",
-                Command::UpdateOpening {
-                    id: self.id,
-                    parameters: self.parameters()?,
-                },
+                vec![
+                    Command::UpdateOpening {
+                        id: self.id,
+                        parameters: self.parameters()?,
+                    },
+                    Command::SetOpeningClearance {
+                        id: self.id,
+                        clearance: self.clearance()?,
+                    },
+                ],
             )?;
+            editor.regenerate()?;
         } else {
+            self.preview(editor, view, selected)?;
             let mut parameters = self.parameters()?;
             let mut commands = Vec::new();
             if self.type_id.is_none() {
@@ -1592,6 +2038,12 @@ impl DesktopApp {
                     {
                         self.begin_opening_placement(OpeningKind::Window);
                     }
+                    if ui.button("Change opening type…").clicked() {
+                        self.begin_opening_type_assignment();
+                    }
+                    if ui.button("Edit selected openings…").clicked() {
+                        self.begin_opening_batch_edit();
+                    }
                 });
                 ui.horizontal(|ui| {
                     ui.menu_button("Exact new…", |ui| {
@@ -1631,6 +2083,7 @@ impl DesktopApp {
                                         .clicked()
                                 {
                                     self.remember_type(kind, Some(*id));
+                                    self.change_placement_type(kind, *id);
                                     ui.close();
                                 }
                             }
@@ -1669,6 +2122,21 @@ impl DesktopApp {
                     {
                         self.begin_opening_rehost();
                     }
+                    if ui
+                        .add_enabled(
+                            self.selected_ids.len() == 1
+                                && self.selected.is_some_and(|id| {
+                                    self.editor.document.model().openings.contains_key(&id)
+                                }),
+                            egui::Button::new("Align opening center"),
+                        )
+                        .on_hover_text(
+                            "Project this opening center onto another native wall centerline",
+                        )
+                        .clicked()
+                    {
+                        self.begin_opening_align();
+                    }
                 });
             });
         });
@@ -1690,15 +2158,46 @@ impl DesktopApp {
             let host = &self.editor.document.model().walls[&draft.params.host].parameters;
             ui.label(format!("Host: {} · {:.3} m long · {:.3} m high", host.name, host.length(), host.height));
             ui.label("Inherit type dimensions or override them for this instance. Windows can also override sill. All dimensions are in metres.");
-            egui::ScrollArea::vertical().max_height((ctx.content_rect().height()-260.0).max(100.0)).show(ui, |ui| {
+            egui::ScrollArea::vertical()
+                .id_salt(("opening-properties", draft.id))
+                .max_height((ctx.content_rect().height()-260.0).max(100.0))
+                .show(ui, |ui| {
+                ui.group(|ui| {
+                    ui.label("Opening state");
+                    ui.add_enabled_ui(draft.state_supported, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.radio_value(&mut draft.state_override, false, "Default pose");
+                            ui.radio_value(&mut draft.state_override, true, "Override pose");
+                        });
+                        let label = if draft.paired { "Active leaf angle (0–90°)" }
+                            else if draft.kind == OpeningKind::Door { "Door angle (0–90°)" }
+                            else if draft.state_operation == os_model::WindowOperation::Sliding { "Sliding fraction (0–1)" }
+                            else { "Casement angle (0–90°)" };
+                        ui.label(label);
+                        ui.add_enabled(draft.state_override, egui::TextEdit::singleline(&mut draft.state_value)
+                            .char_limit(64).desired_width(170.0));
+                        if draft.paired {
+                            ui.label("Inactive leaf angle (0–90°)");
+                            ui.add_enabled(draft.state_override, egui::TextEdit::singleline(&mut draft.inactive_state_value).char_limit(64).desired_width(170.0));
+                            if ui.button("Reset paired poses to Default").clicked() {
+                                draft.state_override = false;
+                            }
+                        }
+                    });
+                    if !draft.state_supported {
+                        ui.label("Pose unavailable: requires a straight host and rectangular door or Sliding/Casement window. Stored pose is retained; current geometry is preserved.");
+                    } else {
+                        ui.label("Default: doors 90°, windows closed. Sliding Start sash travels toward End; Casement hinges at Start toward the left of the host.");
+                    }
+                });
                 egui::Grid::new("opening_fields").num_columns(2).show(ui, |ui| {
                     ui.label("Name"); ui.add(egui::TextEdit::singleline(&mut draft.params.name).char_limit(256).desired_width(170.0)); ui.end_row();
                     ui.label(LABELS[0]);
-                    ui.add(egui::TextEdit::singleline(&mut draft.values[0]).char_limit(64).desired_width(170.0));
+                    ui.add_enabled(draft.clearance_end.is_none(), egui::TextEdit::singleline(&mut draft.values[0]).char_limit(64).desired_width(170.0));
                     ui.end_row();
                     match self.editor.document.model().resolve_opening(&draft.params) {
                         Ok(resolved) if resolved.type_id.is_some() => {
-                            let defaults = &self.editor.document.model().opening_types[&resolved.type_id.unwrap()].parameters;
+                            let defaults = self.editor.document.model().resolve_opening_type(resolved.type_id.unwrap()).expect("validated opening type").parameters;
                             ui.label("Assigned type");
                             ui.label(format!("{} · defaults {:.3} × {:.3} m · sill {:.3} m",
                                 resolved.type_name.unwrap_or_else(|| "Opening type".into()),
@@ -1762,7 +2261,7 @@ impl DesktopApp {
                                     ui.radio_value(&mut draft.override_sill, true, "Override sill");
                                 });
                                 ui.end_row();
-                                let default_sill = self.editor.document.model().opening_types[&resolved.type_id.unwrap()].parameters.sill;
+                                let default_sill = defaults.sill;
                                 ui.label(LABELS[3]);
                                 ui.add_enabled(draft.override_sill,
                                     egui::TextEdit::singleline(&mut draft.values[3]).char_limit(64).desired_width(170.0));
@@ -1811,7 +2310,32 @@ impl DesktopApp {
                         ui.end_row();
                     }
                 });
-                ui.label("Keep at least 1 mm at wall ends, above the opening and between openings. Left/right are viewed along wall start → end. Reversing the wall reverses this frame; doors open at 90°.");
+                if draft.editing {
+                    ui.group(|ui| {
+                        ui.label("Host-end clearance");
+                        let previous = draft.clearance_end;
+                        ui.horizontal(|ui| {
+                            ui.selectable_value(&mut draft.clearance_end, None, "Unlocked");
+                            ui.selectable_value(&mut draft.clearance_end, Some(os_model::ClearanceEnd::Start), "Lock Start");
+                            ui.selectable_value(&mut draft.clearance_end, Some(os_model::ClearanceEnd::End), "Lock End");
+                        });
+                        if previous != draft.clearance_end
+                            && let Some(end) = draft.clearance_end
+                            && let Ok(parameters) = draft.parameters()
+                            && let Ok(resolved) = self.editor.document.model().resolve_opening(&parameters)
+                        {
+                            draft.clearance_value = match end {
+                                os_model::ClearanceEnd::Start => resolved.offset,
+                                os_model::ClearanceEnd::End => host.length() - resolved.width - resolved.offset,
+                            }.to_string();
+                        }
+                        if draft.clearance_end.is_some() {
+                            ui.label("Centerline clearance (m)");
+                            ui.add(egui::TextEdit::singleline(&mut draft.clearance_value).char_limit(64).desired_width(170.0));
+                        }
+                    });
+                }
+                ui.label("Keep at least 1 mm at wall ends, above the opening and between openings. Left/right are viewed along wall start → end. Reversing the wall reverses this frame.");
                 match draft.preview(&self.editor, self.plans.active, self.selected) {
                     Ok(lines) if !lines.is_empty() => {
                         ui.label("Opening preview");
@@ -1871,6 +2395,193 @@ impl DesktopApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn paired_doors_plan_mesh_coordinates_preview_history_and_invalid_pose() {
+        let mut e = Editor::new().unwrap();
+        let level = *e.document.model().levels.keys().next().unwrap();
+        let view = e.create_floor_plan("Pair plan", level).unwrap();
+        let mut wp = default_wall(level);
+        wp.path = os_model::WallPath::Straight {
+            start: Point2::new(2., 3.),
+            end: Point2::new(8., 11.),
+        };
+        let wall = os_model::Wall::new(os_walls::WALL_TYPE, wp);
+        let host = wall.id();
+        e.command("Host", Command::AddWall(wall)).unwrap();
+        let new =
+            OpeningDraft::begin(&e, Some(view), Some(host), Some(OpeningKind::Door), None).unwrap();
+        let id = new.apply(&mut e, Some(view), Some(host), false).unwrap();
+        let ty = e.document.model().openings[&id]
+            .parameters
+            .type_id()
+            .unwrap();
+        let mut parameters = e.document.model().opening_types[&ty].parameters.clone();
+        parameters.family.door_leaves = os_model::DoorLeaves::Paired {
+            active_fraction: 0.65,
+        };
+        parameters.family.frame_width = 0.04;
+        parameters.family.side_lite = Some(os_model::SideLite {
+            side: os_model::LiteSide::End,
+            width_fraction: 0.2,
+            mullion_width: 0.04,
+            material: None,
+        });
+        e.command("Pair", Command::UpdateOpeningType { id: ty, parameters })
+            .unwrap();
+        let before = e.document.model().clone();
+        let scene = e.scene.clone();
+        let stats = e.document.history_stats();
+        let mut draft = OpeningDraft::begin(&e, Some(view), Some(id), None, None).unwrap();
+        draft.state_override = true;
+        draft.state_value = "30".into();
+        draft.inactive_state_value = "75".into();
+        let lines = draft.preview(&e, Some(view), Some(id)).unwrap();
+        assert_eq!(e.document.model(), &before);
+        assert_eq!(e.scene, scene);
+        let p = before
+            .resolve_opening(&draft.parameters().unwrap())
+            .unwrap();
+        let wall = before.resolve_wall(host).unwrap().parameters;
+        let context = e.native_plan_context(view).unwrap();
+        let mesh = os_geometry::openings::component_mesh(&p, &wall, 0.).unwrap();
+        for leaf in os_geometry::openings::door_pair(&p).unwrap().unwrap() {
+            let ends = [0., 1.].map(|u| {
+                let q = component_point(&leaf, &wall, u);
+                world(&wall, q.x, q.y)
+            });
+            let projected = ends.map(|q| context.basis.world_to_plane(q).unwrap());
+            assert!(
+                lines.iter().any(|l| l.start.distance(projected[0]) < 1e-9
+                    && l.end.distance(projected[1]) < 1e-9)
+            );
+            // Each leaf end's centerline is the midpoint of its two lower mesh corners.
+            for end in ends {
+                assert!(mesh.vertices.iter().filter(|v| v.z.abs() < 1e-9).any(|a| {
+                    mesh.vertices.iter().filter(|v| v.z.abs() < 1e-9).any(|b| {
+                        (a.x - b.x).hypot(a.y - b.y) > 1e-6
+                            && Point2::new((a.x + b.x) / 2., (a.y + b.y) / 2.).distance(end) < 1e-9
+                    })
+                }));
+            }
+        }
+        for invalid in ["NaN", "-1", "91"] {
+            draft.inactive_state_value = invalid.into();
+            assert!(draft.apply(&mut e, Some(view), Some(id), false).is_err());
+            assert_eq!(e.document.model(), &before);
+            assert_eq!(e.document.history_stats(), stats);
+        }
+        draft.inactive_state_value = "75".into();
+        draft.apply(&mut e, Some(view), Some(id), false).unwrap();
+        let after = e.document.model().clone();
+        assert_eq!(after.openings[&id].header, before.openings[&id].header);
+        assert_eq!(e.scene[&host], scene[&host]);
+        assert_eq!(
+            e.document.history_stats().undo_entries,
+            stats.undo_entries + 1
+        );
+        e.undo().unwrap();
+        assert_eq!(e.document.model(), &before);
+        e.redo().unwrap();
+        assert_eq!(e.document.model(), &after);
+    }
+    #[test]
+    fn opening_state_disposable_preview_atomic_apply_history_and_stale() {
+        for (kind, operation, value) in [
+            (OpeningKind::Door, os_model::WindowOperation::Fixed, "45"),
+            (
+                OpeningKind::Window,
+                os_model::WindowOperation::Sliding,
+                "0.5",
+            ),
+            (
+                OpeningKind::Window,
+                os_model::WindowOperation::Casement,
+                "45",
+            ),
+        ] {
+            let mut e = Editor::new().unwrap();
+            let level = *e.document.model().levels.keys().next().unwrap();
+            let view = e.create_floor_plan("Plan", level).unwrap();
+            let wall = os_model::Wall::new(os_walls::WALL_TYPE, default_wall(level));
+            let host = wall.id();
+            e.command("Host", Command::AddWall(wall)).unwrap();
+            let new = OpeningDraft::begin(&e, Some(view), Some(host), Some(kind), None).unwrap();
+            let id = new.apply(&mut e, Some(view), Some(host), false).unwrap();
+            if kind == OpeningKind::Window {
+                let ty = e.document.model().openings[&id]
+                    .parameters
+                    .type_id()
+                    .unwrap();
+                let mut parameters = e.document.model().opening_types[&ty].parameters.clone();
+                parameters.window_operation = operation;
+                e.command(
+                    "Operation",
+                    Command::UpdateOpeningType { id: ty, parameters },
+                )
+                .unwrap();
+            }
+            let before = e.document.model().clone();
+            let scene = e.scene.clone();
+            let stats = e.document.history_stats();
+            let revision = e.document.revision();
+            let mut draft = OpeningDraft::begin(&e, Some(view), Some(id), None, None).unwrap();
+            let closed = draft.preview(&e, Some(view), Some(id)).unwrap();
+            draft.state_override = true;
+            for invalid in ["NaN", "inf", "-1", "91"] {
+                draft.state_value = invalid.into();
+                assert!(draft.apply(&mut e, Some(view), Some(id), false).is_err());
+                assert_eq!(e.document.model(), &before);
+                assert_eq!(e.scene, scene);
+                assert_eq!(e.document.history_stats(), stats);
+                assert_eq!(e.document.revision(), revision);
+            }
+            draft.state_value = value.into();
+            let preview = draft.preview(&e, Some(view), Some(id)).unwrap();
+            assert_ne!(preview, closed);
+            assert_eq!(
+                preview.iter().map(|l| l.feature).collect::<Vec<_>>(),
+                closed.iter().map(|l| l.feature).collect::<Vec<_>>()
+            );
+            assert_eq!(e.document.model(), &before);
+            assert_eq!(e.scene, scene);
+            drop(draft);
+            let mut draft = OpeningDraft::begin(&e, Some(view), Some(id), None, None).unwrap();
+            draft.state_override = true;
+            draft.state_value = value.into();
+            draft.apply(&mut e, Some(view), Some(id), false).unwrap();
+            let after = e.document.model().clone();
+            assert_eq!(after.openings[&id].header, before.openings[&id].header);
+            assert_eq!(after.opening_types, before.opening_types);
+            assert_eq!(e.scene[&host], scene[&host]);
+            assert_ne!(e.scene[&id], scene[&id]);
+            assert_eq!(
+                e.document.history_stats().undo_entries,
+                stats.undo_entries + 1
+            );
+            let old_host = os_geometry::walls::NativeWall::from_model(&before, host).unwrap();
+            let new_host = os_geometry::walls::NativeWall::from_model(&after, host).unwrap();
+            assert_eq!(
+                old_host.layer_quantities().unwrap(),
+                new_host.layer_quantities().unwrap()
+            );
+            assert!(draft.apply(&mut e, Some(view), Some(id), false).is_err());
+            e.undo().unwrap();
+            assert_eq!(e.document.model(), &before);
+            assert_eq!(e.scene, scene);
+            e.redo().unwrap();
+            assert_eq!(e.document.model(), &after);
+            let stale = OpeningDraft::begin(&e, Some(view), Some(id), None, None).unwrap();
+            e.document = Document::from_model(after.clone()).unwrap();
+            assert!(!stale.current(&e, Some(view), Some(id)));
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("state.osb");
+            e.save(&path).unwrap();
+            let mut reopened = Editor::new().unwrap();
+            reopened.open(&path).unwrap();
+            assert_eq!(reopened.scene, e.scene);
+        }
+    }
+
     #[test]
     fn orientation_edit_preview_apply_invalid_cancel_stale_and_undo_redo() {
         let mut e = Editor::new().unwrap();

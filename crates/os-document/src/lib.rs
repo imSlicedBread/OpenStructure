@@ -19,6 +19,28 @@ pub use history::{HistoryLimits, HistoryStats};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "command", content = "data")]
 pub enum Command {
+    AddCurtainSystem(CurtainSystem),
+    UpdateCurtainSystem {
+        id: Id,
+        parameters: CurtainSystemParams,
+    },
+    RemoveCurtainSystem(Id),
+    AddCurtainPanelType(CurtainPanelType),
+    UpdateCurtainPanelType {
+        id: Id,
+        parameters: CurtainPanelTypeParams,
+    },
+    RemoveCurtainPanelType(Id),
+    AddCurtainMullionType(CurtainMullionType),
+    UpdateCurtainMullionType {
+        id: Id,
+        parameters: CurtainMullionTypeParams,
+    },
+    RemoveCurtainMullionType(Id),
+    SetOpeningClearance {
+        id: Id,
+        clearance: Option<OpeningClearance>,
+    },
     AddPhase(Phase),
     UpdatePhase {
         id: Id,
@@ -105,7 +127,27 @@ pub enum Command {
     RemoveRoomTag(Id),
     AddFloor(Floor),
     AddColumn(Column),
+    AddCaseworkType(CaseworkType),
+    AddCasework(Casework),
     AddStair(Stair),
+    AddRamp(Ramp),
+    UpdateRamp {
+        id: Id,
+        parameters: RampParams,
+    },
+    RemoveRamp(Id),
+    AddRailing(StairRailing),
+    UpdateRailing {
+        id: Id,
+        parameters: StairRailingParams,
+    },
+    RemoveRailing(Id),
+    AddRailingType(StairRailingType),
+    UpdateRailingType {
+        id: Id,
+        parameters: StairRailingTypeParams,
+    },
+    RemoveRailingType(Id),
     AddCeiling(Ceiling),
     UpdateCeiling {
         id: Id,
@@ -128,12 +170,32 @@ pub enum Command {
         parameters: ColumnParams,
     },
     RemoveColumn(Id),
+    UpdateCaseworkType {
+        id: Id,
+        parameters: CaseworkTypeParams,
+    },
+    RemoveCaseworkType(Id),
+    UpdateCasework {
+        id: Id,
+        parameters: CaseworkParams,
+    },
+    RemoveCasework(Id),
     UpdateFloor {
         id: Id,
         parameters: FloorParams,
     },
     RemoveFloor(Id),
     AddOpeningType(OpeningType),
+    AddLengthParameter(LengthParameter),
+    UpdateLengthParameter {
+        id: Id,
+        parameters: LengthParameterParams,
+    },
+    RemoveLengthParameter(Id),
+    SetOpeningTypeLengthBindings {
+        id: Id,
+        bindings: OpeningTypeLengthBindings,
+    },
     UpdateOpeningType {
         id: Id,
         parameters: OpeningTypeParams,
@@ -217,9 +279,13 @@ fn phaseable_ids(model: &Model) -> BTreeSet<Id> {
     ids.extend(model.openings.keys().copied());
     ids.extend(model.floors.keys().copied());
     ids.extend(model.stairs.keys().copied());
+    ids.extend(model.ramps.keys().copied());
+    ids.extend(model.railings.keys().copied());
+    ids.extend(model.curtain_systems.keys().copied());
     ids.extend(model.roofs.keys().copied());
     ids.extend(model.ceilings.keys().copied());
     ids.extend(model.columns.keys().copied());
+    ids.extend(model.casework.keys().copied());
     ids.extend(model.rooms.keys().copied());
     ids.extend(model.room_separation_lines.keys().copied());
     ids
@@ -283,6 +349,29 @@ impl Document {
 
     /// All commands validate together and either all commit or none do.
     pub fn execute(&mut self, label: &str, commands: Vec<Command>) -> Result<()> {
+        let (candidate, changed) = self.prepare_commands(commands)?;
+        if candidate == self.model {
+            return Ok(());
+        }
+        let history = History::new(
+            label,
+            &self.model,
+            &candidate,
+            changed,
+            self.history.stats().limits,
+        )?;
+        self.emit(&history, label);
+        self.model = candidate;
+        self.history.record(history);
+        Ok(())
+    }
+
+    /// Uses exactly the commit evaluator without publishing model/history/events.
+    pub fn preview_commands(&self, commands: Vec<Command>) -> Result<Model> {
+        self.prepare_commands(commands).map(|(model, _)| model)
+    }
+
+    fn prepare_commands(&self, commands: Vec<Command>) -> Result<(Model, BTreeSet<Id>)> {
         ensure(!commands.is_empty(), "empty transaction")?;
         let mut candidate = self.model.clone();
         let original_phaseable = phaseable_ids(&self.model);
@@ -405,10 +494,164 @@ impl Document {
                     candidate.columns.insert(id, column);
                     id
                 }
+                Command::AddCaseworkType(casework_type) => {
+                    let id = casework_type.id();
+                    ensure(
+                        !candidate.casework_types.contains_key(&id),
+                        "casework type already exists",
+                    )?;
+                    candidate.casework_types.insert(id, casework_type);
+                    id
+                }
+                Command::AddCasework(casework) => {
+                    let id = casework.id();
+                    ensure(
+                        !candidate.casework.contains_key(&id),
+                        "casework already exists",
+                    )?;
+                    candidate.casework.insert(id, casework);
+                    id
+                }
+                Command::AddCurtainSystem(entity) => {
+                    let id = entity.id();
+                    ensure(
+                        !candidate.curtain_systems.contains_key(&id),
+                        "curtain entity already exists",
+                    )?;
+                    candidate.curtain_systems.insert(id, entity);
+                    id
+                }
+                Command::UpdateCurtainSystem { id, parameters } => {
+                    let assembly = candidate
+                        .curtain_systems
+                        .get_mut(&id)
+                        .ok_or_else(|| Error::Invalid("curtain entity missing".into()))?;
+                    parameters.validate_transition(&assembly.parameters)?;
+                    assembly.parameters = parameters;
+                    id
+                }
+                Command::RemoveCurtainSystem(id) => {
+                    ensure(
+                        candidate.curtain_systems.remove(&id).is_some(),
+                        "curtain entity missing",
+                    )?;
+                    id
+                }
+                Command::AddCurtainPanelType(entity) => {
+                    let id = entity.id();
+                    ensure(
+                        !candidate.curtain_panel_types.contains_key(&id),
+                        "curtain entity already exists",
+                    )?;
+                    candidate.curtain_panel_types.insert(id, entity);
+                    id
+                }
+                Command::UpdateCurtainPanelType { id, parameters } => {
+                    candidate
+                        .curtain_panel_types
+                        .get_mut(&id)
+                        .ok_or_else(|| Error::Invalid("curtain entity missing".into()))?
+                        .parameters = parameters;
+                    id
+                }
+                Command::RemoveCurtainPanelType(id) => {
+                    ensure(
+                        candidate.curtain_panel_types.remove(&id).is_some(),
+                        "curtain entity missing",
+                    )?;
+                    id
+                }
+                Command::AddCurtainMullionType(entity) => {
+                    let id = entity.id();
+                    ensure(
+                        !candidate.curtain_mullion_types.contains_key(&id),
+                        "curtain entity already exists",
+                    )?;
+                    candidate.curtain_mullion_types.insert(id, entity);
+                    id
+                }
+                Command::UpdateCurtainMullionType { id, parameters } => {
+                    candidate
+                        .curtain_mullion_types
+                        .get_mut(&id)
+                        .ok_or_else(|| Error::Invalid("curtain entity missing".into()))?
+                        .parameters = parameters;
+                    id
+                }
+                Command::RemoveCurtainMullionType(id) => {
+                    ensure(
+                        candidate.curtain_mullion_types.remove(&id).is_some(),
+                        "curtain entity missing",
+                    )?;
+                    id
+                }
                 Command::AddStair(stair) => {
                     let id = stair.id();
                     ensure(!candidate.stairs.contains_key(&id), "stair already exists")?;
                     candidate.stairs.insert(id, stair);
+                    id
+                }
+                Command::AddRamp(ramp) => {
+                    let id = ramp.id();
+                    ensure(!candidate.ramps.contains_key(&id), "ramp already exists")?;
+                    candidate.ramps.insert(id, ramp);
+                    id
+                }
+                Command::UpdateRamp { id, parameters } => {
+                    candidate
+                        .ramps
+                        .get_mut(&id)
+                        .ok_or_else(|| Error::Invalid("ramp missing".into()))?
+                        .parameters = parameters;
+                    id
+                }
+                Command::RemoveRamp(id) => {
+                    ensure(candidate.ramps.remove(&id).is_some(), "ramp missing")?;
+                    id
+                }
+                Command::AddRailing(entity) => {
+                    let id = entity.id();
+                    ensure(
+                        !candidate.railings.contains_key(&id),
+                        "railing already exists",
+                    )?;
+                    candidate.railings.insert(id, entity);
+                    id
+                }
+                Command::UpdateRailing { id, parameters } => {
+                    candidate
+                        .railings
+                        .get_mut(&id)
+                        .ok_or_else(|| Error::Invalid("railing missing".into()))?
+                        .parameters = parameters;
+                    id
+                }
+                Command::RemoveRailing(id) => {
+                    ensure(candidate.railings.remove(&id).is_some(), "railing missing")?;
+                    id
+                }
+                Command::UpdateRailingType { id, parameters } => {
+                    candidate
+                        .railing_types
+                        .get_mut(&id)
+                        .ok_or_else(|| Error::Invalid("railing type missing".into()))?
+                        .parameters = parameters;
+                    id
+                }
+                Command::RemoveRailingType(id) => {
+                    ensure(
+                        candidate.railing_types.remove(&id).is_some(),
+                        "railing type missing",
+                    )?;
+                    id
+                }
+                Command::AddRailingType(railing_type) => {
+                    let id = railing_type.id();
+                    ensure(
+                        !candidate.railing_types.contains_key(&id),
+                        "railing type already exists",
+                    )?;
+                    candidate.railing_types.insert(id, railing_type);
                     id
                 }
 
@@ -475,6 +718,33 @@ impl Document {
                     ensure(candidate.columns.remove(&id).is_some(), "column missing")?;
                     id
                 }
+                Command::UpdateCaseworkType { id, parameters } => {
+                    candidate
+                        .casework_types
+                        .get_mut(&id)
+                        .ok_or_else(|| Error::Invalid("casework type missing".into()))?
+                        .parameters = parameters;
+                    id
+                }
+                Command::RemoveCaseworkType(id) => {
+                    ensure(
+                        candidate.casework_types.remove(&id).is_some(),
+                        "casework type missing",
+                    )?;
+                    id
+                }
+                Command::UpdateCasework { id, parameters } => {
+                    candidate
+                        .casework
+                        .get_mut(&id)
+                        .ok_or_else(|| Error::Invalid("casework missing".into()))?
+                        .parameters = parameters;
+                    id
+                }
+                Command::RemoveCasework(id) => {
+                    ensure(candidate.casework.remove(&id).is_some(), "casework missing")?;
+                    id
+                }
                 Command::UpdateFloor { id, parameters } => {
                     candidate
                         .floors
@@ -485,6 +755,54 @@ impl Document {
                 }
                 Command::RemoveFloor(id) => {
                     ensure(candidate.floors.remove(&id).is_some(), "floor missing")?;
+                    id
+                }
+                Command::SetOpeningClearance { id, clearance } => {
+                    ensure(
+                        candidate.openings.contains_key(&id),
+                        "Clearance opening missing",
+                    )?;
+                    if let Some(lock) = clearance {
+                        candidate.opening_clearances.insert(id, lock);
+                    } else {
+                        candidate.opening_clearances.remove(&id);
+                    }
+                    id
+                }
+                Command::AddLengthParameter(parameter) => {
+                    let id = parameter.id();
+                    ensure(
+                        !candidate.length_parameters.contains_key(&id),
+                        "Length parameter already exists",
+                    )?;
+                    candidate.length_parameters.insert(id, parameter);
+                    id
+                }
+                Command::UpdateLengthParameter { id, parameters } => {
+                    candidate
+                        .length_parameters
+                        .get_mut(&id)
+                        .ok_or_else(|| Error::Invalid("Length parameter missing".into()))?
+                        .parameters = parameters;
+                    id
+                }
+                Command::RemoveLengthParameter(id) => {
+                    let uses = candidate.length_parameter_uses(id);
+                    ensure(
+                        uses.is_empty(),
+                        format!(
+                            "Length parameter is referenced by {} dimension(s): {uses:?}",
+                            uses.len()
+                        ),
+                    )?;
+                    ensure(
+                        candidate.length_parameters.remove(&id).is_some(),
+                        "Length parameter missing",
+                    )?;
+                    id
+                }
+                Command::SetOpeningTypeLengthBindings { id, bindings } => {
+                    candidate.set_opening_type_length_bindings(id, bindings)?;
                     id
                 }
                 Command::AddOpeningType(ty) => {
@@ -509,6 +827,7 @@ impl Document {
                     id
                 }
                 Command::RemoveOpeningType(id) => {
+                    candidate.opening_type_length_bindings.remove(&id);
                     ensure(
                         candidate.opening_types.remove(&id).is_some(),
                         "opening type missing",
@@ -1005,10 +1324,8 @@ impl Document {
             !candidate.views.is_empty() || self.model.views.is_empty(),
             "cannot remove the last view",
         )?;
+        changed.extend(candidate.settle_opening_clearances(&self.model)?);
         os_constraints::validate(&candidate)?;
-        if candidate == self.model {
-            return Ok(());
-        }
         // Embedded viewport UUIDs participate in change events as well as identity
         // validation. Retaining a UUID during an edit preserves its identity.
         let sheet_changes: Vec<_> = changed.iter().copied().collect();
@@ -1028,17 +1345,7 @@ impl Document {
                 }
             }
         }
-        let history = History::new(
-            label,
-            &self.model,
-            &candidate,
-            changed,
-            self.history.stats().limits,
-        )?;
-        self.emit(&history, label);
-        self.model = candidate;
-        self.history.record(history);
-        Ok(())
+        Ok((candidate, changed))
     }
     fn emit(&mut self, h: &History, label: &str) {
         let mut invalidated = os_constraints::affected_entities(&h.before, &h.changed);
@@ -1117,8 +1424,18 @@ mod floor_tests;
 #[path = "tests/columns.rs"]
 mod column_tests;
 #[cfg(test)]
+#[path = "tests/ramps.rs"]
+mod ramp_tests;
+#[cfg(test)]
 #[path = "tests/stairs.rs"]
 mod stair_tests;
+
+#[cfg(test)]
+#[path = "tests/casework.rs"]
+mod casework_tests;
+#[cfg(test)]
+#[path = "tests/railings.rs"]
+mod railing_tests;
 
 #[cfg(test)]
 #[path = "tests/ceilings.rs"]

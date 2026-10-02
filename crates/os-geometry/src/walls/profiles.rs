@@ -9,7 +9,7 @@ impl NativeWall {
     }
 
     /// Convex wall-material regions in (host station, elevation above level).
-    fn elevation_regions(&self) -> Result<Vec<Vec<Point2>>> {
+    pub(super) fn elevation_regions(&self) -> Result<Vec<Vec<Point2>>> {
         super::validate_station_limits(&self.parameters, self.stations)?;
         ensure(self.elevation.is_finite(), "invalid wall elevation")?;
         let mut openings: Vec<_> = self.openings.iter().collect();
@@ -90,7 +90,7 @@ impl NativeWall {
             return self
                 .layers
                 .iter()
-                .map(|layer| Ok((layer.clone(), vec![self.arc_layer_mesh(layer)?])))
+                .map(|layer| Ok((layer.clone(), self.arc_layer_mesh_regions(layer)?)))
                 .collect();
         }
         if !self.has_profile_cuts() {
@@ -186,10 +186,14 @@ impl NativeWall {
         crop: Option<PlanCrop>,
     ) -> Result<Vec<(os_model::ResolvedWallLayer, Vec<PlanFootprint>)>> {
         if !self.parameters.path.is_straight() {
-            return self.arc_plan_footprints(range, basis, crop);
+            self.validate_arc()?;
+            basis.validate()?;
+            if let Some(c) = crop {
+                c.validate()?;
+            }
         }
         range.validate()?;
-        if !self.has_profile_cuts() {
+        if self.parameters.path.is_straight() && !self.has_profile_cuts() {
             return self
                 .layer_cells()?
                 .into_iter()
@@ -260,6 +264,10 @@ impl NativeWall {
                         }
                     }
                     for (a, b) in merged {
+                        if !self.parameters.path.is_straight() {
+                            footprints.extend(self.arc_plan_span(layer, a, b, role, basis, crop)?);
+                            continue;
+                        }
                         let vertices = [
                             (a, layer.min),
                             (b, layer.min),

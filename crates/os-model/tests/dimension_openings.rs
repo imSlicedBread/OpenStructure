@@ -5,6 +5,7 @@ fn fixture(kind: OpeningKind, typed: bool) -> (Model, Id, Id, DimensionParams) {
     let mut model = Model::new("Jambs");
     let level = *model.levels.keys().next().unwrap();
     let view = View::new("core.view", ViewParams::floor_plan("Plan", level));
+    let view_id = view.id();
     let wall = Wall::new(
         "org.openstructure.walls.wall",
         WallParams {
@@ -35,6 +36,7 @@ fn fixture(kind: OpeningKind, typed: bool) -> (Model, Id, Id, DimensionParams) {
     let opening = Opening::new(
         "core.opening",
         OpeningParams {
+            open_state: Default::default(),
             name: "Opening".into(),
             host: wall.id(),
             offset: 2.0,
@@ -59,7 +61,7 @@ fn fixture(kind: OpeningKind, typed: bool) -> (Model, Id, Id, DimensionParams) {
     );
     let params = DimensionParams {
         layout: DimensionLayout::Aligned,
-        view: view.id(),
+        view: view_id,
         first: DimensionReference::OpeningJamb {
             opening: opening.id(),
             jamb: DimensionJamb::Start,
@@ -74,7 +76,7 @@ fn fixture(kind: OpeningKind, typed: bool) -> (Model, Id, Id, DimensionParams) {
         orphan_hint: Point2::new(3.0, 3.0),
     };
     let (host, id) = (wall.id(), opening.id());
-    model.views.insert(view.id(), view);
+    model.views.insert(view_id, view);
     model.walls.insert(host, wall);
     model.opening_types.insert(ty.id(), ty);
     model.openings.insert(id, opening);
@@ -167,6 +169,89 @@ fn dimension_jambs_follow_effective_width_current_host_and_void_direction() {
             assert_eq!(params, saved, "resolution never stores geometry");
         }
     }
+}
+
+#[test]
+fn curved_host_jamb_references_follow_the_analytic_path_but_wall_faces_stay_straight_only() {
+    let mut model = Model::new("Curved opening jambs");
+    let level = *model.levels.keys().next().unwrap();
+    let view = View::new("core.view", ViewParams::floor_plan("Plan", level));
+    let view_id = view.id();
+    let path = WallPath::CircularArc {
+        center: Point2::default(),
+        radius: 4.0,
+        start_angle_rad: std::f64::consts::PI,
+        signed_sweep_rad: -std::f64::consts::PI,
+    };
+    let wall = Wall::new(
+        "org.openstructure.walls.wall",
+        WallParams {
+            name: "Curved host".into(),
+            path,
+            thickness: 0.25,
+            height: 3.0,
+            level,
+            material: None,
+        },
+    );
+    let opening = Opening::new(
+        "core.opening",
+        OpeningParams {
+            open_state: Default::default(),
+            name: "Door".into(),
+            host: wall.id(),
+            offset: 2.0,
+            definition: OpeningDefinition::Legacy {
+                kind: OpeningKind::Door,
+                width: 1.2,
+                height: 2.1,
+                sill: 0.0,
+            },
+            width_override: None,
+            height_override: None,
+            sill_override: None,
+            pane_position_override: None,
+            lite_side_override: None,
+            hinge: DoorHinge::Start,
+            swing: DoorSwing::Left,
+        },
+    );
+    let id = opening.id();
+    model.views.insert(view_id, view);
+    model.walls.insert(wall.id(), wall);
+    model.openings.insert(id, opening);
+    model.validate().unwrap();
+
+    let dimension = DimensionParams {
+        layout: DimensionLayout::Aligned,
+        view: view_id,
+        first: DimensionReference::OpeningJamb {
+            opening: id,
+            jamb: DimensionJamb::Start,
+        },
+        second: DimensionReference::OpeningJamb {
+            opening: id,
+            jamb: DimensionJamb::End,
+        },
+        additional: vec![],
+        baseline_spacing_m: 0.25,
+        offset_m: 1.0,
+        orphan_hint: Point2::default(),
+    };
+    let resolved = dimension.resolve(&model).unwrap();
+    assert!(resolved.first.distance(path.point(2.0)) < 1e-12);
+    assert!(resolved.second.distance(path.point(3.2)) < 1e-12);
+    assert!(resolved.length_metres < 1.2, "dimension is the jamb chord");
+
+    let wall_face = DimensionReference::WallFace {
+        wall: model.openings[&id].parameters.host,
+        side: DimensionWallSide::Left,
+        station_m: 2.5,
+    };
+    assert_eq!(
+        wall_face.resolve(&model, level),
+        Err(DimensionDiagnostic::InvalidGeometry)
+    );
 }
 
 #[test]

@@ -161,6 +161,7 @@ fn phase_opening_cutout_tags_dimensions_host_and_provider_precedence() {
         let opening = Opening::new(
             "core.opening",
             OpeningParams {
+                open_state: Default::default(),
                 name: "Future door".into(),
                 host: walls[0],
                 offset: 1.,

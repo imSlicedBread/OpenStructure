@@ -1741,6 +1741,7 @@ version = "0.1.0"
 dependencies = [
  "os-core",
  "os-geometry",
+ "os-model",
 ]
 
 [[package]]

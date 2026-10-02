@@ -68,6 +68,7 @@ fn sheets_schema_thirteen_migration_preserves_native_data_through_schema_ninetee
         }
     }
     expected["opening_tags"] = json!({});
+    expected["opening_clearances"] = json!({});
     expected["schedules"] = json!({});
     expected["sheets"] = json!({});
     expected["detail_lines"] = json!({});
@@ -79,8 +80,16 @@ fn sheets_schema_thirteen_migration_preserves_native_data_through_schema_ninetee
     expected["plan_graphics_templates"] = json!({});
     expected["plan_graphics"] = json!({});
     expected["stairs"] = json!({});
+    expected["railings"] = json!({});
+    expected["railing_types"] = json!({});
+    expected["ramps"] = json!({});
+    expected["curtain_systems"] = json!({});
+    expected["curtain_panel_types"] = json!({});
+    expected["curtain_mullion_types"] = json!({});
     expected["roofs"] = json!({});
     expected["ceilings"] = json!({});
+    expected["casework_types"] = json!({});
+    expected["casework"] = json!({});
     expected["phases"] = value["phases"].clone();
     expected["element_lifecycles"] = value["element_lifecycles"].clone();
     apply_schema_38_plan_settings(&mut expected);

@@ -15,8 +15,11 @@ pub(super) enum Category {
     Floor,
     Ceiling,
     Column,
+    Casework,
     Roof,
     Stair,
+    Ramp,
+    Railing,
     Room,
     Grid,
     Annotation,
@@ -24,15 +27,18 @@ pub(super) enum Category {
 }
 
 impl Category {
-    pub(super) const ALL: [Self; 12] = [
+    pub(super) const ALL: [Self; 15] = [
         Self::Wall,
         Self::Door,
         Self::Window,
         Self::Floor,
         Self::Ceiling,
         Self::Column,
+        Self::Casework,
         Self::Roof,
         Self::Stair,
+        Self::Ramp,
+        Self::Railing,
         Self::Room,
         Self::Grid,
         Self::Annotation,
@@ -47,8 +53,11 @@ impl Category {
             Self::Floor => "Floor",
             Self::Ceiling => "Ceiling",
             Self::Column => "Column",
+            Self::Casework => "Casework",
             Self::Roof => "Roof",
             Self::Stair => "Stair",
+            Self::Ramp => "Ramp",
+            Self::Railing => "Railing",
             Self::Room => "Room",
             Self::Grid => "Grid",
             Self::Annotation => "Annotation",
@@ -73,10 +82,16 @@ impl Category {
             Self::Ceiling
         } else if model.columns.contains_key(&id) {
             Self::Column
+        } else if model.casework.contains_key(&id) {
+            Self::Casework
         } else if model.roofs.contains_key(&id) {
             Self::Roof
         } else if model.stairs.contains_key(&id) {
             Self::Stair
+        } else if model.ramps.contains_key(&id) {
+            Self::Ramp
+        } else if model.railings.contains_key(&id) {
+            Self::Railing
         } else if model.rooms.contains_key(&id) {
             Self::Room
         } else if model.grids.contains_key(&id) {
@@ -194,6 +209,7 @@ mod tests {
         let opening = Opening::new(
             "core.opening",
             OpeningParams {
+                open_state: Default::default(),
                 name: "Test opening".into(),
                 host: Id::new(),
                 offset: 1.0,

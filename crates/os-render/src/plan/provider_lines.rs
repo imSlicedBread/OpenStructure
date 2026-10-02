@@ -2,6 +2,10 @@
 use super::*;
 use crate::snapping::SnapSegment;
 
+/// Native analytic curves may need bounded tessellation beyond a single
+/// provider-authored feature's conservative line budget.
+pub const MAX_NATIVE_PLAN_LINES_PER_ELEMENT: usize = 4096;
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlanLine {
     pub entity: Id,
@@ -16,7 +20,7 @@ impl PlanDrawing {
     /// but draw/pick above projected host sills.
     pub fn with_native_lines(mut self, lines: BTreeMap<Id, Vec<PlanLine>>) -> Result<Self> {
         self.native_line_ids.extend(lines.keys().copied());
-        self.with_provider_lines(lines)
+        self.attach_lines(lines, MAX_NATIVE_PLAN_LINES_PER_ELEMENT)
     }
 
     pub fn is_native_line(&self, entity: Id) -> bool {
@@ -27,7 +31,15 @@ impl PlanDrawing {
     /// representation. Native polygon/grid identities cannot be overwritten.
     /// Attach before snaps; original semantic endpoints are kept independently
     /// from clipped drawing endpoints. No plugin/runtime dependency enters render.
-    pub fn with_provider_lines(mut self, providers: BTreeMap<Id, Vec<PlanLine>>) -> Result<Self> {
+    pub fn with_provider_lines(self, providers: BTreeMap<Id, Vec<PlanLine>>) -> Result<Self> {
+        self.attach_lines(providers, 256)
+    }
+
+    fn attach_lines(
+        mut self,
+        providers: BTreeMap<Id, Vec<PlanLine>>,
+        per_element_limit: usize,
+    ) -> Result<Self> {
         ensure(
             self.snaps.is_none(),
             "attach provider lines before snap features",
@@ -50,7 +62,10 @@ impl PlanDrawing {
                 self.unavailable.contains(&entity),
                 "provider target is not unavailable",
             )?;
-            ensure(lines.len() <= 256, "provider exceeds 256 lines per element")?;
+            ensure(
+                lines.len() <= per_element_limit,
+                "plan element exceeds its line limit",
+            )?;
             let mut features = BTreeSet::new();
             for mut line in lines {
                 ensure(

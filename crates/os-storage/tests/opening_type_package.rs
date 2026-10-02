@@ -68,7 +68,13 @@ fn two_bay_packages_v1_v2_upgrade_to_v3_strict_and_three_materials() {
         let mut v1: Value =
             serde_json::from_slice(&export_opening_type_package(&model, ty).unwrap()).unwrap();
         v1["version"] = 1.into();
+        v1.as_object_mut().unwrap().remove("length_parameters");
+        v1.as_object_mut().unwrap().remove("length_bindings");
         v1["parameters"]["family"]["version"] = 4.into();
+        v1["parameters"]["family"]
+            .as_object_mut()
+            .unwrap()
+            .remove("door_leaves");
         v1["parameters"]["family"]
             .as_object_mut()
             .unwrap()
@@ -117,6 +123,13 @@ fn v2_window_type_import_defaults_operation_and_v3_round_trips_it() {
     let mut v2: Value =
         serde_json::from_slice(&export_opening_type_package(&model, ty).unwrap()).unwrap();
     v2["version"] = json!(2);
+    v2["parameters"]["family"]["version"] = 5.into();
+    v2["parameters"]["family"]
+        .as_object_mut()
+        .unwrap()
+        .remove("door_leaves");
+    v2.as_object_mut().unwrap().remove("length_parameters");
+    v2.as_object_mut().unwrap().remove("length_bindings");
     v2["parameters"]
         .as_object_mut()
         .unwrap()
@@ -162,6 +175,8 @@ fn typed_door_and_window_round_trip_exact_materials_without_mutation() {
         assert_eq!(
             package,
             OpeningTypePackage {
+                length_parameters: Default::default(),
+                length_bindings: Default::default(),
                 source_type_id: ty,
                 parameters: model.opening_types[&ty].parameters.clone(),
                 materials: [id(1), id(2)]
@@ -288,7 +303,7 @@ fn rejects_corrupt_duplicate_escaped_duplicate_and_deep_json() {
         vec![0xff],
         b"null".to_vec(),
         format!("{raw} {{}}").into_bytes(),
-        raw.replacen("\"version\":3", "\"version\":3,\"version\":3", 1)
+        raw.replacen("\"version\":5", "\"version\":5,\"version\":5", 1)
             .into_bytes(),
         raw.replacen(
             "\"density_kg_m3\":720.0",
@@ -335,7 +350,7 @@ fn rejects_unknown_fields_at_every_object_layer() {
 fn rejects_unknown_format_version_missing_fields_and_wrong_shapes() {
     for version in [
         json!(0),
-        json!(4),
+        json!(OPENING_TYPE_PACKAGE_VERSION + 1),
         json!(-1),
         json!(1.5),
         json!("1"),
@@ -354,6 +369,8 @@ fn rejects_unknown_format_version_missing_fields_and_wrong_shapes() {
         "source_type_id",
         "parameters",
         "materials",
+        "length_parameters",
+        "length_bindings",
     ] {
         let mut value = valid_json();
         value.as_object_mut().unwrap().remove(field);
@@ -385,6 +402,18 @@ fn rejects_nil_duplicate_missing_and_extra_material_references() {
         }
         rejected(value);
     }
+}
+
+#[test]
+fn rejects_cross_category_package_identity_collisions() {
+    let mut value = valid_json();
+    value["length_bindings"]["width"] = json!(id(1));
+    value["length_parameters"][id(1).to_string()] = json!({
+        "name": "Shared width",
+        "unit": "Metres",
+        "value": 1.2
+    });
+    rejected(value);
 }
 
 #[test]

@@ -28,6 +28,18 @@ pub struct WallGesture {
     pub(crate) arc_bulge: Option<Point2>,
 }
 impl WallGesture {
+    /// Internal exact-input adapter for a native batch translation. The synthetic
+    /// wall starts at world zero, so parameters().start() is the displacement.
+    /// This adapter is never committed through the single-wall command route.
+    pub(crate) fn begin_move_vector(
+        editor: &Editor,
+        view: Id,
+        parameters: WallParams,
+    ) -> Result<Self> {
+        let mut gesture = Self::begin(editor, view, parameters)?;
+        gesture.edit = Some((Id::new(), WallEdit::Move));
+        Ok(gesture)
+    }
     #[cfg(feature = "external-plugins")]
     pub(crate) fn is_installed(&self) -> bool {
         self.installed
@@ -642,6 +654,9 @@ impl WallGesture {
                     .filter(|o| o.parameters.host == source)
                 {
                     let mut opening_parameters = opening.parameters.clone();
+                    if model.opening_clearances.contains_key(&opening.id()) {
+                        continue;
+                    }
                     opening_parameters.offset -= station;
                     commands.push(os_document::Command::UpdateOpening {
                         id: opening.id(),

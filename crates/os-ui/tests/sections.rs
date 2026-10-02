@@ -29,6 +29,7 @@ fn linked_section_draws_native_wall_openings_floor_and_plan_marker() {
     let door = Opening::new(
         "core.opening",
         OpeningParams {
+            open_state: Default::default(),
             width_override: None,
             height_override: None,
             sill_override: None,
@@ -50,6 +51,7 @@ fn linked_section_draws_native_wall_openings_floor_and_plan_marker() {
     let window = Opening::new(
         "core.opening",
         OpeningParams {
+            open_state: Default::default(),
             width_override: None,
             height_override: None,
             sill_override: None,

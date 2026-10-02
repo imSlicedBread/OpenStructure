@@ -18,6 +18,134 @@ fn concave() -> Vec<Point2> {
 }
 
 #[test]
+fn closed_sash_type_preview_all_instances_history_and_reopen() {
+    let (mut e, host, view, types, ids) = fixture();
+    let type_id = types[1];
+    let mut pinned = e.document.model().openings[&ids[3]].parameters.clone();
+    pinned.width_override = Some(0.7);
+    pinned.height_override = Some(0.8);
+    e.command(
+        "Pin second window",
+        Command::UpdateOpening {
+            id: ids[3],
+            parameters: pinned,
+        },
+    )
+    .unwrap();
+    for operation in [
+        os_model::WindowOperation::Sliding,
+        os_model::WindowOperation::Casement,
+    ] {
+        let before = e.document.model().clone();
+        let scene = e.scene.clone();
+        let history = e.document.history_stats();
+        let quantities = os_geometry::walls::NativeWall::from_model(&before, host)
+            .unwrap()
+            .layer_quantities()
+            .unwrap();
+        let mut draft = OpeningTypeDraft::edit(&e, type_id).unwrap();
+        draft.window_operation = operation;
+        let candidate = draft.preview_model(&e).unwrap();
+        let (mesh, _) = draft.preview_geometry(&e, Some(view)).unwrap();
+        mesh.validate().unwrap();
+        assert_eq!(e.document.model(), &before);
+        assert_eq!(e.scene, scene);
+        assert_eq!(e.document.history_stats(), history);
+        // Discarding the draft is a cancellation; it owns no model state.
+        drop(draft);
+        assert_eq!(e.document.model(), &before);
+        let mut draft = OpeningTypeDraft::edit(&e, type_id).unwrap();
+        draft.window_operation = operation;
+        draft.apply(&mut e).unwrap();
+        assert_eq!(e.document.model(), &candidate);
+        assert_eq!(e.document.model().openings, before.openings);
+        assert_eq!(
+            e.document.history_stats().undo_entries,
+            history.undo_entries + 1
+        );
+        assert_eq!(e.scene[&host], scene[&host]);
+        assert_eq!(
+            os_geometry::walls::NativeWall::from_model(e.document.model(), host)
+                .unwrap()
+                .layer_quantities()
+                .unwrap(),
+            quantities
+        );
+        for id in &ids[..2] {
+            assert_eq!(e.scene[id], scene[id]);
+        }
+        for id in &ids[2..] {
+            assert_ne!(e.scene[id], scene[id]);
+            let expected = super::super::opening_tools::panel_mesh(&candidate, *id).unwrap();
+            assert_eq!(e.scene[id], expected);
+        }
+        let after_scene = e.scene.clone();
+        assert!(draft.apply(&mut e).is_err(), "stale Apply must reject");
+        e.undo().unwrap();
+        assert_eq!(e.document.model(), &before);
+        assert_eq!(e.scene, scene);
+        e.redo().unwrap();
+        assert_eq!(e.document.model(), &candidate);
+        assert_eq!(e.scene, after_scene);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sash.osb");
+        e.save(&path).unwrap();
+        let mut reopened = Editor::new().unwrap();
+        reopened.open(&path).unwrap();
+        assert_eq!(reopened.document.model(), e.document.model());
+        assert_eq!(reopened.scene, e.scene);
+    }
+}
+
+#[test]
+fn closed_sash_geometry_failure_preflights_every_instance_before_type_commit() {
+    let (mut e, _, _, types, ids) = fixture();
+    // A model-valid extreme elevation lets a Fixed 2 mm pane tessellate, but
+    // loses its much smaller sash rails to floating-point precision. This
+    // exercises a geometry failure, not just model/host-fit validation.
+    let mut model = e.document.model().clone();
+    model
+        .levels
+        .values_mut()
+        .next()
+        .unwrap()
+        .parameters
+        .elevation = 1e13;
+    model
+        .openings
+        .get_mut(&ids[3])
+        .unwrap()
+        .parameters
+        .height_override = Some(0.002);
+    e.document = Document::from_model(model).unwrap();
+    e.regenerate().unwrap();
+    for operation in [
+        os_model::WindowOperation::Sliding,
+        os_model::WindowOperation::Casement,
+    ] {
+        let before = e.document.model().clone();
+        let scene = e.scene.clone();
+        let history = e.document.history_stats();
+        let revision = e.document.revision();
+        let mut draft = OpeningTypeDraft::edit(&e, types[1]).unwrap();
+        draft.window_operation = operation;
+        let candidate = e
+            .document
+            .preview_commands(draft.commands(&e).unwrap())
+            .unwrap();
+        candidate.validate().unwrap();
+        assert!(super::super::opening_tools::panel_mesh(&candidate, ids[2]).is_ok());
+        assert!(super::super::opening_tools::panel_mesh(&candidate, ids[3]).is_err());
+        assert!(draft.preview_model(&e).is_err());
+        assert!(draft.apply(&mut e).is_err());
+        assert_eq!(e.document.model(), &before);
+        assert_eq!(e.scene, scene);
+        assert_eq!(e.document.history_stats(), history);
+        assert_eq!(e.document.revision(), revision);
+    }
+}
+
+#[test]
 fn two_bay_preview_all_instances_history_host_cut_and_leaf_hinges() {
     for reversed in [false, true] {
         for side in [os_model::LiteSide::Start, os_model::LiteSide::End] {
@@ -547,6 +675,7 @@ fn fixture() -> (Editor, Id, Id, [Id; 2], [Id; 4]) {
         Opening::new(
             "core.opening",
             OpeningParams {
+                open_state: Default::default(),
                 width_override: None,
                 height_override: None,
                 sill_override: None,
@@ -721,7 +850,7 @@ fn opening_family_invalid_profiles_are_atomic_in_preview_and_commands() {
                     .map(|(x, y)| Point2::new(x, y))
                     .to_vec()
             }
-            11 => draft.family.version = 6,
+            11 => draft.family.version = 7,
             12 => draft.family.depth = f64::NAN,
             13 => draft.family.frame_width = 0.0005,
             14 => draft.family.frame_depth = f64::NAN,

@@ -175,6 +175,7 @@ fn saved_schedule_sheet_live_preview_pdf_history_overflow_and_stale_export() {
         let opening = Opening::new(
             "core.opening",
             OpeningParams {
+                open_state: Default::default(),
                 width_override: None,
                 height_override: None,
                 sill_override: None,

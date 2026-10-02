@@ -497,6 +497,7 @@ fn compose_view_marks(
             .items(context)?
             .iter()
             .chain(drawing.columns(context)?)
+            .chain(drawing.casework(context)?)
         {
             append_item(
                 &mut marks,

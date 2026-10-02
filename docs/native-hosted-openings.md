@@ -1,15 +1,225 @@
 # Native hosted doors and windows
 
-Doors and windows currently host only on straight native walls. Circular wall
-paths are first-class native geometry, but opening placement and validation
-reject them; curved jamb cuts, frames, panes and symbols are not approximated
-from chords. See [native wall paths](native-wall-types.md#circular-wall-centerlines-schema-54).
+Doors and windows host on straight native walls and native circular-arc walls.
+Curved hosts use analytic centerline stations and radial per-layer apertures,
+not chord approximations. Splines and plugin-defined host paths remain
+unsupported. See [native wall paths](native-wall-types.md#circular-wall-centerlines-schema-54).
+
+## Paired hinged doors (schema 58)
+
+Native door types may use either `Single` or `Paired` hinged leaves. For a pair,
+the type editor accepts the active leaf's width in metres; the model stores its
+fraction of the clear primary bay so the split follows dimension changes. Each
+leaf must resolve to at least 1 mm. Paired doors require a straight native wall,
+a rectangular component, and a full rectangular host cut. Windows remain
+single-leaf. Side-lite composition remains independent: the pair splits only
+the clear primary bay after the lite, mullion, and frame regions are resolved.
+The two leaves meet without an added central mullion or gap and share the door
+panel material.
+
+Each leaf has an independent 0–90° instance angle. The existing single-door
+`DoorAngle` state maps to both leaves when a type is changed to paired; new
+paired instances default to both leaves at 90°. Hinge reversal exchanges which
+end hosts the active and inactive leaf; swing reversal applies to both. The
+plan swing lines/arcs and generated 3D panels use the same resolved leaf
+geometry. Preview remains model-neutral and 3D regenerates after commit.
+
+Changing a paired type back to `Single` must explicitly reset affected
+paired-angle instance states to `Default`; that reset and the type edit are one
+undoable operation. Curved-host, sculpted-component, partial-cut, and window
+pairing are rejected rather than approximated. IFC import/export explicitly
+reject paired doors because this exchange subset does not preserve two-leaf
+identity and independent angles.
+
+Schema 57→58 adds `OpeningFamily.door_leaves` in family version 6. Existing
+types migrate to `Single`, preserving placed poses. Native guests require API
+39/schema 58; `.osot` packages advance to version 5, migrating v4 types to
+`Single`. Container 2, generic API 2, and the IFC dialect version are unchanged.
+
+## Per-instance opening poses (schema 57)
+
+Select an eligible native opening and use **Edit opening properties → Opening
+state**. Door angle is 0–90°; Sliding fraction is 0–1; Casement angle is 0–90°.
+Default retains the prior door pose (90°) and closed window geometry. Sliding
+moves the Start sash toward End, leaving the End sash in place. Casement hinges
+at the clear Start jamb and rotates toward the host's local positive normal.
+These are static committed poses, not animation.
+
+Poses are supported for doors and for Sliding/Casement windows with rectangular
+components on straight native hosts. Fixed windows, curved hosts, legacy or
+custom-profile components remain at their existing pose; the editor reports
+unsupported cases. The plan symbol and generated 3D sash share the same pose
+math. Preview is disposable; Apply preflights geometry and commits one undoable
+transaction. Cancel, Escape, stale-document context and invalid geometry leave
+model/history unchanged. Applying a pose retains the opening UUID, dimensions,
+host cut, wall quantities and assignments; 3D regenerates on commit. The model
+schema and full-model plugin API advance; the container, opening-family package
+format and generic-plugin protocol are unchanged.
+
+Schema 56→57 inserts `Default` for existing instances. Full-model native guests
+require API 38/schema 57; generic API 2, container 2 and package formats remain
+unchanged. Focused evidence is in `os-storage/tests/opening_states.rs`,
+`os-geometry/src/openings.rs`, `os-ui/src/opening_tools.rs`, and the desktop
+acceptance `opening_pose_editor_apply_cancel_and_history_at_both_dpis`.
+`opening_copy_preserves_instance_and_type_on_another_wall` also verifies that
+non-default door and Sliding poses survive copy.
+
+Validation for the pose increment: `cargo test --workspace --all-features
+--locked --offline --quiet` passed (427 `os-ui` library tests, 4 ignored, plus
+the remaining workspace tests and doctests); warning-denied workspace Clippy,
+formatting and diff checks passed. The desktop egui acceptance ran at both DPI
+profiles stated above. Coordinate-by-coordinate plan-symbol/mesh assertions,
+direct non-default rehost pose, and native visual/print QA remain follow-up
+coverage.
+
+## Shared project Length parameters (schema 56)
+
+Open **Manage → Project Length parameters…** to create, rename, edit,
+duplicate or delete named metre values. The manager lists affected types and
+dimensions, counts placed uses and previews effective changes. Apply commits all
+staged edits in one transaction; Cancel/Escape or a changed document discards the
+draft. Referenced deletion is rejected with use information. Duplicate makes a
+new UUID; rename keeps the existing UUID. The project limit is 64 parameters.
+
+In **Manage opening type… → Lengths…**, each width/height and window-sill selector chooses
+a project parameter or a type literal. The effective value appears beside the
+selector. Doors keep zero sill. A shared value can drive several types and
+dimensions. Resolution is `instance pin → project parameter → type literal`;
+equal-default instance pins remain pins and Reset resumes inheritance. Unbinding
+freezes the current resolved value; type duplication retains bindings. Inactive
+type literals remain stored and are not used to validate family proportions.
+
+Preview and Apply use the document candidate evaluator. Candidates resolve all
+types, including unplaced ones, settle host-end clearance locks, and validate
+placements before publication. The UI preflights component and host meshes.
+Invalid size, family, host-fit, overlap or clearance changes leave model/history
+unchanged. Parameter-only edits invalidate dependent types, openings, hosts,
+drawings, tags, schedules and sheets; preview leaves the live scene unchanged.
+
+Native persistence uses schema 56 and full-model plugin API 37 at that feature
+milestone; current persistence is schema 58/API 39. Generic API 2
+stays unchanged. Package v4 preserves referenced shared parameters with visible
+copy/remap previews. IFC export rejects these semantics explicitly. Formulas,
+reporting parameters, other categories, arbitrary instance bindings and package
+dependency reuse controls remain outside this increment. See the coverage ledger
+for exact automated evidence and remaining visual/print QA.
+
+Implementation files for this increment (paths relative to the repository):
+
+- Model/resolution/accounting: `crates/os-model/src/opening_lengths.rs`,
+  `crates/os-model/src/lib.rs`, `crates/os-model/src/openings.rs`,
+  `crates/os-model/src/memory.rs`, `crates/os-constraints/src/lib.rs`.
+- Candidate transactions: `crates/os-document/src/lib.rs`,
+  `crates/os-document/tests/opening_lengths.rs`.
+- Persistence/packages: `crates/os-storage/src/lib.rs`,
+  `crates/os-storage/src/opening_type_package.rs`,
+  `crates/os-storage/tests/opening_lengths.rs`,
+  `crates/os-storage/tests/opening_type_package.rs`,
+  `crates/os-storage/tests/opening_clearances.rs`,
+  `crates/os-storage/tests/common/mod.rs`, `crates/os-storage/tests/room_materials.rs`.
+- Desktop: `crates/os-ui/src/opening_lengths.rs`,
+  `crates/os-ui/src/opening_type_tools.rs`, `crates/os-ui/src/opening_family_editor.rs`,
+  `crates/os-ui/src/opening_tools.rs`, `crates/os-ui/src/opening_type_package_ui.rs`,
+  `crates/os-ui/src/palettes.rs`, `crates/os-ui/src/ribbon.rs`, `crates/os-ui/src/lib.rs`,
+  `crates/os-ui/src/desktop_tests/opening_length_tests.rs`,
+  `crates/os-ui/src/desktop_tests/opening_type_package_tests.rs`,
+  `crates/os-ui/src/desktop_tests/opening_tag_tests.rs`.
+  The full-suite floor-pan test also waits for its asynchronous redraw in
+  `crates/os-ui/src/plan_workspace/floor_tests.rs`.
+- Compatibility: `crates/os-ifc/src/writer.rs`, `crates/os-plugin-api/src/lib.rs`,
+  `crates/os-plugin-host/src/lib.rs`, `crates/os-plugin-host/tests/wasm_transport.rs`,
+  `plugins/walls/src/lib.rs`, `plugins/walls/plugin.toml`,
+  `fixtures/wasm-probe/plugin.toml`, `fixtures/wasm-probe/probe.wat`.
+- Documentation: this file, `docs/native-opening-type-packages.md`,
+  `docs/2d-coverage.md`, `docs/file-format.md`, `docs/plugin-api.md`.
+
+This list identifies the shared-Length changes; the checkout also contains
+earlier uncommitted work in several of these files.
+
+## Persistent host-end clearance locks (schema 55)
+
+An opening may lock one clearance to its native host's stored Start or End.
+Use **Edit opening properties → Host-end clearance**, or explicitly check
+**Lock to host Start/End** in an endpoint spacing editor. Neighbor-jamb spacing
+never becomes an endpoint lock; use Properties to choose an actual host end.
+Distances are metres along the analytic centerline, including circular arcs:
+Start uses `offset = d`; End uses `offset = L - width - d`.
+
+The document settles offsets in its disposable transaction candidate before
+validation and history. Host length, effective type/instance width and batch
+width edits retain the lock, including hidden placements. Fit still requires
+1 mm at host ends; overlap or invalid fit rejects the entire transaction.
+One initiating edit produces one undo step. Conflicting explicit moves report
+the lock, including moves combined with host edits. Unlock preserves geometry;
+the spacing distance field is disabled while unlocking. Rehost and the native
+Split tool require unlocking first. IDs, instance settings and associative
+references remain intact. Copy creates an unlocked placement.
+
+Type, property, batch and opening-grip candidate previews use the same settlement
+method. Wall gesture accent previews retain their existing limited display;
+dependent openings settle on commit. There is no neighbor constraint graph or
+general solver. Native `.osb` persists locks; schema 54→55 adds an empty lock map.
+Full-model native guests require API 39/schema 58; generic API 2 is unchanged.
+IFC export rejects locked documents because it cannot preserve the constraint.
+
+Focused evidence: model/document/storage `tests/opening_clearances.rs` and
+`clearance_lock_spacing_ui_geometry_history_unlock_and_neighbor_guard` in
+`crates/os-ui/src/plan_workspace/opening_spacing_tests.rs`. These cover analytic
+math, transaction conflict/rollback/history, migration/reopen, and headless egui
+spacing controls with basic plan, scene and schedule propagation. Native-window
+visual qualification and exhaustive sheet/PDF combinations remain open.
+
+Validation for this increment: `cargo test --workspace --all-features --locked
+--offline --quiet` passed (4 installed-provider tests ignored), Clippy with
+warnings denied passed, and formatting/diff checks passed.
+
+## Edit selected instance properties
+
+Select 2–256 visible native doors or windows of the same kind in one active
+floor plan, then use **Properties → Edit selected instances…**. For a single
+opening, or as an alternate group entry point, use Architecture → **Edit
+selected openings…**. Properties shows common effective
+dimensions or **Mixed**, alongside **Inherited**, **Pinned**, **Legacy**, or
+**Mixed** value sources. A group has no invented primary instance. Different
+assigned types and mixed typed/legacy instances are supported.
+
+Each width, height, and window-sill field starts at **Keep unchanged**.
+**Set value** accepts decimal or scientific-notation metres (64 characters,
+finite values; width/height at least 1 mm and sill at least zero). For typed
+instances it writes an override, even when equal to the assigned type default.
+For legacy instances it edits only that dimension in the existing definition.
+**Inherit assigned type** clears only the chosen override and is available
+when every selected member is typed. If any member is legacy, the dialog
+disables Inherit and explains why. Entering a value never changes a shared type.
+
+Door hinge and swing are independent absolute choices in each host's stored
+Start → End frame, including reversed straight hosts and both arc directions.
+They default to Keep unchanged. Unchosen fields, IDs, hosts, offsets, tags,
+material settings and other metadata survive the edit.
+
+The dialog builds and validates a disposable whole-document candidate,
+including affected panels, wall apertures, fit, clearance and overlap. The plan
+paints its candidate symbols and apertures while model, history, cached drawing
+and 3D remain unchanged. An invalid member blocks the whole batch with its ID.
+Apply revalidates and sends only changed instance commands in one transaction;
+plan and 3D regenerate, selection remains, and one undo/redo restores the batch.
+No chosen fields or identical results add no history. Cancel/Escape discard the
+draft. Selection, session, revision, view, provider or drawing changes cancel
+it; its pointer press stays owned through release.
+
+Evidence: `crates/os-ui/src/plan_workspace/opening_batch_edit_tests.rs` runs
+real egui frames at 1280×800/100% and 1000×650/150%, covering common/Mixed
+Properties, heterogeneous types, mixed legacy instances, Set/Keep/Inherit,
+equal-default pins, absolute handing, preview immutability, atomic history,
+plan/scene regeneration, keyboard focus, stale contexts, fit/overlap rejection,
+and the 256-member bound. Native-window visual qualification remains open.
 
 ## Draw opening width in plan
 
 Activate Door or Window in a native floor plan, then check **Draw opening width**
-beside Fit plan. Press at the first jamb, drag along one visible native straight
-wall, and release at the second jamb. Either drag direction is supported. The
+ beside Fit plan. Press at the first jamb, drag along one visible native straight
+or circular-arc wall, and release at the second jamb. On arcs, measured width is
+centerline travel. Either drag direction is supported. The
 preview displays the measured width, opening symbol, and replacement wall
 aperture. Both jambs use the existing host-axis opening snap preferences.
 
@@ -37,10 +247,84 @@ apertures, shared-type preservation, default-type atomic creation, one-step
 undo/redo, split-view scene regeneration, short spans, overlap, clearance,
 hidden/cropped hosts, stale cancellation, snapping, and return to ordinary pan.
 
-Limits: native straight walls on one host only; the pointer must remain within
+Limits: one native straight or circular-arc wall host; the pointer must remain within
 the existing wall acquisition tolerance and visible crop at the final jamb.
 This is egui interaction evidence, not native-window screenshot or print QA.
 No schema, storage, plugin protocol, or 3D operation geometry changes are involved.
+
+## Exact width in placement and copy
+
+While Door or Window placement (including **Copy opening**) is active, enable
+**Exact width** and enter **Width (m)**. The field accepts a decimal or
+scientific-notation number in metres, up to 64 characters; unit suffixes,
+fractions and decimal commas are not parsed. Width must be finite and at least
+1 mm. Exact width is transient and starts from the effective base width: the
+selected type default for a new typed opening, or the source instance's current
+effective width for a copy. Clicking still centers the opening on the snapped
+host station. On circular walls, width is analytic centerline travel.
+
+With exact width off, typed placement inherits its type width and Copy retains
+the source's original nullable width override. Editing an exact typed width pins
+only the new instance or copy; it never edits the shared type or source. An
+explicit value equal to the type default remains a pin. **Reset width** exits
+exact mode and restores the current base parameters, including an existing copy
+pin. Editing a legacy copy changes only that copy's legacy width. When no type
+is selected, a new placement still creates the standard reusable type; the
+entered width is stored as an instance override rather than changing the type's
+standard width.
+
+**Exact width** and **Draw opening width** are mutually exclusive modes; turning
+one on clears the other's pending intent. Draw mode remains authoritative and
+uses the existing two-jamb gesture. Invalid/incomplete input is shown in the
+toolbar and cannot commit. Fit, family, clearance, overlap and mesh checks still
+run on the candidate before commit. Text entry and toolbar actions do not place
+or pan; Escape cancels the placement tool. Preview does not mutate the model,
+history, cached drawing or 3D scene. Each valid placement is one undoable
+transaction, and the exact-width choice persists across repeats until the tool
+exits.
+
+Evidence: `placement_width_tests.rs` contains seven real-egui acceptance groups
+at 1280×800/100% and 1000×650/150%, covering typed inheritance/custom/reset,
+new default types, typed and legacy copies, mode exclusivity, invalid input and
+overlap, snapped center placement, type changes, repeat history, keyboard
+ownership, and both signed major-arc directions. This remains automated
+headless evidence; native-window visual and physical-print qualification are
+open.
+
+## Orientation while placing or copying
+
+Door and Window placement, including **Copy opening**, exposes applicable
+orientation toggles beside **Draw opening width**. Doors offer **Flip hinge**
+and **Flip swing**. Typed windows whose effective pane is off-center offer
+**Flip side**; typed doors/windows with a side-lite offer **Flip lite**. Centered
+windows and legacy windows have no pane-side or lite controls. The toolbar shows
+the effective orientation while the tool is active.
+
+These toggles change transient placement intent, not an existing instance, the
+shared type, model, history, cached drawing, or 3D scene. A click or drawn-width
+release creates the opening with that orientation. The choice remains active
+across repeated placements until the tool exits; starting the tool again resets
+it. Copy starts from the source's parameters. Each toggle is relative to that
+base, so toggling twice restores the exact original parameters, including null
+pane/lite overrides. If the selected type changes and a pane/lite action is no
+longer applicable, that transient toggle is cleared. Hinge and swing intent
+remain available for door types.
+
+Preview and commit use the same oriented parameters and preflight the candidate
+model, host wall mesh, and opening panel mesh before the one placement/copy
+transaction. Host-local Start/End and Left/Right semantics are preserved on
+rotated/reversed straight walls and both signed circular arcs. Toolbar clicks
+remain separate from canvas placement. Escape, pointer loss, stale view/document
+or provider context discard the intent under the existing placement ownership
+rules. No schema, storage, or plugin protocol change is involved.
+
+Evidence: `crates/os-ui/src/plan_workspace/placement_orientation_tests.rs`
+uses real egui frames at 1280×800/100% and 1000×650/150%. It covers independent
+door flips, repeated clicks, drawn-width placement, Copy for typed and legacy
+doors/windows, source preservation, window pane/lite applicability, type-change
+clearing, exact null-override restoration after double toggles, undo/redo, and
+preview/commit geometry on signed major arcs. This is automated headless egui
+evidence, not native-window visual or physical-print qualification.
 
 ## Window operation plan symbols (schema 52)
 
@@ -48,15 +332,69 @@ Reusable window types carry `Fixed`, `Sliding`, or `Casement` operation metadata
 The type editor exposes the choice only for windows; legacy windows and migrated
 types default to Fixed. Sliding adds opposing overlap/track marks, while Casement
 adds a diagonal opening mark using the host's stored Start-side convention.
-Fixed retains the existing plan symbol. These are documentation symbols only:
-the generated window pane remains static in 3D, and the selected operation does
-not alter wall cuts, meshes, opening instances, schedules, or export geometry.
+Fixed retains the existing plan symbol. The plan marks remain unchanged by the
+closed-sash increment below; operation never changes the outer wall cut or
+opening instance parameters.
 
 Schema 51→52 adds the required type field and advances all native headers.
 `.osot` v3 persists the enum; v1/v2 packages import as Fixed. Native full-model
 plugins require API 33/schema 52, while generic API 2 and container 2 are
 unchanged. Focused model, package, migration, and plan-symbol tests cover the
-default, compatibility, distinct marks, rotated hosts, and unchanged 3D meshes.
+default, compatibility, distinct marks and rotated hosts. The original symbol-only
+3D limitation is superseded for eligible windows below.
+
+### Static closed window sashes (2026-10-01)
+
+The existing Window operation selector now drives the production 3D component
+evaluator for native windows on straight hosts with rectangular component and
+cut profiles. Fixed keeps its previous mesh exactly. Sliding generates two
+closed glazed sashes with overlapping meeting rails on separate depth tracks;
+Casement generates one closed sash with perimeter rails and inset glazing.
+These are static construction representations. There is no opening angle,
+sliding travel, animation, hardware authoring or new door behavior.
+
+Sash rail width is bounded by 50 mm and 10% of each effective clear-bay dimension.
+Sliding tracks each occupy 45% of the existing pane depth, separated by a 10%
+gap. Glazing occupies 40% of its sash depth. The complete sash envelope retains
+the existing Center/LeftFace/RightFace alignment; glass is inset within it.
+Pane material applies to glass and frame material to sash rails. Instance pins
+and shared Length parameters resolve before evaluation. In two-bay types only
+the primary window bay changes; the fixed side lite, mullion and outer frame
+retain their prior geometry and materials. Wall cuts, wall quantities, plan
+symbols/feature identities, placement and entity IDs are unchanged by this
+geometry increment.
+
+Circular-arc hosts and authored nonrectangular component or cut profiles retain
+their previous extrusion. The type editor explicitly states that operation
+affects only the plan symbol for those cases. No schema, family version, package
+version or plugin protocol changes are needed. Existing persisted operations
+regenerate the new eligible assemblies on reopen.
+
+Type preview uses the production evaluator on a disposable candidate. Apply
+preflights the component and host mesh for **every** affected placed instance
+before its single document transaction, then regenerates the committed scene.
+`closed_sash_geometry_failure_preflights_every_instance_before_type_commit`
+exercises a model-valid extreme-elevation case where a pinned small sash loses
+precision: geometry failure rejects Apply with model, revision, history and
+scene untouched. Successful preview/apply/cancel/stale/undo/redo, all-instance
+regeneration, unchanged doors/host quantities and save/reopen are covered in
+`os-ui/src/opening_profile_tests.rs`. Geometry tests in
+`os-geometry/src/openings.rs` cover positive component volumes, bounded tracks,
+materials, rotated/reversed hosts, pane positions, tiny legal dimensions,
+side-lite preservation, Fixed regression and curve/custom-profile fallbacks.
+The integration test in `os-ui/tests/openings.rs` retains the existing plan-mark
+assertions while checking changed eligible meshes and an unchanged host.
+
+The desktop type-editor acceptance also drives the Window operation selector
+at 1280×800/100% and 1000×650/150%, covering Casement cancel and Sliding
+apply/undo/redo with unchanged host geometry.
+
+Dedicated package-transfer geometry assertions, native visual/print
+qualification and export/section consumer qualification remain open. Mesh
+consumers receive the new components;
+this does not establish IFC manufacturing semantics or sash quantities. General
+family authoring, formulas, sash hardware and curved/profiled sashes remain
+outside this increment.
 
 ## Fixed side-lite two-bay families (schema 50)
 
@@ -85,7 +423,7 @@ adds required nullable `side_lite`; existing families migrate to null, preservin
 their previous single-panel geometry. Migration validates the whole copy before
 adoption and advances all native headers. At schema 50, native full-model
 plugins used API 31/schema 50; schema 51 used API 32. Current plugins require
-API 33/schema 52. Current native full-model plugins use API 35/schema 54.
+API 33/schema 52. Current native full-model plugins use API 39/schema 58.
 Generic API 2 and container 2 are unchanged. `.osot` package
 version 2 carries the optional lite material dependency; version 3 adds window
 operation metadata; version-1 packages import as single-panel version-5 families.
@@ -298,7 +636,9 @@ see [IFC roadmap](ifc-roadmap.md). Native visual QA remains separate from the
 headless egui tests.
 
 This is a bounded native-model slice, not a production architectural profile.
-Doors and windows are `core.opening` instances hosted by straight native walls.
+Doors and windows are `core.opening` instances hosted by native walls. The
+schema-7 straight-host baseline is extended to circular-arc hosts in the
+no-schema-change section below.
 Instances keep their UUID, name, host, first-jamb offset, hinge and swing; project-owned
 `core.opening_type` entities own the kind, width, height and default sill, measured in
 metres. Typed instances reference the type and can independently pin width,
@@ -314,9 +654,10 @@ to schema 8 by wrapping each existing opening as an independent legacy definitio
 its identity and geometry remain unchanged.
 
 Schema 9→10 adds required `hinge` (`Start`/`End`) and `swing` (`Left`/`Right`)
-instance fields. Both migrated and new openings use **Start / Left**. This retains
-the existing door leaf exactly: its local hinge is `(offset, -thickness/2)` and
-its open tip is `(offset, width-thickness/2)`. Migration advances every native
+instance fields. Both migrated and new openings use **Start / Left**. On straight
+hosts, this retains the existing door leaf exactly: its local hinge is
+`(offset, -thickness/2)` and its open tip is `(offset, width-thickness/2)`.
+Migration advances every native
 entity header to 10, preserving IDs, type references, dimensions, metadata and
 opaque extensions. Earlier schema migrations chain through this step.
 
@@ -350,7 +691,7 @@ preserving their previous leaf/pane geometry, stable IDs, metadata and opaque
 extensions. The family currently supports one simple closed elevation profile
 (3–32 vertices expressed as width/height fractions) and one positive extrusion;
 depth is bounded to 1–200 mm and further capped to 20% of host thickness and
-opening width. The hosted wall void remains rectangular. The type editor supports
+opening width. On straight hosts the wall void remains rectangular. The type editor supports
 dragging, inserting/removing vertices, numeric vertex edits, reset-to-rectangle,
 depth edits, plus draft 3D and plan previews through the production evaluators.
 Invalid/self-intersecting profiles cannot apply; shared type changes validate all
@@ -364,7 +705,7 @@ is inset to meet those members. Frame width must leave at least 1 mm of componen
 clearance and is shared by every instance of the type. Frame depth is capped by
 the host thickness. The type editor previews the combined assembly; normal plan
 cuts keep the host jamb convention and use the same inset panel spans as 3D.
-The wall void remains rectangular and the frame members are generated from fixed
+On straight hosts the wall void remains rectangular and the frame members are generated from fixed
 profiles rather than independently sketched family components. Native full-model
 plugins at this stage use API 7 / schema 25.
 
@@ -381,10 +722,12 @@ cut. Generated rectangular frame rails are currently supported only with a
 rectangular host cut; incompatible edits are rejected before transaction commit.
 Profiled cuts cannot be represented by the legacy vertical rectangular `Solid`
 API, so those consumers return an explicit unsupported-geometry error instead
-of exporting a false rectangle. Current native full-model plugins use API 24 /
-schema 43.
+of exporting a false rectangle. Current native full-model plugins use API 39 /
+schema 58.
 
-Linear plan dimensions may reference either jamb of a native door or window.
+Linear plan dimensions may reference either jamb of a native door or window,
+including circular-arc hosts. Arc jamb anchors follow the analytic centerline;
+wall-face offsets and angular wall dimensions remain straight-only.
 The reference is associative: the jamb resolves from the current host, offset,
 and effective typed/legacy width, so rehost, resize, type edits and undo/redo do
 not leave cached measurement coordinates. Dimension pick/repair only accepts
@@ -393,8 +736,8 @@ and crop. See [native dimensions](native-dimensions.md).
 
 Use an active floor plan on the host wall's level. The Architecture ribbon's Door
 or Window action starts a repeatable pointer tool: choose a saved type from its
-type picker, hover a visible straight wall for a transient symbol/offset preview,
-then click to place. If no type exists for that kind, the first valid placement
+type picker, hover a visible straight or circular-arc wall for a transient
+symbol/offset preview, then click to place. If no type exists for that kind, the first valid placement
 creates a default reusable type and its first instance in one history transaction.
 Each click is independently undoable; continue on other walls or press Escape to
 exit. Default dimensions are 0.90 × 2.10 m for a door and 1.20 × 1.20 m with a
@@ -419,10 +762,10 @@ insufficient clearances, overlaps, non-floor doors, referenced type deletion, an
 host edits that no longer fit are rejected atomically.
 
 Select a visible door or window in its host-level floor plan to show one center
-grip. Drag that grip to move the opening along its current straight native wall.
-Pointer motion is projected onto the wall's stored start-to-end direction,
-including reversed hosts; the press position is retained so grabbing near the
-grip does not jump the opening. The offset is the only edited value: UUID, name,
+grip. Drag that grip to move the opening along its current straight or circular-
+arc native wall. Pointer motion is projected onto the analytic host path and
+measured from its stored start; the press position is retained so grabbing near
+the grip does not jump the opening. The offset is the only edited value: UUID, name,
 host, type/family, width, height, sill, hinge and swing are preserved. Enabled
 semantic snaps are acquired at the candidate opening center after correcting
 for the press offset. Use the separate Rehost action below to change its host.
@@ -480,7 +823,7 @@ cancellation after snap acquisition and selection/pan precedence. This uses the
 existing same-host snap references and adds no snap kinds or schema changes.
 
 The separate **Rehost** action in the Architecture ribbon moves the selected
-door or window to a different visible native straight wall on the active plan
+door or window to a different visible native straight or circular-arc wall on the active plan
 level. It uses the same wall hits and crop checks as pointer placement. Hover
 centers the opening at the projected wall station and previews both host
 apertures and the selected symbol; the old host closes and the new host opens.
@@ -508,6 +851,47 @@ reversed target walls, painted preview geometry, unchanged picking/cache/scene,
 one-entry history, both-host regeneration, fit/overlap, and cancellation guards.
 This adds no schema/protocol changes or plugin-host support. Native manual
 visual qualification remains open.
+
+## Align opening centers across native walls
+
+Select one visible native door or window on its host-level floor plan and
+choose **Align opening center** from Architecture. Click a visible opening on a
+different native wall. The reference is the other opening's analytic centerline
+station (`offset + effective width / 2`), not its leaf, pane, or symbol
+centroid. For two straight hosts, they must be parallel or antiparallel. The
+reference center is projected onto the selected host's centerline; its new
+first-jamb offset is the projected station minus half its effective width.
+Straight projections are not clamped and must still pass opening fit checks.
+
+Circular-arc hosts are also supported, including mixed straight/arc pairs. Arc
+projection uses the radial bearing onto the selected supporting circle and the
+stored signed sweep to calculate travel station. Angle wrapping and major arcs
+are preserved. If the radial direction is undefined at the arc center, or the
+bearing lies outside the selected finite sweep, the candidate is rejected; it
+does not clamp to an endpoint or choose the opposite radial point. When either
+host is curved, the operation is directional: it projects the reference center
+onto the selected host, without requiring tangent parallelism or concentricity.
+No persistent alignment constraint is created.
+
+Hover previews the selected opening/aperture at the candidate station, with
+both center marks and their perpendicular guide. Preview leaves model, history,
+cached drawing, and 3D unchanged. A valid click revalidates host fit and overlap,
+then updates only the selected instance's offset in one transaction. A no-op
+does not add history. Invalid targets and candidates explain the rejection and
+leave the action active; Escape, pointer loss, stale document/view/provider/
+selection/drawing context, or outside release cancels without delayed selection
+or pan. Typed and legacy openings, including unequal-width two-bay families,
+retain their other instance and type data. Live dimensions follow the opening.
+
+Automated egui evidence in
+`crates/os-ui/src/plan_workspace/opening_align_tests.rs` covers doors/windows,
+typed/legacy instances, both DPI profiles, reversed straight and signed major
+arc travel, mixed straight/arc pairs, exact center projection, preview
+immutability and regenerated plan/3D, field preservation, no-op, undo/redo,
+invalid/nonparallel/same-host/out-of-sweep/hidden/cropped/phase/level/fit/overlap
+cases, Escape/pointer loss/stale contexts, and pan/selection ownership.
+Nonparallel straight-to-straight alignment, multi-selection, persistent
+constraints, and native visual qualification remain outside this increment.
 
 A valid drag previews both the symbol and the host aperture using disposable
 native plan geometry. It does not change the document, history, cached drawing
@@ -697,15 +1081,41 @@ RoomFinish CSV and pagination. One live saved
 table can already be placed on a sheet. This increment does not complete S01 or
 claim native-window visual or physical-print qualification.
 
-Still limited: one profile-extruded panel/pane with generated frame members and a
-rectangular or simple polygon host cut; arcs/splines, multiple rings/holes,
-arbitrary/multiple/nested components, constrained sketches, formulas, material
-assignment, libraries, general mirror/flipping
-tools, tags, curved/plugin-defined hosts, general IFC family/component round-trip,
-or production readiness.
-Generated frames require a rectangular host cut. Pointer
-placement is limited to visible native straight walls. Native manual visual
-inspection has not been performed.
+## Circular-arc hosted openings (no schema change)
+
+Opening offset and width remain centerline stations measured from the wall's
+stored start. Fit, end clearance, overlap and snap logic use those analytic
+stations. The wall cut is swept radially through each resolved layer; profile
+cut regions, jamb reveals, plan footprints, sections, and net per-layer volume
+and mass use the same aperture. Panes, frames, lites and mullions follow the
+radial host. A door leaf remains a rigid Euclidean panel in the tangent frame at
+its hinge; the plan leaf and swing arc use that same frame. Tight-radius openings
+are rejected when inner-face clear widths or the rigid leaf would be infeasible.
+
+Preview remains transient: the model, history and 3D scene do not change during
+pointer motion. A valid release commits through the existing opening command and
+regenerates the curved host. No model schema, archive format, or plugin protocol
+changed. Circular wall joins, room topology, wall-face/angular dimensions,
+rectangular `Solid` conversion, IFC wall/opening exchange, splines and arbitrary
+plugin host paths remain unsupported. Straight-host geometry retains its prior
+path.
+
+Evidence: `curved_host_door_and_window_draw_width_preview_commit_plan_and_geometry_both_dpis`
+in `crates/os-ui/src/plan_workspace/arc_opening_tests.rs`, curved-host and
+rigid-leaf tests in `crates/os-geometry/tests/wall_arcs.rs`, host-fit and overlap
+checks in `crates/os-model/tests/wall_arcs.rs`, and
+`arc_openings_are_hosted_while_joins_and_invalid_properties_fail_without_mutation`
+in `crates/os-ui/tests/wall_arcs.rs`. Automated UI coverage runs at
+1280×800/100% and 1000×650/150%; manual native-window visual inspection remains
+open.
+
+Still limited: multiple rings/holes, arbitrary/multiple/nested components,
+constrained sketches, formulas, material assignment, office libraries, general
+mirror/flipping tools, tags, plugin-defined host paths, general IFC
+family/component round-trip, or production readiness. For straight hosts,
+generated rectangular frame rails still require a rectangular host cut. Pointer
+placement is limited to visible native straight or circular-arc walls. Native
+manual visual inspection has not been performed.
 
 ## Sill override acceptance — 2026-09-26
 
@@ -883,24 +1293,36 @@ plugins/walls/src/lib.rs
 
 ## Direct plan door controls
 
-When a native straight-wall door is selected and visible on its host-level
-floor plan, two labeled controls appear above its jambs. **Hinge** toggles
-Start/End; **Swing** toggles Left/Right relative to the host wall's stored
-start→end direction. Hovering either control explains that reference direction.
-Both have accessible action labels and distinct hover/pressed states.
-The controls are hidden for windows, unselected or hidden/cropped doors, active
-tools, and whenever their hit areas would overlap each other or the center/jamb
-grip acquisition areas. Their placement is checked independently of jamb-grip
-availability, so they remain available at ordinary 35 px/m zoom when their own
-hit areas fit. Both jambs must be inside the crop and canvas; each button must
-fit the canvas with padding.
+When one visible native door is selected in its host-level floor plan, two
+labeled controls can appear. On straight hosts they sit above the jambs. On
+circular arcs they center on the analytic center grip, with a deterministic
+alternate row if the first position conflicts or does not fit. **Hinge** toggles
+Start/End along the wall's stored station direction; **Swing** toggles Left/Right
+relative to the local tangent's left normal at the effective hinge. For either
+sweep sign, this is not screen-left/right or a global inside/outside choice.
+Hovering explains the reference direction. Both controls have accessible action
+labels and distinct hover/pressed states.
+
+Hinge/Swing controls are hidden for windows, multiple/unselected or hidden/cropped
+doors, active tools, and whenever their hit areas overlap each other or any
+center/jamb grip acquisition area. Typed windows instead expose **Side** when
+their effective pane is LeftFace or RightFace, and **Flip lite** when the type
+has a side-lite. A Center pane has no Side action; legacy windows have neither
+window action. These controls also work on circular arcs: both rows are centered
+on the analytic center grip, with a deterministic alternate row when needed.
+Pane side means the host's local left/right face (not screen direction), and lite
+Start/End follows the stored wall station direction, including either sweep
+sign. For arcs all three analytic anchors must be inside crop and canvas; each
+button must fit with padding and avoid the other action and grip acquisition
+areas. Placement does not change the hit radius or orientation behavior.
 
 Each click clones the selected instance parameters, changes exactly one
 orientation field, and submits the existing validated `Command::UpdateOpening`.
 The opening identity, host, offset, definition, dimensions, overrides, type/family,
-material assignments and the other orientation field are preserved. Plan symbol and door geometry regenerate
-through the existing evaluators; undo and redo each restore the complete change
-in one history step. No model schema or API change is involved. The press owns
+material assignments and the other orientation field are preserved. Plan symbol
+and opening geometry regenerate through the existing evaluators; arc flips
+preflight component geometry before committing. Undo and redo each restore the
+complete change in one history step. No model schema or API change is involved. The press owns
 the pointer until release: dragging, Escape, pointer loss, or changed document,
 revision, selection, drawing, view/settings, provider, camera or canvas cancels
 the flip without starting move, resize, selection or pan.
@@ -911,15 +1333,26 @@ exercise both controls at 1280×800/1× and 1000×650/1.5×, at the fixture's
 independent toggles, preserved material assignments and dimension pins, plan/scene regeneration, one-step
 undo/redo, tool and visibility suppression, hit-target separation from move and
 jamb grips, hover/pressed feedback, tooltips, accessible labels, stale/cancelled
-presses and clicks whose press/release arrive in one frame. Native visual
-inspection and physical-print qualification remain open.
+presses and clicks whose press/release arrive in one frame. Curved-host
+acceptance in `crates/os-ui/src/plan_workspace/arc_opening_tests.rs` covers both
+sweep signs on major, angle-wrapping arcs, typed/legacy doors, ordinary and high
+zoom, analytic-center placement/crop, alternate-row fallback, hit separation,
+preview immutability, tangent-relative leaf geometry, one-field history and
+multi-selection/cancel ownership at both display profiles. Curved-window
+acceptance covers unequal two-bay pane/lite geometry, both independent flips,
+effective pane/lite pin preservation, preview immutability, regenerated plan/3D,
+undo/redo, Center/legacy action suppression and alternate-row placement at both
+DPI profiles. Curved phase/provider staleness and exhaustive window-action
+visibility combinations remain untested. Native visual inspection and
+physical-print qualification remain open.
 
 ## Array along wall
 
 Select one visible native hosted door or window, then choose **Architecture →
 Array along wall**. Count is 2–256, including the unchanged source. Spacing is
-positive centre-to-centre distance in metres. Start and End refer to the host's
-stored endpoints, including when the wall is rotated or reversed. The panel
+positive centre-to-centre distance in metres, measured along the straight or
+circular host's analytic centerline. Start and End refer to the host's stored
+endpoints, including when the wall is rotated or reversed. The panel
 shows the clear gap (spacing minus effective opening width), proposed copies
 appear in plan, and invalid batches report the first invalid copy index.
 Nonfinite input and distance/offset overflow are rejected.
@@ -931,8 +1364,9 @@ instances; there is no persistent array relationship.
 
 **Copy tag in this plan** is off by default and offered only when the source has
 an active-plan tag. New tags receive new IDs and opening targets, retain the
-label preset, and translate their world positions along the host axis by the
-copy's displacement. Other views' tags are not copied. Creation checks resolve
+label preset, and move their relative tangent/normal position into each copy's
+local host frame (equivalent to translation on straight hosts). Other views'
+tags are not copied. Creation checks resolve
 each new target, and whole-model validation enforces per-view uniqueness and
 the 10,000-tag limit.
 
@@ -951,7 +1385,9 @@ consumed through release. No schema, storage format or plugin gesture protocol
 changes are required.
 
 Evidence: `cargo test -p os-ui --all-features opening_array -- --test-threads=1`
-passed **6 tests**. Tests live in
+passed **6 tests** on straight hosts. The curved-host two-DPI placement/move/
+array test below also validates analytic station spacing for doors and windows.
+Tests live in
 `crates/os-ui/src/plan_workspace/opening_array_tests.rs`, registered under the
 existing opening interaction harness. Real headless egui frames exercise
 1280×800 at 100% and 1000×650 at 150%. Coverage includes typed/legacy doors and
@@ -969,22 +1405,70 @@ Validation for this increment:
 - `cargo fmt --all -- --check`: passed.
 - `git diff --check`: passed (existing line-ending warnings only).
 
-Limits: one native straight host and one selected source; no multi-host, radial,
-constrained or general entity arrays. Preview remains clipped to the active
+Limits: one native straight or circular-arc host and one selected source; no
+multi-host, persistent, constrained or general entity arrays. Preview remains clipped to the active
 plan/canvas. Automated evidence is headless egui, not native-window visual or
 physical-print acceptance. Independent installed-provider acceptance is not
 newly exercised by these array tests.
+
+## Reassign selected openings to a project type
+
+Select 1–256 visible native doors or windows in their host-level floor plan,
+then use **Architecture → Change opening type…**. Shift-drag selection can
+collect a batch. Every member must be an opening of the same resolved kind;
+hidden, cropped-out, other-level, mixed-kind and non-opening members are rejected
+instead of skipped. The picker offers existing project types of that kind and
+includes stable UUIDs so duplicate names remain distinguishable.
+
+Typed instances retain all overrides. Values that are inherited follow the
+destination type, including its family and materials. Legacy instances become
+typed instances with their effective width, height and window sill pinned as
+overrides; the dialog explains this policy. UUID/header/metadata, host, first-jamb
+offset, hinge/swing and attached tags remain unchanged. Straight and signed major
+circular-arc hosts use the existing native geometry evaluators.
+
+The dialog keeps a disposable candidate. Valid candidates replace selected
+symbols and affected host apertures only in the plan paint stream. Model,
+history, cached drawing and 3D are unchanged until Apply. The whole candidate
+must pass model validation, opening fit and separation checks, every affected
+host mesh and its opening panel meshes. An invalid member rejects the whole
+batch and the dialog reports its opening or host ID. Canvas gestures are
+suppressed while the dialog is active.
+
+**Apply type** rebuilds and validates the candidate before submitting only
+changed `UpdateOpening` commands in one document transaction. Identical
+assignments create no history entry. Commit regenerates plan/3D; undo and redo
+retain the opening selection. Cancel, Escape, or a changed document session,
+revision, selection, view/settings, provider activation/signature or drawing
+discard the draft. No schema, storage or plugin protocol changed.
+
+Evidence: `crates/os-ui/src/plan_workspace/opening_type_assignment_tests.rs`
+uses real headless egui frames at 1280×800/100% and 1000×650/150% for single and
+batch selection, Door/Window, typed inheritance and pins, legacy conversion,
+straight and both signed major-arc hosts, immutable painted previews, invalid
+batch rejection, no-op, cancellation/staleness, selection-preserving undo/redo
+and regenerated plan/3D. It also covers marquee input, duplicate-name UUID
+selection, preserved tags/dimensions with live resolution, and save/reopen.
+This does not qualify native-window appearance or physical printing. General
+mixed-category bulk properties, formula-driven families and persistent
+constraints remain open.
 
 ## Temporary opening spacing dimensions
 
 Select exactly one visible native door or window in its host-level plan. Two
 temporary metre values measure from its start/end jamb along the wall's stored
-Start → End axis to the nearest qualifying other opening jamb on that side,
-or to the corresponding wall endpoint. Rotated and reversed hosts use the same
-axis convention. References must be present in the current phase/range drawing
-and inside the crop and canvas. A partially cropped neighbor can supply its
-visible jamb. A side is suppressed if its reference or label cannot fit visibly
-without overlapping the other label, flip buttons or opening grips.
+Start → End direction to the nearest qualifying other opening jamb on that side,
+or to the corresponding wall endpoint. On straight hosts this is the usual
+axis distance; on circular arcs it is centerline travel along the stored sweep,
+including major arcs rather than the shorter route around the circle. Rotated,
+reversed and clockwise/counterclockwise hosts use the same station convention.
+Arc dimensions are drawn as concentric curves with radial witnesses and an
+`Arc` label; their display offset is cosmetic and the exact value always uses
+the host centerline radius. References must be present in the current
+phase/range drawing and inside the crop and canvas. A partially cropped neighbor
+can supply its visible jamb when its centerline anchor remains visible. A side
+is suppressed if its full measured graphic or label cannot fit visibly without
+overlapping the other label, flip buttons or opening grips.
 
 Click a value, enter an exact distance in metres, and press Enter. Escape cancels.
 The draft starts with the full precision distance; the plan label displays three
@@ -1010,21 +1494,26 @@ Automated evidence lives in
 `crates/os-ui/src/plan_workspace/opening_spacing_tests.rs`. Headless egui frames
 cover 1280×800 at 100% and 1000×650 at 150%, typed/legacy doors and windows,
 both sides, neighboring jambs and wall endpoints, forward/reversed and rotated
-hosts, exact keyboard entry, no-op/history and preserved fields, invalid drafts,
-changed references and stale contexts, phase/range/visibility/crop/canvas,
-precedence, Escape and pointer loss. These tests do not qualify native-window
-appearance, physical printing, or independent installed-provider operation.
-This increment is limited to temporary spacing edits on straight native hosts.
+straight hosts, major circular arcs in both sweep directions, exact centerline
+travel versus chord distance, exact keyboard entry, no-op/history and preserved
+fields, invalid drafts, changed references and stale contexts,
+phase/range/visibility/crop/canvas, precedence, Escape and pointer loss. Unit
+tests also cover radial jamb qualification, bounded arc tessellation and cropped
+major-arc extrema. These tests do not qualify
+native-window appearance, physical printing, or independent installed-provider
+operation. This increment is limited to temporary spacing edits on straight and
+circular-arc native hosts; other path types remain unsupported.
 Door/window category visibility is implemented separately above; general
 view/detail visibility across other model categories and full Revit workflows
 remain open.
 
 Validation for temporary spacing:
 
-- `cargo test -p os-ui --all-features --lib opening_spacing -- --test-threads=1`:
-  8 passed, including short-gap label separation at both display profiles.
-- `cargo test -p os-ui --all-features --lib -- --test-threads=1`:
-  352 passed, 4 installed-Wall-guest tests ignored.
-- `cargo clippy --workspace --all-features --all-targets -- -D warnings`: passed.
+- `cargo test -p os-ui --all-features --locked --offline opening_spacing -- --test-threads=1`:
+  12 passed, including major-arc edits at both display profiles and unchanged
+  straight-host coverage.
+- `cargo test -p os-ui --all-features --locked --offline --lib -- --test-threads=1`:
+  380 passed, 4 installed-Wall-guest tests ignored.
+- `cargo clippy --workspace --all-features --all-targets --locked --offline -- -D warnings`: passed.
 - `cargo fmt --all -- --check`: passed.
 - `git diff --check`: passed (existing line-ending warnings only).

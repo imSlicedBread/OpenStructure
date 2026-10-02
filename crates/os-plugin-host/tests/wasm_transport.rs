@@ -164,7 +164,7 @@ fn worker_commands_commit_exactly_once_and_preserve_history() {
 
 #[test]
 fn legacy_model_guest_is_rejected_before_activation_or_model_dispatch() {
-    let legacy = wall_manifest().replace("api_version = 35", "api_version = 24");
+    let legacy = wall_manifest().replace("api_version = 43", "api_version = 24");
     // The normal install helper parses manifests through the current host and
     // therefore rejects API 22 before the directory loader sees the fixture.
     // Write the old guest package directly to exercise that load boundary.
@@ -909,7 +909,7 @@ fn loading_errors_leave_no_registrations_or_plugins() {
     for manifest in [
         PROBE_MANIFEST.replace("wasm:probe.wasm", "wasm:../probe.wasm"),
         PROBE_MANIFEST.replace("wasm:probe.wasm", "wasm:C:\\probe.wasm"),
-        PROBE_MANIFEST.replace("api_version = 35", "api_version = 999"),
+        PROBE_MANIFEST.replace("api_version = 43", "api_version = 999"),
         PROBE_MANIFEST.replace(
             "dependencies = []",
             "dependencies = [{ id = 'org.example.missing', version = '1.0.0' }]",

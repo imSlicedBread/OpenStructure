@@ -12,3 +12,4 @@ workspace = true
 [dependencies]
 os-core.workspace = true
 os-geometry.workspace = true
+os-model.workspace = true

@@ -55,7 +55,7 @@ fn lite_fixture(
     (h, id)
 }
 
-fn click_visible_form_text(h: &mut Harness, label: &str) {
+fn reveal_form_text(h: &mut Harness, label: &str) -> egui::Pos2 {
     for _ in 0..30 {
         let rendered = h.output.shapes.iter().find_map(|shape| match &shape.shape {
             egui::Shape::Text(text) if text.galley.job.text == label => {
@@ -64,12 +64,22 @@ fn click_visible_form_text(h: &mut Harness, label: &str) {
             _ => None,
         });
         let Some((position, clip)) = rendered else {
-            panic!("missing form text: {label}");
+            let center = egui::pos2(h.size.x / 2.0, h.size.y / 2.0);
+            h.frame(vec![
+                egui::Event::PointerMoved(center),
+                egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: egui::vec2(0.0, -120.0),
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]);
+            for _ in 0..8 {
+                h.frame(vec![]);
+            }
+            continue;
         };
         if position.y >= clip.top() + 32.0 && position.y <= clip.bottom() - 32.0 {
-            h.click(position);
-            h.frame(vec![]);
-            return;
+            return position;
         }
         let delta = if position.y > clip.bottom() - 32.0 {
             -120.0
@@ -89,6 +99,12 @@ fn click_visible_form_text(h: &mut Harness, label: &str) {
         }
     }
     panic!("form text never became visible: {label}");
+}
+
+fn click_visible_form_text(h: &mut Harness, label: &str) {
+    let position = reveal_form_text(h, label);
+    h.click(position);
+    h.frame(vec![]);
 }
 
 #[test]
@@ -188,6 +204,7 @@ fn opening_editor_lite_side_inherits_pins_and_resets_without_preview_mutation() 
         let before = h.app.editor.document.model().clone();
 
         h.text_click("Edit opening");
+        reveal_form_text(&mut h, "Lite at start");
         assert!(h.has_text("Lite at start"));
         assert!(h.has_text("Lite at end"));
         assert_eq!(h.app.editor.document.model(), &before);

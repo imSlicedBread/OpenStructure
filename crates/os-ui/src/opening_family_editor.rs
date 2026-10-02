@@ -35,21 +35,7 @@ impl OpeningTypeDraft {
 
     pub(super) fn preview_model(&self, editor: &Editor) -> Result<Model> {
         ensure(self.current(editor), "Opening type draft is stale")?;
-        let parameters = self.parameters()?;
-        parameters.validate()?;
-        let mut model = editor.document.model().clone();
-        if self.editing && !self.duplicate {
-            model.opening_types.get_mut(&self.id).unwrap().parameters = parameters;
-        } else {
-            let mut ty = OpeningType::new("core.opening_type", parameters);
-            ty.header.id = self.id;
-            model.opening_types.insert(self.id, ty);
-            if let Some(id) = self.source_opening {
-                model.openings.get_mut(&id).unwrap().parameters.definition =
-                    OpeningDefinition::Typed { type_id: self.id };
-            }
-        }
-        model.validate()?;
+        let model = editor.document.preview_commands(self.commands(editor)?)?;
         for opening in model
             .openings
             .values()
@@ -86,7 +72,7 @@ impl OpeningTypeDraft {
         let id = if let Some(id) = instance {
             id
         } else {
-            let p = &model.opening_types[&self.id].parameters;
+            let p = model.resolve_opening_type(self.id)?.parameters;
             let wall = os_model::Wall::new(
                 os_walls::WALL_TYPE,
                 WallParams {
@@ -104,6 +90,7 @@ impl OpeningTypeDraft {
             let opening = os_model::Opening::new(
                 "core.opening",
                 os_model::OpeningParams {
+                    open_state: Default::default(),
                     width_override: None,
                     height_override: None,
                     sill_override: None,

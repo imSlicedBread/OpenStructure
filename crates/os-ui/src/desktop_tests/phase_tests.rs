@@ -223,6 +223,7 @@ fn elements(h: &mut Harness) -> [Id; 3] {
     let opening = os_model::Opening::new(
         "core.opening",
         os_model::OpeningParams {
+            open_state: Default::default(),
             name: "Phase door".into(),
             host: wall,
             offset: 0.5,

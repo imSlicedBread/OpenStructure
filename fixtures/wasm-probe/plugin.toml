@@ -1,7 +1,7 @@
 id = "org.openstructure.probe"
 name = "Wasm geometry transport probe (not a modeling tool)"
 version = "0.1.0"
-api_version = 35
+api_version = 43
 entrypoint = "wasm:probe.wasm"
 dependencies = []
 capabilities = ["Geometry"]

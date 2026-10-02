@@ -234,7 +234,7 @@ fn import_openings(
                 } else {
                     ensure(
                         matches!(e.at(10)?, Value::Enum(op) if op == "SINGLE_SWING_LEFT" || op == "SINGLE_SWING_RIGHT"),
-                        "IFC: unsupported door type operation",
+                        "IFC: unsupported door type operation; paired hinged doors are unsupported",
                     )?;
                 }
             }
@@ -325,7 +325,11 @@ fn import_openings(
             let left = match op {
                 Value::Enum(op) if op == "SINGLE_SWING_LEFT" => true,
                 Value::Enum(op) if op == "SINGLE_SWING_RIGHT" => false,
-                _ => return Err(bad("unsupported door operation")),
+                _ => {
+                    return Err(bad(
+                        "unsupported door operation; paired hinged doors are unsupported",
+                    ));
+                }
             };
             (
                 if left != reverse {
@@ -411,6 +415,7 @@ fn import_openings(
         let mut opening = Opening::new(
             "core.opening",
             OpeningParams {
+                open_state: Default::default(),
                 width_override,
                 height_override,
                 sill_override,

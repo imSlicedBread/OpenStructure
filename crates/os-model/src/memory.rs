@@ -100,6 +100,19 @@ named_parameters!(GridParams, building, start, end);
 named_parameters!(MaterialParams, density_kg_m3, color);
 named_parameters!(PlanGraphicsTemplateParams, styles);
 named_parameters!(PhaseParams, order);
+named_parameters!(CurtainPanelTypeParams, kind, thickness, material);
+named_parameters!(CurtainMullionTypeParams, width, depth, material);
+named_parameters!(StairRailingParams, stair, railing_type, side);
+named_parameters!(
+    StairRailingTypeParams,
+    top_rail_height,
+    top_rail_width,
+    top_rail_depth,
+    post_width,
+    post_depth,
+    max_post_spacing,
+    material
+);
 // Plan settings contain only fixed-size scalars/points/options; inline entity
 // size already accounts for them. Keep this pattern exhaustive on schema changes.
 named_parameters!(ViewParams, kind, level, settings_revision, plan, section);
@@ -116,6 +129,16 @@ named_parameters!(
     material
 );
 named_parameters!(
+    RampParams,
+    lower_level,
+    upper_level,
+    start,
+    end,
+    width,
+    structural_thickness,
+    material
+);
+named_parameters!(
     ColumnParams,
     level,
     center,
@@ -125,8 +148,11 @@ named_parameters!(
     base_offset,
     material
 );
+named_parameters!(CaseworkTypeParams, width, depth, height, material);
+named_parameters!(CaseworkParams, type_id, level, center, yaw, base_offset);
 named_parameters!(
     OpeningParams,
+    open_state,
     host,
     offset,
     definition,
@@ -170,11 +196,22 @@ impl Model {
             wall_joins,
             floors,
             stairs,
+            ramps,
+            railings,
+            railing_types,
+            curtain_systems,
+            curtain_panel_types,
+            curtain_mullion_types,
             roofs,
             ceilings,
             columns,
+            casework_types,
+            casework,
             openings,
+            opening_clearances,
             opening_types,
+            length_parameters,
+            opening_type_length_bindings,
             dimensions,
             rooms,
             room_separation_lines,
@@ -194,6 +231,13 @@ impl Model {
             plugin_requirements,
         } = self;
         let mut estimate = Estimate(size_of::<Self>());
+        estimate.tree::<Id, OpeningClearance>(opening_clearances.len());
+        estimate.tree::<Id, OpeningTypeLengthBindings>(opening_type_length_bindings.len());
+        estimate.tree::<Id, LengthParameter>(length_parameters.len());
+        for parameter in length_parameters.values() {
+            estimate.header(&parameter.header);
+            estimate.add(parameter.parameters.name.capacity());
+        }
         estimate.entity(project);
         macro_rules! entities {
             ($values:ident, $ty:ty) => {
@@ -210,7 +254,36 @@ impl Model {
         estimate.tree::<Id, PlanGraphicsBinding>(plan_graphics.len());
         entities!(walls, Wall);
         entities!(columns, Column);
+        entities!(casework_types, CaseworkType);
+        entities!(casework, Casework);
         entities!(stairs, Stair);
+        entities!(ramps, Ramp);
+        entities!(railings, StairRailing);
+        entities!(railing_types, StairRailingType);
+        entities!(curtain_panel_types, CurtainPanelType);
+        entities!(curtain_mullion_types, CurtainMullionType);
+        estimate.tree::<Id, CurtainSystem>(curtain_systems.len());
+        for assembly in curtain_systems.values() {
+            estimate.header(&assembly.header);
+            let p = &assembly.parameters;
+            estimate.add(p.name.capacity());
+            estimate.add(
+                p.vertical
+                    .capacity()
+                    .saturating_add(p.horizontal.capacity())
+                    .saturating_mul(size_of::<CurtainGrid>()),
+            );
+            estimate.add(
+                p.panels
+                    .capacity()
+                    .saturating_mul(size_of::<CurtainPanel>()),
+            );
+            estimate.add(
+                p.mullions
+                    .capacity()
+                    .saturating_mul(size_of::<CurtainMullion>()),
+            );
+        }
         estimate.tree::<Id, Ceiling>(ceilings.len());
         for ceiling in ceilings.values() {
             estimate.header(&ceiling.header);

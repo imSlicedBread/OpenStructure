@@ -74,6 +74,11 @@ impl PlanDrawing {
                 hits.push(item.entity);
             }
         }
+        for item in self.casework(current)?.iter().rev() {
+            if item.footprint.contains(point) {
+                hits.push(item.entity);
+            }
+        }
         if in_crop {
             for room in self.rooms(current)?.iter().rev() {
                 if room.contains(point) {

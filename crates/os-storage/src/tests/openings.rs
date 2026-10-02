@@ -244,7 +244,7 @@ fn schema_24_frame_family_migration_is_lossless_atomic_and_persistent() {
     model.validate().unwrap();
     assert_eq!(model.schema_version, SCHEMA_VERSION);
     let ty = model.opening_types.values().next().unwrap();
-    assert_eq!(ty.parameters.family.version, 5);
+    assert_eq!(ty.parameters.family.version, 6);
     assert_eq!(ty.parameters.family.frame_width, 0.0);
     assert_eq!(ty.parameters.family.frame_depth, 0.05);
     assert_eq!(migrated["extensions"], original["extensions"]);
@@ -340,7 +340,7 @@ fn schema_25_host_cut_profile_migration_is_lossless_atomic_and_persistent() {
     model.validate().unwrap();
     assert_eq!(model.schema_version, SCHEMA_VERSION);
     let ty = model.opening_types.values().next().unwrap();
-    assert_eq!(ty.parameters.family.version, 5);
+    assert_eq!(ty.parameters.family.version, 6);
     assert_eq!(
         ty.parameters.family.host_cut,
         os_model::OpeningHostCut::Rectangular

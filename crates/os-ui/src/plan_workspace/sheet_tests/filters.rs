@@ -25,6 +25,7 @@ fn opening_schedule_filters_propagate_to_paper_table_sheet_preview_and_vector_pd
         let opening = Opening::new(
             "core.opening",
             OpeningParams {
+                open_state: Default::default(),
                 name: "D01".into(),
                 host: wall.id(),
                 offset: 1.0,

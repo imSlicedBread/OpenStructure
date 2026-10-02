@@ -1,6 +1,84 @@
 use super::*;
 use os_core::Point2;
 
+#[test]
+fn floor_properties_preview_and_commit_preserve_rings_and_identity() {
+    let (mut doc, mut floor, view) = fixture();
+    floor.parameters.boundary = vec![
+        Point2::new(0., 0.),
+        Point2::new(8., 0.),
+        Point2::new(8., 8.),
+        Point2::new(0., 8.),
+    ];
+    floor.parameters.holes = vec![
+        vec![
+            Point2::new(1., 1.),
+            Point2::new(2., 1.),
+            Point2::new(2., 2.),
+            Point2::new(1., 2.),
+        ],
+        vec![
+            Point2::new(4., 4.),
+            Point2::new(5., 4.),
+            Point2::new(5., 5.),
+            Point2::new(4., 5.),
+        ],
+    ];
+    let id = floor.id();
+    doc.execute("Fixture", vec![Command::AddFloor(floor.clone())])
+        .unwrap();
+    doc.drain_events();
+    let original = doc.model().clone();
+    let revision = doc.revision();
+    let mut parameters = floor.parameters.clone();
+    parameters.name = "Revised slab".into();
+    parameters.thickness = 0.5;
+    parameters.top_offset = -0.2;
+    parameters.material = None;
+    let command = Command::UpdateFloor {
+        id,
+        parameters: parameters.clone(),
+    };
+    let preview = doc.preview_commands(vec![command.clone()]).unwrap();
+    assert_eq!(doc.model(), &original);
+    assert_eq!(doc.revision(), revision);
+    assert!(doc.drain_events().is_empty());
+    assert_eq!(preview.floors[&id].header, floor.header);
+    assert_eq!(
+        preview.floors[&id].parameters.boundary,
+        floor.parameters.boundary
+    );
+    assert_eq!(preview.floors[&id].parameters.holes, floor.parameters.holes);
+    for case in 0..6 {
+        let mut invalid = parameters.clone();
+        match case {
+            0 => invalid.name.clear(),
+            1 => invalid.name = "bad\nname".into(),
+            2 => invalid.level = Id::new(),
+            3 => invalid.material = Some(Id::new()),
+            4 => invalid.thickness = f64::NAN,
+            _ => invalid.top_offset = f64::INFINITY,
+        }
+        let command = Command::UpdateFloor {
+            id,
+            parameters: invalid,
+        };
+        assert!(doc.preview_commands(vec![command.clone()]).is_err());
+        assert!(doc.execute("Invalid properties", vec![command]).is_err());
+        assert_eq!(doc.model(), &original);
+        assert_eq!(doc.revision(), revision);
+    }
+    doc.execute("Edit floor properties", vec![command]).unwrap();
+    assert_eq!(doc.model(), &preview);
+    assert_eq!(doc.revision(), revision + 1);
+    assert_eq!(doc.history_stats().undo_entries, 2);
+    assert!(doc.drain_events()[0].invalidated.contains(&view));
+    assert!(doc.undo());
+    assert_eq!(doc.model(), &original);
+    assert!(doc.redo());
+    assert_eq!(doc.model(), &preview);
+}
+
 fn fixture() -> (Document, Floor, Id) {
     let mut model = Model::new("Floors");
     let level = *model.levels.keys().next().unwrap();

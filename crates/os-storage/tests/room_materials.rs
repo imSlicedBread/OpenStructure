@@ -17,7 +17,7 @@ fn room_materials_frozen_schema34_preservation_and_save_reopen() {
     let old = frozen();
     let mut value = old.clone();
     migrate(&mut value, 34).unwrap();
-    assert_eq!(SCHEMA_VERSION, 54);
+    assert_eq!(SCHEMA_VERSION, 62);
     assert_eq!(value["schema_version"], SCHEMA_VERSION);
     let mut reverse = value.clone();
     reverse["schema_version"] = json!(34);

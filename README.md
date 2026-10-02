@@ -11,11 +11,12 @@ The project aims to provide a practical alternative for parametric building desi
 OpenStructure has a 13-package Rust workspace with a native egui/eframe desktop,
 typed semantic model, atomic edits and bounded snapshot undo/redo, versioned
 `.osb` storage, restricted IFC4 exchange, and a depth-buffered 3D viewport with
-matching entity selection. The current native model is schema 54.
+matching entity selection. The current native model is schema 62.
 
 Native authoring now includes straight and circular walls, bounded straight-wall
-joins, hosted doors and windows, floors, ceilings, roofs, stairs, columns, rooms,
-and architectural grids. Plan and split views support snapping, selection,
+joins, hosted doors and windows, floors, ceilings, roofs, stairs, columns,
+straight-run ramps, stair-hosted railings, casework, rooms, architectural grids,
+and partial curtain systems. Plan and split views support snapping, selection,
 dimensions, tags, sections, schedules, and basic sheet/vector-PDF output. These
 are development slices, not a production BIM or drawing system; the
 [coverage ledger](docs/2d-coverage.md) records the exact supported scope.
@@ -28,6 +29,10 @@ symbols, per-plan door/window visibility, and phase-aware schedules with
 grouping and CSV export. See [walls and joins](docs/native-wall-types.md),
 [dimensions](docs/native-dimensions.md), and
 [hosted openings](docs/native-hosted-openings.md) for behavior and limits.
+The latest slices also add typed casework, straight-run ramps, stair railings,
+and curtain assembly editing. See [casework](docs/native-casework.md),
+[ramps](docs/native-ramps.md), and
+[curtain systems](docs/native-curtain-systems.md).
 
 The [B/C development baseline](docs/bc-baseline-audit.md) is verified on Windows.
 The optional `external-plugins` build supports explicit directory installation,
@@ -49,7 +54,7 @@ installs or automatically executes a plugin from that file.
 Typed opening properties independently inherit, pin or reset dimensions.
 Selected jamb handles resize with the opposite jamb fixed; the center grip
 still moves the whole opening. Drafts do not mutate the model or 3D scene.
-Native full-model plugins require API 35/schema 54; generic API 2/container 2
+Native full-model plugins require API 43/schema 62; generic API 2/container 2
 remain unchanged.
 Schema 35 adds independent floor/wall/ceiling project material assignments to rooms,
 live material-name-plus-code schedule cells, and subdued floor RGB fills in resolved

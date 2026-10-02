@@ -16,6 +16,14 @@ impl Draft {
             "Pick inside the selected visible wall",
         )?;
         let source = &self.original.walls[&self.id];
+        ensure(
+            !self
+                .original
+                .opening_clearances
+                .keys()
+                .any(|id| self.original.openings[id].parameters.host == self.id),
+            "Unlock hosted opening clearances before splitting this wall",
+        )?;
         let original = &source.parameters;
         let world = self.context.basis.plane_to_world(point)?;
         let length = original.length();

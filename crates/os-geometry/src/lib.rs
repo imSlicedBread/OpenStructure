@@ -1,12 +1,16 @@
 //! Replaceable geometry kernel with plain serializable boundary types.
 use os_core::{Error, Point2, Result, ensure};
 use serde::{Deserialize, Serialize};
+pub mod casework;
 pub mod ceilings;
 pub mod columns;
+pub mod curtain_systems;
 pub mod floor_holes;
 pub mod floors;
 pub mod openings;
 pub mod plan;
+pub mod railings;
+pub mod ramps;
 pub mod reflected;
 pub mod roofs;
 pub mod rooms;

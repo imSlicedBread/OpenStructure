@@ -19,12 +19,15 @@ fn schema_seventeen_migration_is_explicit_and_atomic() {
     common::apply_wall_paths(&mut expected);
     expected["schema_version"] = json!(SCHEMA_VERSION);
     expected["opening_tags"] = json!({});
+    expected["opening_clearances"] = json!({});
     expected["detail_lines"] = json!({});
     expected["room_separation_lines"] = json!({});
     expected["wall_joins"] = json!({});
     expected["wall_types"] = json!({});
     expected["wall_type_assignments"] = json!({});
     expected["columns"] = json!({});
+    expected["casework_types"] = json!({});
+    expected["casework"] = json!({});
     expected["plan_graphics_templates"] = json!({});
     expected["plan_graphics"] = json!({});
     expected["stairs"] = json!({});

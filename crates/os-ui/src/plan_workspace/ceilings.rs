@@ -146,6 +146,7 @@ impl DesktopApp {
         self.plans.roof_draft = None;
         self.plans.stair_placement = None;
         self.plans.column_placement = None;
+        self.plans.casework_placement = None;
         self.plans.section_placement = None;
         self.plans.detail_line_draft = None;
         self.plans.room_separation_line_draft = None;

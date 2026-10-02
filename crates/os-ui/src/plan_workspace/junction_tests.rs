@@ -409,6 +409,7 @@ fn add_opening(h: &mut Harness, host: Id) -> Id {
     let opening = Opening::new(
         "core.opening",
         OpeningParams {
+            open_state: Default::default(),
             name: "Fixed world window".into(),
             host,
             offset: 0.4,

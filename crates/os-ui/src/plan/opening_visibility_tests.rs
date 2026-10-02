@@ -15,6 +15,7 @@ fn opening_visibility_independent_categories_views_cutouts_annotations_picks_sna
         let opening = Opening::new(
             "core.opening",
             OpeningParams {
+                open_state: Default::default(),
                 name: format!("{kind:?}"),
                 host: walls[0],
                 offset,

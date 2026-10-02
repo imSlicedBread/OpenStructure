@@ -38,6 +38,16 @@ pub struct OpeningBays {
     pub mullion: (f64, f64),
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub enum DoorLeaves {
+    #[default]
+    Single,
+    Paired {
+        active_fraction: f64,
+    },
+}
+
 fn required_side_lite<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> std::result::Result<Option<SideLite>, D::Error> {
@@ -48,6 +58,7 @@ fn required_side_lite<'de, D: serde::Deserializer<'de>>(
 #[serde(deny_unknown_fields)]
 pub struct OpeningFamily {
     pub version: u32,
+    pub door_leaves: DoorLeaves,
     pub host_cut: OpeningHostCut,
     pub operation: OpeningComponentOperation,
     /// One simple closed ring (closure implicit), in width/height fractions.
@@ -79,7 +90,8 @@ fn required_material<'de, D: serde::Deserializer<'de>>(
 impl Default for OpeningFamily {
     fn default() -> Self {
         Self {
-            version: 5,
+            version: 6,
+            door_leaves: DoorLeaves::Single,
             host_cut: OpeningHostCut::Rectangular,
             operation: OpeningComponentOperation::ProfileExtrusion,
             profile: vec![
@@ -127,7 +139,23 @@ impl OpeningFamily {
     }
 
     pub fn validate(&self) -> Result<()> {
-        ensure(self.version == 5, "unsupported opening family version")?;
+        ensure(self.version == 6, "unsupported opening family version")?;
+        if let DoorLeaves::Paired { active_fraction } = self.door_leaves {
+            ensure(
+                active_fraction.is_finite() && active_fraction > 0. && active_fraction < 1.,
+                "active leaf fraction must be between zero and one",
+            )?;
+            ensure(
+                self.host_cut == OpeningHostCut::Rectangular
+                    && self.rectangular_cut()
+                    && self
+                        .profile
+                        .iter()
+                        .all(|p| p.x == 0. || p.x == 1. || p.y == 0. || p.y == 1.)
+                    && Self::rectangle().iter().all(|p| self.profile.contains(p)),
+                "paired doors require rectangular component and full rectangular host cut profiles",
+            )?;
+        }
         if let Some(lite) = &self.side_lite {
             ensure(
                 lite.width_fraction.is_finite()
@@ -239,6 +267,18 @@ impl OpeningFamily {
     pub fn validate_for(&self, width: f64, height: f64, kind: crate::OpeningKind) -> Result<()> {
         self.validate()?;
         self.bays(width)?;
+        if let DoorLeaves::Paired { active_fraction } = self.door_leaves {
+            ensure(
+                kind == crate::OpeningKind::Door,
+                "windows require Single door leaves",
+            )?;
+            let (start, end) = self.primary_interval(width)?;
+            ensure(
+                (end - start) * active_fraction >= 0.001
+                    && (end - start) * (1. - active_fraction) >= 0.001,
+                "active and inactive door leaves each need at least 1 mm clear width",
+            )?;
+        }
         ensure(
             width.is_finite() && height.is_finite() && width > 0. && height > 0.,
             "invalid opening dimensions",
@@ -269,6 +309,13 @@ impl OpeningFamily {
             )?;
         }
         Ok(())
+    }
+
+    /// Clear bay intervals in metres from the full opening Start jamb.
+    pub fn primary_interval(&self, width: f64) -> Result<(f64, f64)> {
+        Ok(self
+            .bays(width)?
+            .map_or((self.frame_width, width - self.frame_width), |b| b.primary))
     }
 
     /// Clear bay intervals in metres from the full opening Start jamb.
@@ -422,6 +469,62 @@ mod tests {
     use super::*;
 
     #[test]
+    fn paired_door_layout_requires_rectangles_doors_and_resolved_clear_widths() {
+        let mut family = OpeningFamily::default();
+        for fraction in [0., 1., -0.1, f64::NAN, f64::INFINITY] {
+            family.door_leaves = DoorLeaves::Paired {
+                active_fraction: fraction,
+            };
+            assert!(
+                family
+                    .validate_for(1., 2., crate::OpeningKind::Door)
+                    .is_err()
+            );
+        }
+        family.door_leaves = DoorLeaves::Paired {
+            active_fraction: 0.5,
+        };
+        family
+            .validate_for(0.002, 2., crate::OpeningKind::Door)
+            .unwrap();
+        assert!(
+            family
+                .validate_for(0.0019, 2., crate::OpeningKind::Door)
+                .is_err()
+        );
+        assert!(
+            family
+                .validate_for(1., 2., crate::OpeningKind::Window)
+                .is_err()
+        );
+        family.frame_width = 0.05;
+        family.side_lite = Some(SideLite {
+            side: LiteSide::End,
+            width_fraction: 0.25,
+            mullion_width: 0.05,
+            material: None,
+        });
+        family.door_leaves = DoorLeaves::Paired {
+            active_fraction: 0.75,
+        };
+        let (a, b) = family.primary_interval(2.).unwrap();
+        assert!((a - 0.05).abs() < 1e-12 && (b - 1.4).abs() < 1e-12);
+        family
+            .validate_for(2., 2., crate::OpeningKind::Door)
+            .unwrap();
+        assert!(
+            family
+                .validate_for(0.2, 2., crate::OpeningKind::Door)
+                .is_err()
+        );
+        family.profile[2].y = 0.8;
+        assert!(family.validate().is_err());
+        family.profile = OpeningFamily::rectangle();
+        family.host_cut = OpeningHostCut::Profile;
+        assert!(family.validate().is_err());
+    }
+
+    #[test]
     fn two_bay_bounds_profiles_and_physical_widths() {
         let mut minimum = OpeningFamily {
             side_lite: Some(SideLite {
@@ -556,6 +659,7 @@ mod tests {
             "panel_material",
             "frame_material",
             "side_lite",
+            "door_leaves",
         ] {
             let mut value = serde_json::to_value(&family).unwrap();
             value.as_object_mut().unwrap().remove(key);
@@ -564,9 +668,9 @@ mod tests {
         let mut future = serde_json::to_value(&family).unwrap();
         future["operation"] = serde_json::json!("Sweep");
         assert!(serde_json::from_value::<OpeningFamily>(future).is_err());
-        family.version = 6;
+        family.version = 7;
         assert!(family.validate().is_err());
-        family.version = 5;
+        family.version = 6;
         family.frame_width = 0.3;
         assert!(
             family

@@ -188,6 +188,16 @@ impl DesktopApp {
                                     {
                                         self.select(None);
                                     }
+                                    if ui.add_enabled(self.plans.active.is_some() && self.plans.active_sheet.is_none(), egui::Button::new("Curtain"))
+                                        .on_hover_text("Place a native curtain system with two plan clicks.")
+                                        .clicked() && let Some(view) = self.plans.active {
+                                        self.begin_curtain(view);
+                                    }
+                                    if ui.add_enabled(self.plans.active.is_some() && self.plans.active_sheet.is_none(), egui::Button::new("Casework"))
+                                        .on_hover_text("Place a rectangular casework unit; repeated instances can share an editable project type.")
+                                        .clicked() && let Some(view) = self.plans.active {
+                                        self.begin_casework(view);
+                                    }
                                 });
                                 ribbon_group(ui, "Datum", |ui| {
                                     if command(ui, Icon::Level, "Add level", true)
@@ -314,6 +324,9 @@ impl DesktopApp {
         ribbon_group(ui, "Phases", |ui| {
             if ui.button("Manage phases…").clicked() {
                 self.begin_phases();
+            }
+            if ui.button("Project Length parameters…").clicked() {
+                self.begin_length_parameters();
             }
         });
         ribbon_group(ui, "Project", |ui| {

@@ -497,7 +497,7 @@ fn wall_align_geometry_parallel_tolerance_and_perpendicular_translation() {
     assert!(alignment_shift(a, b, Point2::new(0.0, 1.0), Point2::new(1.0, 1.000000005)).is_ok());
 }
 
-fn paint_line(
+pub(super) fn paint_line(
     painter: &egui::Painter,
     camera: PlanCamera,
     rect: egui::Rect,

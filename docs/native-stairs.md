@@ -31,22 +31,47 @@ strokes, direction arrow, section contours and vector sheet/PDF graphics derive
 from the same checked stair entity/geometry. Commit, undo/redo, direct file open
 and staged plugin-project open regenerate the 3D mesh.
 
+Select a stair in Properties and add a left or right railing (side is relative
+to travel uphill). Each railing is an independent stable-ID, stair-hosted
+instance referencing a shared railing type. The first placement creates a
+standard type; subsequent instances reuse a compatible type. The shared type
+controls top-rail height/section, post dimensions, maximum post spacing and
+material. Posts are regenerated at the stair's tread stations; a type is rejected
+when its spacing cannot cover a tread or its members do not fit the host. A
+selected railing exposes staged instance and shared-type edits, with preview
+validation and one undoable apply. Deleting the stair removes all hosted
+railings in the same transaction; direct model deletion that would orphan a
+railing is rejected.
+
+The continuous sloped top rail and individual posts are separate checked closed
+members. The combined mesh feeds the 3D scene; plan centerline/post marks and
+section contours retain the railing's identity and flow through sheet/vector-PDF
+output. Changes to the host stair, its levels, shared type or material invalidate
+the railing and its derived views.
+
 ## Persistence and limits
 
 Model schema 37 adds a required `stairs` map; the atomic 36→37 migration inserts
-an empty map and advances native headers. At introduction, native full-model
-plugins used API 18/schema 37; current guests require API 32/schema 51. Generic
-API 2 and the `.osb` container version do not change. The
-bounded IFC writer refuses projects containing native stairs rather than
-silently dropping them.
+an empty map and advances native headers. Schema 59→60 adds `railings` and
+`railing_types`; native plugins now require API 43/schema 62. Generic API 2 and
+the `.osb` container version do not change. The bounded IFC writer refuses
+projects containing native stairs or railings rather than silently dropping
+them.
 
-This increment does not create landings, turns, separate stringers, railings,
-slab openings, stair/slab joins, stair quantities or code-compliance results.
-An arrival tread may therefore conflict with an upper slab unless the modeler
-provides an appropriate opening. A section cut exactly coplanar with an
-intermediate riser remains a known degeneracy in the current section kernel;
-other longitudinal and transverse cuts are supported. No native-window or
-physical-print qualification is claimed.
+Schema 60→61 adds the required `ramps` map for native straight-run ramps; see
+[native ramp authoring](native-ramps.md). Native plugin compatibility remains
+API 43/schema 62.
+
+This increment does not create stair landings or turns, separate stringers,
+slab openings/joins, stair quantities, railing extensions, infill panels,
+custom profiles, free-standing rails or code-compliance results. The first
+railing type is a simple rectangular top rail with vertical posts; only straight
+stair hosts and left/right sides are supported. Generated post corners and rail
+elevations are validated against the architectural coordinate envelope before
+commit. An arrival tread may conflict with an upper slab unless the modeler
+provides an opening. A stair or railing-member section cut exactly coplanar
+with a riser/triangulation edge remains ambiguous in the section kernel. No
+native-window or physical-print qualification is claimed.
 
 Automated model, geometry, transaction, migration/save-reopen, plan, section,
 scene-regeneration and egui evidence is recorded in the [2D coverage ledger](2d-coverage.md).

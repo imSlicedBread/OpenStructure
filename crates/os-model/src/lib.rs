@@ -3,7 +3,15 @@ use os_core::{Id, Point2, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub const SCHEMA_VERSION: u32 = 54;
+pub const SCHEMA_VERSION: u32 = 62;
+mod railings;
+pub use railings::*;
+mod curtain_systems;
+pub use curtain_systems::*;
+mod opening_lengths;
+pub use opening_lengths::*;
+mod opening_clearances;
+pub use opening_clearances::*;
 mod wall_path;
 pub use wall_path::*;
 mod phases;
@@ -14,6 +22,8 @@ mod plan_graphics;
 pub use plan_graphics::*;
 mod columns;
 pub use columns::*;
+mod casework;
+pub use casework::*;
 mod wall_types;
 pub use wall_types::*;
 mod wall_joins;
@@ -30,6 +40,8 @@ mod floors;
 pub use floors::*;
 mod stairs;
 pub use stairs::*;
+mod ramps;
+pub use ramps::*;
 mod ceilings;
 pub use ceilings::*;
 mod roofs;
@@ -288,11 +300,23 @@ pub struct Model {
     pub wall_joins: BTreeMap<Id, WallJoin>,
     pub floors: BTreeMap<Id, Floor>,
     pub stairs: BTreeMap<Id, Stair>,
+    pub ramps: BTreeMap<Id, Ramp>,
+    pub railings: BTreeMap<Id, StairRailing>,
+    pub railing_types: BTreeMap<Id, StairRailingType>,
+    pub curtain_systems: BTreeMap<Id, CurtainSystem>,
+    pub curtain_panel_types: BTreeMap<Id, CurtainPanelType>,
+    pub curtain_mullion_types: BTreeMap<Id, CurtainMullionType>,
     pub roofs: BTreeMap<Id, Roof>,
     pub ceilings: BTreeMap<Id, Ceiling>,
     pub columns: BTreeMap<Id, Column>,
+    pub casework_types: BTreeMap<Id, CaseworkType>,
+    pub casework: BTreeMap<Id, Casework>,
     pub openings: BTreeMap<Id, Opening>,
+    /// At most one host-end clearance constraint per native opening.
+    pub opening_clearances: BTreeMap<Id, OpeningClearance>,
     pub opening_types: BTreeMap<Id, OpeningType>,
+    pub length_parameters: BTreeMap<Id, LengthParameter>,
+    pub opening_type_length_bindings: BTreeMap<Id, OpeningTypeLengthBindings>,
     pub rooms: BTreeMap<Id, Room>,
     pub room_separation_lines: BTreeMap<Id, RoomSeparationLine>,
     pub phases: BTreeMap<Id, Phase>,
@@ -362,11 +386,22 @@ impl Model {
             wall_joins: BTreeMap::new(),
             floors: BTreeMap::new(),
             stairs: BTreeMap::new(),
+            ramps: BTreeMap::new(),
+            railings: BTreeMap::new(),
+            railing_types: BTreeMap::new(),
+            curtain_systems: BTreeMap::new(),
+            curtain_panel_types: BTreeMap::new(),
+            curtain_mullion_types: BTreeMap::new(),
             roofs: BTreeMap::new(),
             ceilings: BTreeMap::new(),
             columns: BTreeMap::new(),
+            casework_types: BTreeMap::new(),
+            casework: BTreeMap::new(),
             openings: BTreeMap::new(),
+            opening_clearances: BTreeMap::new(),
             opening_types: BTreeMap::new(),
+            length_parameters: BTreeMap::new(),
+            opening_type_length_bindings: BTreeMap::new(),
             rooms: BTreeMap::new(),
             room_separation_lines: BTreeMap::new(),
             phases: BTreeMap::from([
@@ -423,6 +458,8 @@ impl Model {
         check_map!(buildings, "core.building");
         check_map!(levels, "core.level");
         check_map!(columns, "core.column");
+        check_map!(casework_types, "core.casework_type");
+        check_map!(casework, "core.casework");
         check_map!(grids, "core.grid");
         check_map!(walls, "org.openstructure.walls.wall");
         check_map!(wall_types, "core.wall_type");
@@ -444,6 +481,9 @@ impl Model {
         validate_wall_joins(self)?;
         check_map!(openings, "core.opening");
         check_map!(opening_types, "core.opening_type");
+        check_map!(length_parameters, "core.length_parameter");
+        self.validate_opening_lengths()?;
+        self.validate_opening_clearances()?;
         check_map!(rooms, "core.room");
         check_map!(room_separation_lines, "core.room_separation_line");
         check_map!(phases, "core.phase");
@@ -455,6 +495,31 @@ impl Model {
         detail_lines::validate(self)?;
         check_map!(floors, "core.floor");
         check_map!(stairs, "core.stair");
+        check_map!(ramps, "core.ramp");
+        check_map!(railings, "core.railing");
+        check_map!(railing_types, "core.railing_type");
+        ensure(
+            self.railings.len() <= MAX_STAIR_RAILINGS
+                && self.railing_types.len() <= MAX_STAIR_RAILINGS,
+            "railing collection limit exceeded",
+        )?;
+        for ty in self.railing_types.values() {
+            ty.parameters.validate_in(self)?;
+        }
+        let mut railing_sides = BTreeSet::new();
+        for railing in self.railings.values() {
+            railing.parameters.validate_in(self)?;
+            ensure(
+                railing_sides.insert((
+                    railing.parameters.stair,
+                    railing.parameters.side == StairRailingSide::Left,
+                )),
+                "a stair may have at most one railing per side",
+            )?;
+        }
+        check_map!(curtain_systems, "core.curtain_system");
+        check_map!(curtain_panel_types, "core.curtain_panel_type");
+        check_map!(curtain_mullion_types, "core.curtain_mullion_type");
         check_map!(roofs, "core.roof");
         check_map!(ceilings, "core.ceiling");
         check_map!(dimensions, "core.dimension");
@@ -466,6 +531,7 @@ impl Model {
         check_map!(schedules, "core.schedule");
         schedules::validate(self)?;
         sheets::validate(self, &mut ids)?;
+        curtain_systems::validate(self, &mut ids)?;
         extensions::validate(self, &mut ids)?;
         for ty in self.wall_types.values() {
             for layer in &ty.parameters.layers {
@@ -532,8 +598,19 @@ impl Model {
         for column in self.columns.values() {
             column.parameters.validate_in(self)?;
         }
+        for casework_type in self.casework_types.values() {
+            casework_type.parameters.validate_in(self)?;
+        }
+        for casework in self.casework.values() {
+            casework
+                .parameters
+                .validate_in(self, &self.casework_types)?;
+        }
         for stair in self.stairs.values() {
             stair.parameters.validate_in(self)?;
+        }
+        for ramp in self.ramps.values() {
+            ramp.parameters.validate_in(self)?;
         }
         for ceiling in self.ceilings.values() {
             ceiling.parameters.validate_in(self)?;

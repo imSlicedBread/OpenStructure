@@ -106,9 +106,13 @@ impl Model {
             || self.openings.contains_key(&id)
             || self.floors.contains_key(&id)
             || self.stairs.contains_key(&id)
+            || self.ramps.contains_key(&id)
+            || self.railings.contains_key(&id)
+            || self.curtain_systems.contains_key(&id)
             || self.roofs.contains_key(&id)
             || self.ceilings.contains_key(&id)
             || self.columns.contains_key(&id)
+            || self.casework.contains_key(&id)
             || self.rooms.contains_key(&id)
             || self.room_separation_lines.contains_key(&id)
     }
@@ -363,6 +367,7 @@ mod tests {
         let opening = Opening::new(
             "core.opening",
             OpeningParams {
+                open_state: Default::default(),
                 width_override: None,
                 height_override: None,
                 sill_override: None,

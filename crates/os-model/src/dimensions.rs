@@ -1,5 +1,5 @@
 //! View-owned reporting dimensions. Measurements are derived from live anchors.
-use crate::{Entity, Model, ViewKind};
+use crate::{Entity, Model, ViewKind, WallPath};
 use os_core::{Id, Point2, Result, ensure};
 use serde::{Deserialize, Serialize};
 
@@ -70,13 +70,13 @@ impl DimensionReference {
     }
 
     /// Shared by model resolution and revision-bound render snapshots.
-    /// The wall callback returns level, stored axis, and effective total thickness.
-    /// Only face references consume thickness; invalid thickness or geometry
-    /// leaves those references orphaned without changing endpoint/jamb behavior.
+    /// The wall callback returns level, analytic path, and effective total
+    /// thickness. Only straight wall-face references consume thickness; invalid
+    /// thickness or geometry leaves those references orphaned.
     pub fn resolve_with(
         self,
         level: Id,
-        mut wall: impl FnMut(Id) -> Option<(Id, Point2, Point2, f64)>,
+        mut wall: impl FnMut(Id) -> Option<(Id, WallPath, f64)>,
         mut opening: impl FnMut(Id) -> std::result::Result<(Id, f64, f64), DimensionDiagnostic>,
     ) -> std::result::Result<Point2, DimensionDiagnostic> {
         let (host, station) = match self {
@@ -99,7 +99,7 @@ impl DimensionReference {
                 )
             }
         };
-        let (host_level, start, end, thickness) = wall(host).ok_or(match self {
+        let (host_level, path, thickness) = wall(host).ok_or(match self {
             Self::WallEndpoint { .. } | Self::WallFace { .. } => DimensionDiagnostic::MissingWall,
             Self::OpeningJamb { .. } => DimensionDiagnostic::MissingOpeningHost,
         })?;
@@ -107,19 +107,19 @@ impl DimensionReference {
             return Err(DimensionDiagnostic::WrongLevel);
         }
         let mut point = if let Some(station) = station {
-            let length = start.distance(end);
+            let length = path.length();
             if !length.is_finite() || length <= 1e-6 {
                 return Err(DimensionDiagnostic::InvalidGeometry);
             }
             if matches!(self, Self::WallFace { .. })
-                && (!station.is_finite() || station < 0.0 || station > length)
+                && (!path.is_straight()
+                    || !station.is_finite()
+                    || station < 0.0
+                    || station > length)
             {
                 return Err(DimensionDiagnostic::InvalidGeometry);
             }
-            Point2::new(
-                start.x + (end.x - start.x) / length * station,
-                start.y + (end.y - start.y) / length * station,
-            )
+            path.point(station)
         } else if matches!(
             self,
             Self::WallEndpoint {
@@ -127,23 +127,24 @@ impl DimensionReference {
                 ..
             }
         ) {
-            start
+            path.start()
         } else {
-            end
+            path.end()
         };
         if let Self::WallFace { side, .. } = self {
             if !thickness.is_finite() || thickness <= 0.0 {
                 return Err(DimensionDiagnostic::InvalidGeometry);
             }
+            let station = station.ok_or(DimensionDiagnostic::InvalidGeometry)?;
             let offset = thickness / 2.0
                 * if side == DimensionWallSide::Left {
                     1.0
                 } else {
                     -1.0
                 };
-            let length = start.distance(end);
-            point.x -= (end.y - start.y) / length * offset;
-            point.y += (end.x - start.x) / length * offset;
+            let tangent = path.tangent(station);
+            point.x -= tangent.y * offset;
+            point.y += tangent.x * offset;
         }
         if !point.is_finite() {
             return Err(DimensionDiagnostic::InvalidGeometry);
@@ -159,20 +160,15 @@ impl DimensionReference {
         self.resolve_with(
             level,
             |id| {
-                model
-                    .walls
-                    .get(&id)
-                    .filter(|w| w.parameters.path.is_straight())
-                    .map(|w| {
-                        (
-                            w.parameters.level,
-                            w.parameters.start(),
-                            w.parameters.end(),
-                            model
-                                .resolve_wall(id)
-                                .map_or(f64::NAN, |w| w.parameters.thickness),
-                        )
-                    })
+                model.walls.get(&id).map(|w| {
+                    (
+                        w.parameters.level,
+                        w.parameters.path,
+                        model
+                            .resolve_wall(id)
+                            .map_or(f64::NAN, |w| w.parameters.thickness),
+                    )
+                })
             },
             |id| {
                 let p = &model

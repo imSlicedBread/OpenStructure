@@ -269,6 +269,23 @@ impl State {
                 }
             }
         }
+        if let Ok(items) = drawing.casework(context) {
+            for item in items.iter().filter(|item| item.entity == id) {
+                let points: Vec<_> = item
+                    .footprint
+                    .vertices()
+                    .iter()
+                    .copied()
+                    .filter_map(project)
+                    .collect();
+                for edge in points.windows(2) {
+                    painter.line_segment([edge[0], edge[1]], stroke);
+                }
+                if points.len() > 2 {
+                    painter.line_segment([*points.last().unwrap(), points[0]], stroke);
+                }
+            }
+        }
         if let Ok(lines) = drawing.provider_lines(context) {
             for item in lines.iter().filter(|item| item.entity == id) {
                 line(item.start, item.end);

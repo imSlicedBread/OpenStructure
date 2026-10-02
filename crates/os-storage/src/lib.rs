@@ -459,6 +459,287 @@ fn migrate_inner(value: &mut serde_json::Value, from: u32) -> Result<()> {
 
 fn migrate_step(value: &mut serde_json::Value, from: u32) -> Result<()> {
     match from {
+        61 => {
+            let object = value
+                .as_object_mut()
+                .ok_or_else(|| Error::Invalid("invalid model".into()))?;
+            for key in ["casework_types", "casework"] {
+                ensure(
+                    !object.contains_key(key),
+                    "ambiguous schema 61 casework collection",
+                )?;
+                object.insert(key.into(), serde_json::json!({}));
+            }
+            for (name, data) in object.iter_mut() {
+                if name == "project" {
+                    ensure(
+                        data["header"]["schema_version"] == 61,
+                        "invalid schema 61 header",
+                    )?;
+                    data["header"]["schema_version"] = 62.into();
+                } else if name != "extensions"
+                    && let Some(map) = data.as_object_mut()
+                {
+                    for entity in map.values_mut().filter(|v| v.get("header").is_some()) {
+                        ensure(
+                            entity["header"]["schema_version"] == 61,
+                            "invalid schema 61 header",
+                        )?;
+                        entity["header"]["schema_version"] = 62.into();
+                    }
+                }
+            }
+            object.insert("schema_version".into(), 62.into());
+            Ok(())
+        }
+        60 => {
+            let object = value
+                .as_object_mut()
+                .ok_or_else(|| Error::Invalid("invalid model".into()))?;
+            ensure(
+                !object.contains_key("ramps"),
+                "ambiguous schema 60 ramp collection",
+            )?;
+            object.insert("ramps".into(), serde_json::json!({}));
+            for (name, data) in object.iter_mut() {
+                if name == "project" {
+                    ensure(
+                        data["header"]["schema_version"] == 60,
+                        "invalid schema 60 header",
+                    )?;
+                    data["header"]["schema_version"] = 61.into();
+                } else if name != "extensions"
+                    && let Some(map) = data.as_object_mut()
+                {
+                    for entity in map.values_mut().filter(|v| v.get("header").is_some()) {
+                        ensure(
+                            entity["header"]["schema_version"] == 60,
+                            "invalid schema 60 header",
+                        )?;
+                        entity["header"]["schema_version"] = 61.into();
+                    }
+                }
+            }
+            object.insert("schema_version".into(), 61.into());
+            Ok(())
+        }
+        59 => {
+            let object = value
+                .as_object_mut()
+                .ok_or_else(|| Error::Invalid("invalid model".into()))?;
+            for key in ["railings", "railing_types"] {
+                ensure(
+                    !object.contains_key(key),
+                    "ambiguous schema 59 railing collection",
+                )?;
+                object.insert(key.into(), serde_json::json!({}));
+            }
+            for (name, data) in object.iter_mut() {
+                if name == "project" {
+                    ensure(
+                        data["header"]["schema_version"] == 59,
+                        "invalid schema 59 header",
+                    )?;
+                    data["header"]["schema_version"] = 60.into();
+                } else if name != "extensions"
+                    && let Some(map) = data.as_object_mut()
+                {
+                    for entity in map.values_mut().filter(|v| v.get("header").is_some()) {
+                        ensure(
+                            entity["header"]["schema_version"] == 59,
+                            "invalid schema 59 header",
+                        )?;
+                        entity["header"]["schema_version"] = 60.into();
+                    }
+                }
+            }
+            object.insert("schema_version".into(), 60.into());
+            Ok(())
+        }
+        58 => {
+            let object = value
+                .as_object_mut()
+                .ok_or_else(|| Error::Invalid("invalid model".into()))?;
+            for key in [
+                "curtain_systems",
+                "curtain_panel_types",
+                "curtain_mullion_types",
+            ] {
+                ensure(
+                    !object.contains_key(key),
+                    "ambiguous schema 58 curtain collection",
+                )?;
+                object.insert(key.into(), serde_json::json!({}));
+            }
+            for (name, data) in object.iter_mut() {
+                if name == "project" {
+                    ensure(
+                        data["header"]["schema_version"] == 58,
+                        "invalid schema 58 header",
+                    )?;
+                    data["header"]["schema_version"] = 59.into();
+                } else if name != "extensions"
+                    && let Some(map) = data.as_object_mut()
+                {
+                    for entity in map.values_mut().filter(|v| v.get("header").is_some()) {
+                        ensure(
+                            entity["header"]["schema_version"] == 58,
+                            "invalid schema 58 header",
+                        )?;
+                        entity["header"]["schema_version"] = 59.into();
+                    }
+                }
+            }
+            object.insert("schema_version".into(), 59.into());
+            Ok(())
+        }
+        57 => {
+            let object = value
+                .as_object_mut()
+                .ok_or_else(|| Error::Invalid("invalid model".into()))?;
+            let types = object
+                .get_mut("opening_types")
+                .and_then(serde_json::Value::as_object_mut)
+                .ok_or_else(|| Error::Invalid("invalid schema 57 opening types".into()))?;
+            for ty in types.values_mut() {
+                let family = ty["parameters"]["family"]
+                    .as_object_mut()
+                    .ok_or_else(|| Error::Invalid("invalid schema 57 family".into()))?;
+                ensure(
+                    family.get("version") == Some(&serde_json::json!(5))
+                        && !family.contains_key("door_leaves"),
+                    "ambiguous legacy door leaves",
+                )?;
+                family.insert("version".into(), 6.into());
+                family.insert("door_leaves".into(), "Single".into());
+            }
+            for (name, data) in object.iter_mut() {
+                if name == "project" {
+                    ensure(
+                        data["header"]["schema_version"] == 57,
+                        "invalid schema 57 header",
+                    )?;
+                    data["header"]["schema_version"] = 58.into();
+                } else if name != "extensions"
+                    && let Some(map) = data.as_object_mut()
+                {
+                    for entity in map.values_mut().filter(|v| v.get("header").is_some()) {
+                        ensure(
+                            entity["header"]["schema_version"] == 57,
+                            "invalid schema 57 header",
+                        )?;
+                        entity["header"]["schema_version"] = 58.into();
+                    }
+                }
+            }
+            object.insert("schema_version".into(), 58.into());
+            Ok(())
+        }
+        56 => {
+            let object = value
+                .as_object_mut()
+                .ok_or_else(|| Error::Invalid("invalid model".into()))?;
+            let openings = object
+                .get_mut("openings")
+                .and_then(serde_json::Value::as_object_mut)
+                .ok_or_else(|| Error::Invalid("invalid schema 56 openings".into()))?;
+            for opening in openings.values_mut() {
+                let params = opening
+                    .get_mut("parameters")
+                    .and_then(serde_json::Value::as_object_mut)
+                    .ok_or_else(|| Error::Invalid("invalid schema 56 opening parameters".into()))?;
+                ensure(
+                    !params.contains_key("open_state"),
+                    "ambiguous legacy opening state",
+                )?;
+                params.insert("open_state".into(), serde_json::json!("Default"));
+            }
+            for (name, data) in object.iter_mut() {
+                if name == "project" {
+                    ensure(
+                        data["header"]["schema_version"] == 56,
+                        "invalid schema 56 header",
+                    )?;
+                    data["header"]["schema_version"] = 57.into();
+                } else if name != "extensions"
+                    && let Some(map) = data.as_object_mut()
+                {
+                    for entity in map.values_mut().filter(|v| v.get("header").is_some()) {
+                        ensure(
+                            entity["header"]["schema_version"] == 56,
+                            "invalid schema 56 header",
+                        )?;
+                        entity["header"]["schema_version"] = 57.into();
+                    }
+                }
+            }
+            object.insert("schema_version".into(), 57.into());
+            Ok(())
+        }
+        55 => {
+            let object = value
+                .as_object_mut()
+                .ok_or_else(|| Error::Invalid("invalid model".into()))?;
+            for field in ["length_parameters", "opening_type_length_bindings"] {
+                ensure(
+                    !object.contains_key(field),
+                    format!("ambiguous schema 55 {field}"),
+                )?;
+                object.insert(field.into(), serde_json::json!({}));
+            }
+            for (name, data) in object.iter_mut() {
+                if name == "project" {
+                    ensure(
+                        data["header"]["schema_version"] == 55,
+                        "invalid schema 55 header",
+                    )?;
+                    data["header"]["schema_version"] = 56.into();
+                } else if name != "extensions"
+                    && let Some(map) = data.as_object_mut()
+                {
+                    for entity in map.values_mut().filter(|v| v.get("header").is_some()) {
+                        ensure(
+                            entity["header"]["schema_version"] == 55,
+                            "invalid schema 55 header",
+                        )?;
+                        entity["header"]["schema_version"] = 56.into();
+                    }
+                }
+            }
+            object.insert("schema_version".into(), 56.into());
+            Ok(())
+        }
+        54 => {
+            let object = value
+                .as_object_mut()
+                .ok_or_else(|| Error::Invalid("invalid model".into()))?;
+            ensure(
+                !object.contains_key("opening_clearances"),
+                "ambiguous schema 54 opening clearances",
+            )?;
+            object.insert("opening_clearances".into(), serde_json::json!({}));
+            for (name, data) in object.iter_mut() {
+                if name == "project" {
+                    ensure(
+                        data["header"]["schema_version"] == 54,
+                        "invalid schema 54 header",
+                    )?;
+                    data["header"]["schema_version"] = 55.into();
+                } else if name != "extensions"
+                    && let Some(map) = data.as_object_mut()
+                {
+                    for entity in map.values_mut().filter(|v| v.get("header").is_some()) {
+                        ensure(
+                            entity["header"]["schema_version"] == 54,
+                            "invalid schema 54 header",
+                        )?;
+                        entity["header"]["schema_version"] = 55.into();
+                    }
+                }
+            }
+            object.insert("schema_version".into(), 55.into());
+            Ok(())
+        }
         53 => {
             let walls = value
                 .get_mut("walls")
@@ -2568,6 +2849,7 @@ fn migrate_step(value: &mut serde_json::Value, from: u32) -> Result<()> {
                         family.remove("panel_material");
                         family.remove("frame_material");
                         family.remove("side_lite");
+                        family.remove("door_leaves");
                         p.insert("family".into(), serde_json::Value::Object(family.clone()));
                     }
                 }
@@ -3831,6 +4113,10 @@ fn remove_phase_fields_from_legacy_fixture(value: &mut serde_json::Value) {
     if let Some(types) = value["opening_types"].as_object_mut() {
         for ty in types.values_mut() {
             let family = &mut ty["parameters"]["family"];
+            if family["version"] == 6 {
+                family["version"] = 5.into();
+                family.as_object_mut().unwrap().remove("door_leaves");
+            }
             if family["version"] == 5 {
                 family["version"] = 4.into();
                 family.as_object_mut().unwrap().remove("side_lite");
@@ -3858,6 +4144,12 @@ fn remove_phase_fields_from_legacy_fixture(value: &mut serde_json::Value) {
     if let Some(object) = value.as_object_mut() {
         object.remove("phases");
         object.remove("element_lifecycles");
+        // Fixtures are serialized from the current `Model`; rewind collections
+        // introduced after each fixture's source schema before testing history.
+        object.remove("railings");
+        object.remove("railing_types");
+        object.remove("casework_types");
+        object.remove("casework");
     }
 }
 
@@ -3876,6 +4168,14 @@ mod column_tests;
 #[cfg(test)]
 #[path = "tests/stairs.rs"]
 mod stair_tests;
+
+#[cfg(test)]
+#[path = "tests/ramps.rs"]
+mod ramp_tests;
+
+#[cfg(test)]
+#[path = "tests/casework.rs"]
+mod casework_tests;
 
 #[cfg(test)]
 #[path = "tests/roofs.rs"]

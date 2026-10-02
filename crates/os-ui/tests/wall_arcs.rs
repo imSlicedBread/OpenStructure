@@ -168,8 +168,8 @@ fn arc_plan_pick_analytic_snaps_crop_range_visibility_and_section_sheet() {
 }
 
 #[test]
-fn arc_hosting_joins_and_invalid_properties_fail_without_mutation() {
-    let (mut e, level, _view, id) = fixture();
+fn arc_openings_are_hosted_while_joins_and_invalid_properties_fail_without_mutation() {
+    let (mut e, level, view, id) = fixture();
     let second = Wall::new(
         "org.openstructure.walls.wall",
         WallParams {
@@ -186,11 +186,10 @@ fn arc_hosting_joins_and_invalid_properties_fail_without_mutation() {
     );
     let second_id = second.id();
     e.command("Straight", Command::AddWall(second)).unwrap();
-    let before = e.document.model().clone();
-    let history = e.document.history_stats();
-    let opening = Opening::new(
+    let door = Opening::new(
         "core.opening",
         OpeningParams {
+            open_state: Default::default(),
             name: "Door".into(),
             host: id,
             offset: 1.0,
@@ -209,12 +208,48 @@ fn arc_hosting_joins_and_invalid_properties_fail_without_mutation() {
             lite_side_override: None,
         },
     );
-    assert!(
-        e.command("Invalid host", Command::AddOpening(opening))
-            .unwrap_err()
-            .to_string()
-            .contains("straight")
+    let door_id = door.id();
+    e.command("Curved door", Command::AddOpening(door)).unwrap();
+    let window = Opening::new(
+        "core.opening",
+        OpeningParams {
+            open_state: Default::default(),
+            name: "Window".into(),
+            host: id,
+            offset: 3.0,
+            definition: OpeningDefinition::Legacy {
+                kind: OpeningKind::Window,
+                width: 1.2,
+                height: 1.2,
+                sill: 0.9,
+            },
+            hinge: Default::default(),
+            swing: Default::default(),
+            width_override: None,
+            height_override: None,
+            sill_override: None,
+            pane_position_override: None,
+            lite_side_override: None,
+        },
     );
+    let window_id = window.id();
+    e.command("Curved window", Command::AddOpening(window))
+        .unwrap();
+
+    let model = e.document.model();
+    assert_eq!(model.openings.len(), 2);
+    let native = os_geometry::walls::NativeWall::from_model(model, id).unwrap();
+    let gross = model.walls[&id].parameters.length() * 0.25 * 3.0;
+    assert!(native.net_volume().unwrap() < gross);
+    assert!(native.mesh().unwrap().signed_volume() < gross);
+    let context = e.native_plan_context(view).unwrap();
+    let drawing = e.native_wall_plan(view).unwrap();
+    let lines = drawing.provider_lines(context).unwrap();
+    assert!(lines.iter().any(|line| line.entity == door_id));
+    assert!(lines.iter().any(|line| line.entity == window_id));
+
+    let before = e.document.model().clone();
+    let history = e.document.history_stats();
     let join = WallJoin::new(
         "core.wall_join",
         WallJoinParams::Butt {

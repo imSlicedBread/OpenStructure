@@ -31,6 +31,7 @@ fn setup() -> (Editor, Id, Id, Opening, Opening) {
         Opening::new(
             "core.opening",
             OpeningParams {
+                open_state: Default::default(),
                 width_override: None,
                 height_override: None,
                 sill_override: None,
@@ -443,7 +444,7 @@ fn door_hinge_swing_all_combinations_both_host_directions_match_arc_and_3d_leaf(
 }
 
 #[test]
-fn window_operation_is_plan_only_preserves_existing_symbols_and_leaves_meshes_unchanged() {
+fn window_operation_preserves_existing_symbols_and_host_but_regenerates_closed_sashes() {
     let (mut e, host, view, _, mut window) = setup();
     let mut wall = e.document.model().walls[&host].parameters.clone();
     *wall.path.straight_start_mut().unwrap() = Point2::new(1.0, 1.0);
@@ -528,7 +529,9 @@ fn window_operation_is_plan_only_preserves_existing_symbols_and_leaves_meshes_un
             operation
         );
         assert_eq!(e.scene[&host], host_mesh);
-        assert_eq!(e.scene[&window.id()], opening_mesh);
+        assert_ne!(e.scene[&window.id()], opening_mesh);
+        e.scene[&window.id()].validate().unwrap();
+        assert!(e.scene[&window.id()].signed_volume() > 0.);
     }
 }
 
@@ -596,6 +599,7 @@ fn typed_window_pane_faces_match_plan_and_3d_for_both_wall_directions() {
             Opening::new(
                 "core.opening",
                 OpeningParams {
+                    open_state: Default::default(),
                     width_override: None,
                     height_override: None,
                     sill_override: None,

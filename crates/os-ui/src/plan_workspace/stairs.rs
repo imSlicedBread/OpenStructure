@@ -258,7 +258,8 @@ impl DesktopApp {
         }
         let draft = self.plans.stair_edit.as_mut().unwrap();
         let model = self.editor.document.model();
-        let (mut apply, mut cancel, mut delete) = (false, false, false);
+        let (mut apply, mut cancel, mut delete, mut add_left, mut add_right) =
+            (false, false, false, false, false);
         egui::ScrollArea::vertical()
             .id_salt("stair_properties")
             .show(ui, |ui| {
@@ -273,6 +274,10 @@ impl DesktopApp {
                     .clicked();
                 cancel = ui.button("Cancel stair edits").clicked();
                 delete = ui.button("Delete stair").clicked();
+                ui.horizontal_wrapped(|ui| {
+                    add_left = ui.button("Add left railing").clicked();
+                    add_right = ui.button("Add right railing").clicked();
+                });
                 ui.label(format!("Stable ID: {id}"));
             });
         if cancel {
@@ -282,6 +287,11 @@ impl DesktopApp {
         }
         if delete {
             self.delete_stair();
+        }
+        if add_left {
+            self.add_stair_railing(id, os_model::StairRailingSide::Left);
+        } else if add_right {
+            self.add_stair_railing(id, os_model::StairRailingSide::Right);
         }
         true
     }
@@ -322,9 +332,19 @@ impl DesktopApp {
         else {
             return;
         };
+        let mut commands: Vec<_> = self
+            .editor
+            .document
+            .model()
+            .railings
+            .values()
+            .filter(|railing| railing.parameters.stair == id)
+            .map(|railing| Command::RemoveRailing(railing.id()))
+            .collect();
+        commands.push(Command::RemoveStair(id));
         let result = self
             .editor
-            .command("Delete stair", Command::RemoveStair(id));
+            .commands("Delete stair and hosted railings", commands);
         if result.is_ok() {
             self.select(None);
             self.plans.stair_edit = None;

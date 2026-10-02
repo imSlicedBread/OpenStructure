@@ -1,6 +1,21 @@
 //! Real egui frames for pointer placement; no native-window or screenshot claim.
 use super::*;
 
+#[path = "opening_align_tests.rs"]
+mod opening_align_tests;
+
+#[path = "opening_type_assignment_tests.rs"]
+mod opening_type_assignment_tests;
+
+#[path = "opening_batch_edit_tests.rs"]
+mod opening_batch_edit_tests;
+
+#[path = "placement_orientation_tests.rs"]
+mod placement_orientation_tests;
+
+#[path = "placement_width_tests.rs"]
+mod placement_width_tests;
+
 #[path = "opening_array_tests.rs"]
 mod array_tests;
 
@@ -15,6 +30,9 @@ mod opening_spacing_tests;
 
 #[path = "opening_visibility_tests.rs"]
 mod opening_visibility_tests;
+
+#[path = "arc_opening_tests.rs"]
+mod arc_opening_tests;
 
 const PROFILES: [(egui::Vec2, f32); 2] = [
     (egui::vec2(1280.0, 800.0), 1.0),
@@ -92,6 +110,7 @@ fn draw_opening_width_preview_commit_history_and_apertures() {
                         h.frame(vec![]);
                         h.begin_width(kind);
                         h.app.plans.snaps.enabled = false;
+                        h.frame(vec![]);
                         let before = h.app.editor.document.model().clone();
                         let scene = h.app.editor.scene.clone();
                         let history = h.app.editor.document.history_stats();
@@ -1629,6 +1648,7 @@ impl Harness {
         let opening = Opening::new(
             "core.opening",
             OpeningParams {
+                open_state: Default::default(),
                 width_override: None,
                 height_override: None,
                 sill_override: None,
@@ -1793,12 +1813,36 @@ fn opening_jamb_off_center_press_keeps_opposite_fixed_and_return_to_origin_is_no
     }
 }
 
+fn fit_jamb_host_to_compact_profile(h: &mut Harness) {
+    if h.scale <= 1.0 {
+        return;
+    }
+    let mut model = h.app.editor.document.model().clone();
+    // Keep the host at 8 m and rotated, but fit its jambs inside the shorter
+    // 150% canvas so pointer tests don't begin outside the viewport.
+    let half_x = 2.0 * 3.0_f64.sqrt();
+    let wall = &mut model.walls.get_mut(&h.wall).unwrap().parameters;
+    *wall.path.straight_start_mut().unwrap() = Point2::new(-half_x, -2.0);
+    *wall.path.straight_end_mut().unwrap() = Point2::new(half_x, 2.0);
+    let id = h.app.selected.unwrap();
+    h.app.editor.document = Document::from_model(model).unwrap();
+    h.app.editor.pending_geometry.extend([h.wall, id]);
+    h.app.editor.regenerate().unwrap();
+    h.app.plans.poll(&h.app.editor);
+    h.app.focus_plan(Some(h.view));
+    h.app.select(Some(id));
+    h.settle();
+}
+
 fn drag_preview_history(anchor: f64) {
     for (size, scale) in PROFILES {
         for kind in KINDS {
             for reversed in [false, true] {
                 for legacy in [false, true] {
                     let (mut h, id) = Harness::movable(kind, reversed, legacy, size, scale);
+                    if anchor != 0.5 {
+                        fit_jamb_host_to_compact_profile(&mut h);
+                    }
                     h.use_move_anchor(anchor);
                     assert_eq!(h.handles(), 1, "one selected opening grip");
                     let before = h.app.editor.document.model().clone();
@@ -1808,7 +1852,10 @@ fn drag_preview_history(anchor: f64) {
                     let target = if anchor == 0.0 { 1.0 } else { 2.5 };
                     let to = h.press_move(id, target);
                     // A perpendicular excursion must not change the host offset.
-                    h.hover(to + egui::vec2(-10.5, -14.0));
+                    let host_direction =
+                        (h.opening_point(id, 2.5) - h.opening_point(id, 1.5)).normalized();
+                    let perpendicular = egui::vec2(host_direction.y, -host_direction.x) * 17.5;
+                    h.hover(to + perpendicular);
                     let off_axis = h
                         .app
                         .plans
@@ -1994,6 +2041,9 @@ fn drag_invalid(anchor: f64) {
         for kind in KINDS {
             for reversed in [false, true] {
                 let (mut h, id) = Harness::movable(kind, reversed, false, size, scale);
+                if anchor != 0.5 {
+                    fit_jamb_host_to_compact_profile(&mut h);
+                }
                 let mut model = h.app.editor.document.model().clone();
                 let mut neighbor =
                     Opening::new("core.opening", model.openings[&id].parameters.clone());
@@ -2769,6 +2819,15 @@ fn opening_copy_preserves_instance_and_type_on_another_wall() {
                     });
                     if kind == OpeningKind::Window {
                         source.sill_override = Some(0.75);
+                        model
+                            .opening_types
+                            .get_mut(&type_id)
+                            .unwrap()
+                            .parameters
+                            .window_operation = os_model::WindowOperation::Sliding;
+                        source.open_state = os_model::OpeningState::SlidingFraction(0.5);
+                    } else {
+                        source.open_state = os_model::OpeningState::DoorAngle(45.0);
                     }
                 }
                 h.app.editor.document = Document::from_model(model).unwrap();
@@ -2778,7 +2837,9 @@ fn opening_copy_preserves_instance_and_type_on_another_wall() {
                 h.app.focus_plan(Some(h.view));
                 h.app.select(Some(source_id));
                 h.settle();
-                h.app.plans.cameras.get_mut(&h.view).unwrap().center = Point2::new(0.0, 0.5);
+                let camera = h.app.plans.cameras.get_mut(&h.view).unwrap();
+                camera.center = Point2::new(0.0, 0.5);
+                camera.pixels_per_metre = 30.0;
                 h.frame(vec![]);
 
                 let before = h.app.editor.document.model().clone();
@@ -2806,6 +2867,7 @@ fn opening_copy_preserves_instance_and_type_on_another_wall() {
 
                 // Place on a different visible wall, preserving source data exactly
                 // except for the new host and projected first-jamb offset.
+                // Keep the target comfortably inside the reduced canvas at 150% DPI.
                 let target_point = h.point(Point2::new(-2.0, 2.0));
                 h.hover(target_point);
                 assert!(h.has_text(match kind {
@@ -3035,6 +3097,22 @@ fn opening_orientation_controls_preview_apply_escape_and_stale_cancel_in_real_fr
             h.app.begin_opening(None);
             h.frame(vec![]);
             h.frame(vec![]);
+            for _ in 0..20 {
+                if h.has_text("Hinge") && h.has_text("Swing") {
+                    break;
+                }
+                h.frame(vec![
+                    egui::Event::PointerMoved(egui::pos2(size.x / 2., size.y / 2.)),
+                    egui::Event::MouseWheel {
+                        unit: egui::MouseWheelUnit::Point,
+                        delta: egui::vec2(0., -45.),
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ]);
+                for _ in 0..8 {
+                    h.frame(vec![]);
+                }
+            }
             assert!(h.has_text("Hinge"));
             assert!(h.has_text("Swing"));
             h.ribbon_click("Wall end", 0.0..size.y);

@@ -5,7 +5,7 @@ projects using a bounded `.osot` file. The Manage ribbon imports a package; the
 selected opening type's Properties panel exports one. The package is portable
 JSON, independent of the project model schema, and contains the type parameters
 plus exact snapshots of only the referenced panel/pane, frame and optional
-fixed-lite materials.
+fixed-lite materials and shared Length parameters.
 It does not include placed openings, hosts, levels, or other project entities.
 
 Manage also provides a local package browser. Enter one directory, scan it, and
@@ -18,6 +18,25 @@ is retained only for the current application session; it is not saved in the
 project or across restarts.
 
 ## Import and conflict behavior
+
+Version 5 carries the paired-door `family.door_leaves` setting in addition to
+the version-4 shared Length snapshots. `Single` preserves the existing
+single-leaf behavior. `Paired { active_fraction }` stores the active leaf's
+share of the clear primary bay; each leaf must resolve to at least 1 mm. Paired
+layouts are valid only for rectangular door components and full rectangular
+host cuts; windows remain single-leaf. The existing material and Length
+dependency copying/remapping rules are unchanged.
+
+Version 4 carries exactly the shared Length snapshots referenced by width,
+height and window-sill bindings. Every import copies each distinct parameter
+once to a fresh UUID, preserving sharing within that type. The preview lists
+source and destination names/UUIDs and values; conflicting names get an
+`(Imported)` suffix. Existing parameters are never overwritten or implicitly
+reused, even on type update. Users can explicitly rebind the imported type in
+the type editor afterwards. Per-dependency reuse during import is deferred.
+Parameter additions, material additions and type changes commit in one undo step.
+The preview and Apply use the same document candidate evaluator, with session
+and revision guards and component/host geometry preflight.
 
 Import reads a package and builds a read-only preview. It creates a new type by
 default. When a same-kind type is selected, the user may instead explicitly
@@ -42,13 +61,23 @@ an existing package and writes through a temporary sibling for atomic replacemen
 
 ## Format and limits
 
-Format identifier: `OpenStructure.OpeningTypePackage`, version 3. Version-1
+Format identifier: `OpenStructure.OpeningTypePackage`, version 5. Version-1
 packages remain importable and are upgraded as single-panel families (family
 version 4 to 5 with `side_lite: null`); version-1 and version-2 imports default
 window operation to Fixed. Version 2 can carry the optional two-bay
 side/lite-width/mullion settings and an independent lite material reference.
 Version 3 adds required type-level Fixed/Sliding/Casement window-operation
 metadata. It affects plan symbols only; generated 3D panes remain static.
+Version 4 requires `length_parameters` (source UUID → named metre value) and
+`length_bindings` (three explicit nullable UUIDs). Versions 1–3 migrate to empty
+snapshots and literal-only bindings; pre-existing new fields in legacy input
+are rejected as ambiguous. At most three Length snapshots are allowed, and
+their identities must exactly match the binding references. Labels and validation
+use resolved package dimensions rather than inactive fallback literals. Version
+5 adds the required family-version-6 `door_leaves` field. Version-4 packages
+migrate to `Single` only when their family version is 5 and the field is absent;
+ambiguous legacy content is rejected. Versions 1–3 chain through earlier
+migrations and then receive the same `Single` default.
 Export includes exact material snapshots when set; import remaps them with the
 panel/frame dependencies and applies the same collision rules. Reads reject
 unknown fields, duplicate JSON keys, malformed or excessively deep JSON, invalid
@@ -67,10 +96,14 @@ Acceptance evidence:
   exact dependencies, strict parsing, deterministic encoding, atomic writes and
   size limits; `two_bay_packages_v1_v2_upgrade_to_v3_strict_and_three_materials`
   checks legacy defaults, strict current fields and all three material dependencies.
+- `crates/os-storage/tests/paired_doors.rs`:
+  `paired_doors_package_v5_v4_upgrade_and_save_reopen` checks v4→v5 migration,
+  preservation of material/Length dependencies, and native save/reopen.
 - `crates/os-ui/src/desktop_tests/opening_type_package_tests.rs`: import/export
   at 1280×800/100% and 1000×650/150%, material conflict remapping, no mutation
   during preview, update identity and pinned dimensions, one-step undo/redo,
-  stale/cancel behavior and rejected host-fit preflight.
+  stale/cancel behavior and rejected host-fit preflight; paired-door replacement
+  with explicit pose reset is covered at both DPI profiles.
 - `crates/os-storage/tests/opening_type_library.rs` and
   `crates/os-ui/src/desktop_tests/opening_type_library_tests.rs`: scan limits,
   deterministic listing, invalid-entry reporting, search, fresh preview handoff,

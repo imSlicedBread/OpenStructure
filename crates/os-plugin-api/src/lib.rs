@@ -13,10 +13,10 @@ use os_model::{Model, WallParams};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
-/// Full native Model transport, schema 54. Older native guests require rebuilding.
+/// Full native Model transport, schema 62. Older native guests require rebuilding.
 /// Generic API 2 uses independent DTOs and remains compatible.
-pub const API_VERSION: u32 = 35;
-pub const REQUIRED_MODEL_SCHEMA_VERSION: u32 = 54;
+pub const API_VERSION: u32 = 43;
+pub const REQUIRED_MODEL_SCHEMA_VERSION: u32 = 62;
 pub mod generic;
 pub mod geometry;
 pub mod plan;
@@ -122,7 +122,7 @@ impl Manifest {
     pub fn validate(&self) -> ProtocolResult<()> {
         ensure(
             matches!(self.api_version, API_VERSION | generic::VERSION),
-            "plugin API version mismatch: native Model guests require API 35/schema 54; rebuild and reinstall API 1/API 3/API 4/API 5/API 6/API 7/API 8/API 9/API 10/API 11/API 12/API 13/API 14/API 15/API 16/API 17/API 18/API 19/API 20/API 21/API 22/API 23/API 24/API 25/API 26/API 27/API 28/API 29/API 30/API 31/API 32/API 33/API 34 guests",
+            "plugin API version mismatch: native Model guests require API 43/schema 62; rebuild and reinstall API 1/API 3/API 4/API 5/API 6/API 7/API 8/API 9/API 10/API 11/API 12/API 13/API 14/API 15/API 16/API 17/API 18/API 19/API 20/API 21/API 22/API 23/API 24/API 25/API 26/API 27/API 28/API 29/API 30/API 31/API 32/API 33/API 34/API 35/API 36/API 37/API 38/API 39/API 40/API 41/API 42 guests",
         )?;
         ensure(
             self.id.len() <= 128 && valid_id(&self.id),
@@ -267,12 +267,12 @@ mod tests {
         assert!(m.validate().is_err());
         for version in [
             1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
-            26, 27, 28, 29, 30, 31, 32, 33, 34,
+            26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39,
         ] {
             m.api_version = version;
             let error = m.validate().unwrap_err().to_string();
             assert!(
-                error.contains("API 35/schema 54")
+                error.contains("API 43/schema 62")
                     && error.contains("rebuild")
                     && error.contains(&format!("API {version}"))
             );

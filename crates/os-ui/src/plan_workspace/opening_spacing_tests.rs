@@ -12,6 +12,130 @@ fn key(key: egui::Key) -> egui::Event {
     }
 }
 
+#[test]
+fn clearance_lock_spacing_ui_geometry_history_unlock_and_neighbor_guard() {
+    for profile in 0..2 {
+        for kind in KINDS {
+            for sweep in [0., 4.1, -4.1] {
+                let (mut h, id) = if sweep == 0. {
+                    fixture(profile, kind, false, false, false, false)
+                } else {
+                    arc_fixture(profile, kind, false, sweep, false)
+                };
+                let before = h.app.editor.document.model().clone();
+                let history = h.app.editor.document.history_stats();
+                let d = if sweep == 0. {
+                    begin(&mut h, id, true)
+                } else {
+                    begin_arc(&mut h, id, true)
+                };
+                assert_eq!(d.reference, Reference::Endpoint(true));
+                let checkbox = h.direct_door_button("Lock to host End").unwrap();
+                h.click(checkbox);
+                assert!(h.app.plans.opening_spacing.as_ref().unwrap().lock_endpoint);
+                assert_eq!(h.app.editor.document.model(), &before);
+                h.frame(vec![key(egui::Key::Enter)]);
+                assert!(h.app.plans.opening_spacing.is_none());
+                assert_eq!(
+                    h.app.editor.document.model().opening_clearances[&id].end,
+                    os_model::ClearanceEnd::End
+                );
+                assert_eq!(
+                    h.app.editor.document.history_stats().undo_entries,
+                    history.undo_entries + 1
+                );
+                h.settle();
+
+                // Instance width drives settlement and both production render paths.
+                let scene = h.app.editor.scene.clone();
+                let mut parameters = h.app.editor.document.model().openings[&id]
+                    .parameters
+                    .clone();
+                parameters.width_override = Some(1.25);
+                h.app
+                    .editor
+                    .command(
+                        "Resize locked opening",
+                        Command::UpdateOpening { id, parameters },
+                    )
+                    .unwrap();
+                h.settle();
+                let model = h.app.editor.document.model();
+                let expected = model.walls[&h.wall].parameters.length() - 1.25 - d.distance;
+                assert!((model.openings[&id].parameters.offset - expected).abs() < 1e-9);
+                assert_ne!(h.app.editor.scene[&id], scene[&id]);
+                assert_ne!(h.app.editor.scene[&h.wall], scene[&h.wall]);
+                assert!(h.app.plans.drawing.as_ref().unwrap().is_native_line(id));
+                let schedule = os_model::Schedule::new(
+                    "core.schedule",
+                    os_model::ScheduleParams::new("Locked", os_model::ScheduleCategory::All),
+                );
+                let schedule_id = schedule.id();
+                h.app
+                    .editor
+                    .command("Schedule", Command::AddSchedule(schedule))
+                    .unwrap();
+                let table = crate::opening_schedule::paper_table(
+                    h.app.editor.document.model(),
+                    schedule_id,
+                )
+                .unwrap();
+                assert!(table.rows.iter().flatten().any(|cell| cell == "1.250"));
+                h.settle();
+
+                if sweep == 0. {
+                    begin(&mut h, id, true);
+                } else {
+                    begin_arc(&mut h, id, true);
+                }
+                let edited_clearance = d.distance - 0.125;
+                h.app.plans.opening_spacing.as_mut().unwrap().value = edited_clearance.to_string();
+                h.frame(vec![key(egui::Key::Enter)]);
+                assert_eq!(
+                    h.app.editor.document.model().opening_clearances[&id].distance,
+                    edited_clearance
+                );
+                h.settle();
+                let locked = h.app.editor.document.model().clone();
+                if sweep == 0. {
+                    begin(&mut h, id, true);
+                } else {
+                    begin_arc(&mut h, id, true);
+                }
+                h.app.plans.opening_spacing.as_mut().unwrap().value =
+                    "invalid edited distance".into();
+                h.click(h.direct_door_button("Lock to host End").unwrap());
+                h.frame(vec![]);
+                assert!(
+                    h.direct_door_button("Unlock keeps the current position.")
+                        .is_some()
+                );
+                h.frame(vec![key(egui::Key::Enter)]);
+                assert!(
+                    !h.app
+                        .editor
+                        .document
+                        .model()
+                        .opening_clearances
+                        .contains_key(&id)
+                );
+                assert_eq!(h.app.editor.document.model().openings, locked.openings);
+                h.app.editor.undo().unwrap();
+                assert_eq!(h.app.editor.document.model(), &locked);
+                h.app.editor.redo().unwrap();
+                assert_eq!(h.app.editor.document.model().openings, locked.openings);
+            }
+            let (mut h, id) = fixture(profile, kind, false, false, false, true);
+            assert!(matches!(
+                begin(&mut h, id, false).reference,
+                Reference::Jamb(..)
+            ));
+            assert!(h.direct_door_button("Lock to host Start").is_none());
+            assert!(h.app.editor.document.model().opening_clearances.is_empty());
+        }
+    }
+}
+
 fn refresh(h: &mut Harness, model: os_model::Model, id: Id) {
     h.app.editor.document = Document::from_model(model).unwrap();
     h.app
@@ -645,5 +769,268 @@ fn opening_spacing_short_gaps_keep_both_labels_separate() {
             assert!(h.app.plans.opening_spacing.as_ref().unwrap().editing);
             h.frame(vec![escape()]);
         }
+    }
+}
+
+fn arc_fixture(
+    profile: usize,
+    kind: OpeningKind,
+    legacy: bool,
+    sweep: f64,
+    neighbors: bool,
+) -> (Harness, Id) {
+    let (mut h, id) = fixture(profile, kind, legacy, false, false, neighbors);
+    let mut model = h.app.editor.document.model().clone();
+    model.walls.get_mut(&h.wall).unwrap().parameters.path = os_model::WallPath::CircularArc {
+        center: Point2::default(),
+        radius: 4.,
+        start_angle_rad: std::f64::consts::FRAC_PI_2 - sweep.signum() * 0.95 + 0.23,
+        signed_sweep_rad: sweep,
+    };
+    if neighbors {
+        let other = model
+            .openings
+            .iter_mut()
+            .find(|(other, opening)| **other != id && opening.parameters.offset > 5.)
+            .unwrap()
+            .1;
+        other.parameters.offset = 8.2;
+    }
+    // Also exercise transformed extrema and an angle wrapping past pi.
+    model
+        .views
+        .get_mut(&h.view)
+        .unwrap()
+        .parameters
+        .plan
+        .as_mut()
+        .unwrap()
+        .basis
+        .rotation = 0.23;
+    refresh(&mut h, model, id);
+    h.app.plans.cameras.get_mut(&h.view).unwrap().center = Point2::default();
+    h.app
+        .plans
+        .cameras
+        .get_mut(&h.view)
+        .unwrap()
+        .pixels_per_metre = 28.;
+    h.frame(vec![]);
+    (h, id)
+}
+
+fn begin_arc(h: &mut Harness, id: Id, end: bool) -> Dimension {
+    let d = controls(h, id)
+        .into_iter()
+        .find(|d| d.end == end)
+        .expect("arc spacing");
+    let pos = h
+        .direct_door_button(&format!("Arc {:.3} m", d.distance))
+        .expect("painted arc label");
+    h.hover(pos);
+    h.frame(vec![button(pos, true), button(pos, false)]);
+    assert!(h.app.plans.opening_spacing.as_ref().unwrap().editing);
+    h.frame(vec![]);
+    assert!(
+        h.direct_door_button(if end {
+            "Centerline clear spacing to End (m)"
+        } else {
+            "Centerline clear spacing to Start (m)"
+        })
+        .is_some()
+    );
+    d
+}
+
+#[test]
+fn opening_spacing_arc_exact_station_graphic_commit_and_history() {
+    for profile in 0..2 {
+        for kind in KINDS {
+            for (sweep, legacy) in [(4.1, false), (-4.1, true)] {
+                for neighbors in [false, true] {
+                    let (mut h, id) = arc_fixture(profile, kind, legacy, sweep, neighbors);
+                    h.app.plans.snaps.enabled = true;
+                    for end in [false, true].into_iter().filter(|end| !neighbors || !*end) {
+                        assert!(
+                            controls(&h, id).iter().any(|d| d.end == end),
+                            "profile={profile} kind={kind:?} sweep={sweep} neighbors={neighbors} end={end} canvas={:?} controls={:?}",
+                            h.app.plans.canvas_rect,
+                            controls(&h, id)
+                        );
+                        let before = h.app.editor.document.model().clone();
+                        let history = h.app.editor.document.history_stats();
+                        let scene = h.app.editor.scene.clone();
+                        let drawing = h.app.plans.drawing.as_ref().unwrap().identity();
+                        let d = begin_arc(&mut h, id, end);
+                        assert_eq!(matches!(d.reference, Reference::Jamb(..)), neighbors);
+                        let path = before.walls[&h.wall].parameters.path;
+                        let opening = before
+                            .resolve_opening(&before.openings[&id].parameters)
+                            .unwrap();
+                        let source = opening.offset + if end { opening.width } else { 0. };
+                        let reference = match d.reference {
+                            Reference::Endpoint(end) => {
+                                if end {
+                                    path.length()
+                                } else {
+                                    0.
+                                }
+                            }
+                            Reference::Jamb(other, end) => {
+                                let p = before
+                                    .resolve_opening(&before.openings[&other].parameters)
+                                    .unwrap();
+                                p.offset + if end { p.width } else { 0. }
+                            }
+                        };
+                        assert_eq!(d.distance, (source - reference).abs());
+                        assert!(
+                            d.distance > path.point(source).distance(path.point(reference)) + 0.001
+                        );
+                        assert!(h.output.shapes.iter().any(|s| matches!(&s.shape,
+                            egui::Shape::Path(p) if !p.closed && p.points.len() > 3
+                                && p.points.len() <= 4097 && p.stroke.color == egui::epaint::ColorMode::Solid(theme::ACCENT))));
+                        assert_eq!(h.app.editor.document.model(), &before);
+                        assert_eq!(h.app.editor.document.history_stats(), history);
+                        assert_eq!(h.app.editor.scene, scene);
+                        assert_eq!(h.app.plans.drawing.as_ref().unwrap().identity(), drawing);
+                        // Full-precision initialization preserves exact no-ops.
+                        h.frame(vec![key(egui::Key::Enter)]);
+                        assert!(h.app.plans.opening_spacing.is_none());
+                        assert_eq!(h.app.editor.document.history_stats(), history);
+                        begin_arc(&mut h, id, end);
+                        let value = d.distance + 0.123456789;
+                        h.frame(vec![
+                            egui::Event::Key {
+                                key: egui::Key::A,
+                                physical_key: None,
+                                pressed: true,
+                                repeat: false,
+                                modifiers: egui::Modifiers {
+                                    ctrl: true,
+                                    command: true,
+                                    ..Default::default()
+                                },
+                            },
+                            egui::Event::Text(value.to_string()),
+                        ]);
+                        assert_eq!(h.app.editor.document.model(), &before);
+                        h.frame(vec![key(egui::Key::Enter)]);
+                        assert!(h.app.plans.opening_spacing.is_none());
+                        h.settle();
+                        let after = h.app.editor.document.model().clone();
+                        let mut expected = before.clone();
+                        expected.openings.get_mut(&id).unwrap().parameters.offset = if end {
+                            reference - value - opening.width
+                        } else {
+                            reference + value
+                        };
+                        assert_eq!(after, expected, "only offset changes");
+                        assert_eq!(
+                            h.app.editor.document.history_stats().undo_entries,
+                            history.undo_entries + 1
+                        );
+                        assert_ne!(h.app.editor.scene[&id], scene[&id]);
+                        h.app.editor.undo().unwrap();
+                        assert_eq!(h.app.editor.document.model(), &before);
+                        assert_eq!(h.app.editor.scene, scene);
+                        h.app.editor.redo().unwrap();
+                        assert_eq!(h.app.editor.document.model(), &after);
+                        h.app.editor.undo().unwrap();
+                        h.settle();
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn opening_spacing_arc_cancel_invalid_and_stale_context() {
+    for profile in 0..2 {
+        for reason in [
+            "escape", "loss", "drag", "radius", "sweep", "neighbor", "camera",
+        ] {
+            let (mut h, id) = arc_fixture(profile, OpeningKind::Window, false, -2.5, true);
+            let pos = controls(&h, id)[0].rect.center();
+            let before = h.app.editor.document.model().clone();
+            let camera = h.app.plans.cameras[&h.view];
+            h.hover(pos);
+            h.frame(vec![button(pos, true)]);
+            assert!(h.app.plans.opening_spacing_claimed);
+            match reason {
+                "escape" => h.frame(vec![escape()]),
+                "loss" => h.frame(vec![egui::Event::PointerGone]),
+                "drag" => h.hover(pos + egui::vec2(80., 40.)),
+                "camera" => {
+                    h.app
+                        .plans
+                        .cameras
+                        .get_mut(&h.view)
+                        .unwrap()
+                        .pixels_per_metre = 36.;
+                    h.frame(vec![]);
+                }
+                _ => {
+                    let mut model = before.clone();
+                    if reason == "neighbor" {
+                        model
+                            .openings
+                            .iter_mut()
+                            .find(|(other, _)| **other != id)
+                            .unwrap()
+                            .1
+                            .parameters
+                            .offset += 0.1;
+                    } else if let os_model::WallPath::CircularArc {
+                        radius,
+                        signed_sweep_rad,
+                        ..
+                    } = &mut model.walls.get_mut(&h.wall).unwrap().parameters.path
+                    {
+                        if reason == "radius" {
+                            *radius += 0.1;
+                        } else {
+                            *signed_sweep_rad += 0.1;
+                        }
+                    }
+                    h.app.editor.document = Document::from_model(model).unwrap();
+                    h.frame(vec![]);
+                }
+            }
+            assert!(h.app.plans.opening_spacing.is_none(), "{reason}");
+            let current = h.app.editor.document.model().clone();
+            h.frame(vec![button(pos, false)]);
+            assert!(!h.app.plans.opening_spacing_claimed);
+            assert!(h.app.plans.opening_move.is_none());
+            assert_eq!(h.app.editor.document.model(), &current);
+            if matches!(reason, "escape" | "loss" | "drag") {
+                assert_eq!(h.app.plans.cameras[&h.view], camera);
+            }
+        }
+        let (mut h, id) = arc_fixture(profile, OpeningKind::Door, false, 2.5, true);
+        begin_arc(&mut h, id, false);
+        let before = h.app.editor.document.model().clone();
+        let history = h.app.editor.document.history_stats();
+        let scene = h.app.editor.scene.clone();
+        for value in ["NaN", "inf", "-1", "0", "20", "1e308"] {
+            h.app.plans.opening_spacing.as_mut().unwrap().value = value.into();
+            h.frame(vec![key(egui::Key::Enter)]);
+            assert!(
+                h.app
+                    .plans
+                    .opening_spacing
+                    .as_ref()
+                    .unwrap()
+                    .error
+                    .is_some(),
+                "{value}"
+            );
+            assert_eq!(h.app.editor.document.model(), &before);
+            assert_eq!(h.app.editor.document.history_stats(), history);
+            assert_eq!(h.app.editor.scene, scene);
+        }
+        h.frame(vec![escape()]);
+        assert!(h.app.plans.opening_spacing.is_none());
     }
 }

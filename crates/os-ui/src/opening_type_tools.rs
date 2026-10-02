@@ -20,11 +20,14 @@ pub(super) struct OpeningTypeDraft {
     pane_position: WindowPanePosition,
     window_operation: os_model::WindowOperation,
     family: os_model::OpeningFamily,
+    pub(super) bindings: os_model::OpeningTypeLengthBindings,
     selected_vertex: usize,
     editing_cut: bool,
     editing_materials: bool,
+    editing_lengths: bool,
     editing: bool,
     duplicate: bool,
+    reset_paired_poses: bool,
     source_opening: Option<Id>,
     values: [String; 4],
     error: Option<String>,
@@ -79,11 +82,14 @@ impl OpeningTypeDraft {
             pane_position,
             window_operation,
             family,
+            bindings: Default::default(),
             selected_vertex: 0,
             editing_cut: false,
             editing_materials: false,
+            editing_lengths: false,
             editing: false,
             duplicate: false,
+            reset_paired_poses: false,
             source_opening,
             values: [
                 width.to_string(),
@@ -96,13 +102,8 @@ impl OpeningTypeDraft {
     }
 
     fn edit(editor: &Editor, id: Id) -> Result<Self> {
-        let entity = editor
-            .document
-            .model()
-            .opening_types
-            .get(&id)
-            .ok_or_else(|| Error::Invalid("opening type missing".into()))?;
-        let p = &entity.parameters;
+        let resolved = editor.document.model().resolve_opening_type(id)?;
+        let p = &resolved.parameters;
         Ok(Self {
             session: editor.document.session_id(),
             revision: editor.document.revision(),
@@ -111,11 +112,20 @@ impl OpeningTypeDraft {
             pane_position: p.pane_position,
             window_operation: p.window_operation,
             family: p.family.clone(),
+            bindings: editor
+                .document
+                .model()
+                .opening_type_length_bindings
+                .get(&id)
+                .copied()
+                .unwrap_or_default(),
             selected_vertex: 0,
             editing_cut: false,
             editing_materials: false,
+            editing_lengths: false,
             editing: true,
             duplicate: false,
+            reset_paired_poses: false,
             source_opening: None,
             values: [
                 p.width.to_string(),
@@ -177,19 +187,69 @@ impl OpeningTypeDraft {
     fn apply(&self, editor: &mut Editor) -> Result<Id> {
         ensure(self.current(editor), "Opening type draft is stale")?;
         self.preview_model(editor)?;
-        let parameters = self.parameters()?;
+        editor
+            .document
+            .execute("Edit opening type", self.commands(editor)?)?;
+        editor.regenerate()?;
+        Ok(self.source_opening.unwrap_or(self.id))
+    }
+
+    fn commands(&self, editor: &Editor) -> Result<Vec<Command>> {
+        let mut parameters = self.parameters()?;
+        // Keep inactive literals stable while a dimension remains bound.
+        if self.editing
+            && let Some(original) = editor.document.model().opening_types.get(&self.id)
+        {
+            if self.bindings.width.is_some() {
+                parameters.width = original.parameters.width;
+            }
+            if self.bindings.height.is_some() {
+                parameters.height = original.parameters.height;
+            }
+            if self.bindings.sill.is_some() {
+                parameters.sill = original.parameters.sill;
+            }
+        }
+        let mut commands = Vec::new();
+        if self.reset_paired_poses && self.editing && !self.duplicate {
+            for opening in editor
+                .document
+                .model()
+                .openings
+                .values()
+                .filter(|o| o.parameters.type_id() == Some(self.id))
+            {
+                if matches!(
+                    opening.parameters.open_state,
+                    os_model::OpeningState::DoorPairAngles { .. }
+                ) {
+                    let mut parameters = opening.parameters.clone();
+                    parameters.open_state = os_model::OpeningState::Default;
+                    commands.push(Command::UpdateOpening {
+                        id: opening.id(),
+                        parameters,
+                    });
+                }
+            }
+        }
         if self.editing && !self.duplicate {
-            editor.command(
-                "Edit opening type",
-                Command::UpdateOpeningType {
-                    id: self.id,
-                    parameters,
-                },
-            )?;
+            // Unbind before updating literals, so freeze uses the original type.
+            commands.push(Command::SetOpeningTypeLengthBindings {
+                id: self.id,
+                bindings: self.bindings,
+            });
+            commands.push(Command::UpdateOpeningType {
+                id: self.id,
+                parameters,
+            });
         } else {
             let mut opening_type = OpeningType::new("core.opening_type", parameters);
             opening_type.header.id = self.id;
-            let mut commands = vec![Command::AddOpeningType(opening_type)];
+            commands.push(Command::AddOpeningType(opening_type));
+            commands.push(Command::SetOpeningTypeLengthBindings {
+                id: self.id,
+                bindings: self.bindings,
+            });
             if let Some(opening_id) = self.source_opening {
                 let opening = editor
                     .document
@@ -204,19 +264,8 @@ impl OpeningTypeDraft {
                     parameters: instance,
                 });
             }
-            editor.document.execute(
-                if self.source_opening.is_some() {
-                    "Create type from opening"
-                } else if self.duplicate {
-                    "Duplicate opening type"
-                } else {
-                    "Create opening type"
-                },
-                commands,
-            )?;
-            editor.regenerate()?;
         }
-        Ok(self.source_opening.unwrap_or(self.id))
+        Ok(commands)
     }
 
     fn delete(&self, editor: &mut Editor) -> Result<()> {
@@ -302,15 +351,28 @@ impl DesktopApp {
                     .model()
                     .resolve_opening(&opening.parameters)?;
                 if let Some(type_id) = resolved.type_id {
-                    let defaults = &self.editor.document.model().opening_types[&type_id].parameters;
+                    let defaults = self
+                        .editor
+                        .document
+                        .model()
+                        .resolve_opening_type(type_id)?
+                        .parameters;
                     resolved.width = defaults.width;
                     resolved.height = defaults.height;
-                    resolved.sill = self.editor.document.model().opening_types[&type_id]
-                        .parameters
-                        .sill;
+                    resolved.sill = defaults.sill;
                 }
                 let mut draft =
                     OpeningTypeDraft::new(&self.editor, resolved.kind, Some(resolved), Some(id));
+                if let Some(type_id) = opening.parameters.type_id() {
+                    draft.bindings = self
+                        .editor
+                        .document
+                        .model()
+                        .opening_type_length_bindings
+                        .get(&type_id)
+                        .copied()
+                        .unwrap_or_default();
+                }
                 draft.values[3] = format!("{} Type", opening.parameters.name);
                 Ok(draft)
             });
@@ -341,6 +403,20 @@ impl DesktopApp {
             return;
         }
         let mut close = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+        for (index, binding) in [
+            draft.bindings.width,
+            draft.bindings.height,
+            draft.bindings.sill,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if let Some(id) = binding
+                && let Some(p) = self.editor.document.model().length_parameters.get(&id)
+            {
+                draft.values[index] = p.parameters.value.to_string();
+            }
+        }
         let instances = self
             .editor
             .document
@@ -377,6 +453,27 @@ impl DesktopApp {
                 .show(ui, |ui| {
             if draft.editing_materials {
                 draft.material_editor(ui, &self.editor);
+            } else if draft.editing_lengths {
+                ui.heading("Shared Length bindings");
+                ui.small("Create project parameters in Manage. Unbinding keeps the effective value as a type literal.");
+                for (index, label) in TYPE_FIELDS.iter().take(3).enumerate() {
+                    if index == 2 && draft.kind == OpeningKind::Door { continue; }
+                    ui.label(*label);
+                    let binding = match index { 0 => &mut draft.bindings.width, 1 => &mut draft.bindings.height, _ => &mut draft.bindings.sill };
+                    egui::ComboBox::from_id_salt(("Length binding", index))
+                        .selected_text(binding.and_then(|id| self.editor.document.model().length_parameters.get(&id)).map_or("Type literal".into(), |p| format!("{} · {}", p.parameters.name, p.id())))
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(binding, None, "Type literal (freeze on unbind)");
+                            for p in self.editor.document.model().length_parameters.values() {
+                                ui.selectable_value(binding, Some(p.id()), format!("{} · {:.3} m · {}", p.parameters.name, p.parameters.value, p.id()));
+                            }
+                        });
+                    if let Some(id) = *binding && let Some(p) = self.editor.document.model().length_parameters.get(&id) {
+                        draft.values[index] = p.parameters.value.to_string();
+                    }
+                    ui.label(format!("Effective value: {} m", draft.values[index]));
+                }
+                if let Err(error) = draft.preview_model(&self.editor) { ui.colored_label(theme::ERROR, error.to_string()); }
             } else {
             egui::Grid::new("opening_type_fields")
                 .num_columns(2)
@@ -390,8 +487,9 @@ impl DesktopApp {
                     ui.end_row();
                     for (index, label) in TYPE_FIELDS.iter().take(3).enumerate() {
                         ui.label(*label);
+                        let binding = [draft.bindings.width, draft.bindings.height, draft.bindings.sill][index];
                         ui.add_enabled(
-                            index != 2 || draft.kind == OpeningKind::Window,
+                            binding.is_none() && (index != 2 || draft.kind == OpeningKind::Window),
                             egui::TextEdit::singleline(&mut draft.values[index])
                                 .desired_width(230.0)
                                 .char_limit(64),
@@ -399,9 +497,39 @@ impl DesktopApp {
                         ui.end_row();
                     }
                 });
+            if draft.kind == OpeningKind::Door {
+                ui.horizontal(|ui| {
+                    ui.label("Door leaves");
+                    ui.selectable_value(&mut draft.family.door_leaves, os_model::DoorLeaves::Single, "Single");
+                    let paired = matches!(draft.family.door_leaves, os_model::DoorLeaves::Paired { .. });
+                    if ui.selectable_label(paired, "Paired").clicked() && !paired {
+                        draft.family.door_leaves = os_model::DoorLeaves::Paired { active_fraction: 0.5 };
+                    }
+                });
+                if let os_model::DoorLeaves::Paired { active_fraction } = draft.family.door_leaves
+                    && let Ok(width) = draft.values[0].parse::<f64>()
+                    && let Ok((start, end)) = draft.family.primary_interval(width)
+                {
+                    let mut active_width = (end - start) * active_fraction;
+                    ui.horizontal(|ui| {
+                        ui.label("Active leaf width (m)");
+                        if ui.add(egui::DragValue::new(&mut active_width).speed(0.001)).changed() {
+                            draft.family.door_leaves = os_model::DoorLeaves::Paired { active_fraction: active_width / (end - start) };
+                        }
+                        if ui.button("Equal leaves").clicked() {
+                            draft.family.door_leaves = os_model::DoorLeaves::Paired { active_fraction: 0.5 };
+                        }
+                    });
+                    ui.small("Clear widths scale with the primary bay after frame, side lite and mullion. Hinge selects the active jamb.");
+                }
+                if draft.editing && self.editor.document.model().openings.values().any(|o| o.parameters.type_id() == Some(draft.id) && matches!(o.parameters.open_state, os_model::OpeningState::DoorPairAngles { .. })) {
+                    ui.checkbox(&mut draft.reset_paired_poses, "Reset paired poses to Default");
+                    ui.small("Apply resets all paired-angle instances of this type in the same transaction. Required before switching to Single.");
+                }
+            }
             if draft.kind == OpeningKind::Window {
                 ui.horizontal(|ui| {
-                    ui.label("2D window symbol");
+                    ui.label("Window operation");
                     for operation in [
                         os_model::WindowOperation::Fixed,
                         os_model::WindowOperation::Sliding,
@@ -410,7 +538,7 @@ impl DesktopApp {
                         ui.selectable_value(&mut draft.window_operation, operation, format!("{operation:?}"));
                     }
                 });
-                ui.small("Plan symbol only; does not create an operable 3D sash.");
+                ui.small("Closed 3D sashes on straight hosts with rectangular profiles. On curved hosts or custom nonrectangular profiles, operation affects only the plan symbol. No open-state controls.");
                 ui.label("Pane position");
                 ui.horizontal(|ui| {
                     for (position, label) in [
@@ -431,12 +559,17 @@ impl DesktopApp {
             }
             ui.separator();
             ui.horizontal(|ui| {
-                if draft.editing_materials {
+                if draft.editing_materials || draft.editing_lengths {
                     if ui.button("Back to profile").clicked() {
                         draft.editing_materials = false;
+                        draft.editing_lengths = false;
                     }
                 } else if ui.button("Materials…").clicked() {
                     draft.editing_materials = true;
+                }
+                if ui.button("Lengths…").clicked() {
+                    draft.editing_lengths = true;
+                    draft.editing_materials = false;
                 }
                 if ui.button("Cancel type").clicked() {
                     close = true;
@@ -496,6 +629,73 @@ mod tests {
     use os_model::{Opening, OpeningDefinition, Wall, WallParams};
 
     #[test]
+    fn paired_doors_shared_type_reset_preview_and_history() {
+        let mut editor = Editor::new().unwrap();
+        let level = *editor.document.model().levels.keys().next().unwrap();
+        let wall = Wall::new(os_walls::WALL_TYPE, default_wall(level));
+        let mut draft = OpeningTypeDraft::new(&editor, OpeningKind::Door, None, None);
+        draft.family.door_leaves = os_model::DoorLeaves::Paired {
+            active_fraction: 0.6,
+        };
+        let ty = draft.apply(&mut editor).unwrap();
+        let host = wall.id();
+        let opening = Opening::new(
+            "core.opening",
+            os_model::OpeningParams {
+                name: "Pair".into(),
+                host,
+                offset: 1.,
+                definition: OpeningDefinition::Typed { type_id: ty },
+                open_state: os_model::OpeningState::DoorPairAngles {
+                    active_degrees: 30.,
+                    inactive_degrees: 70.,
+                },
+                width_override: Some(1.),
+                height_override: None,
+                sill_override: None,
+                pane_position_override: None,
+                lite_side_override: None,
+                hinge: Default::default(),
+                swing: Default::default(),
+            },
+        );
+        let id = opening.id();
+        editor
+            .document
+            .execute(
+                "Fixture",
+                vec![Command::AddWall(wall), Command::AddOpening(opening)],
+            )
+            .unwrap();
+        editor.regenerate().unwrap();
+        let before = editor.document.model().clone();
+        let history = editor.document.history_stats();
+        let mut draft = OpeningTypeDraft::edit(&editor, ty).unwrap();
+        draft.family.door_leaves = os_model::DoorLeaves::Single;
+        assert!(draft.apply(&mut editor).is_err());
+        assert_eq!(editor.document.model(), &before);
+        assert_eq!(editor.document.history_stats(), history);
+        draft.reset_paired_poses = true;
+        let preview = draft.preview_model(&editor).unwrap();
+        assert_eq!(editor.document.model(), &before);
+        assert_eq!(
+            preview.openings[&id].parameters.open_state,
+            os_model::OpeningState::Default
+        );
+        draft.apply(&mut editor).unwrap();
+        let after = editor.document.model().clone();
+        assert_eq!(after.openings[&id].parameters.width_override, Some(1.));
+        assert_eq!(
+            editor.document.history_stats().undo_entries,
+            history.undo_entries + 1
+        );
+        editor.undo().unwrap();
+        assert_eq!(editor.document.model(), &before);
+        editor.redo().unwrap();
+        assert_eq!(editor.document.model(), &after);
+    }
+
+    #[test]
     fn window_operation_type_editor_defaults_and_duplicate_retains_choice() {
         let mut editor = Editor::new().unwrap();
         let mut create = OpeningTypeDraft::new(&editor, OpeningKind::Window, None, None);
@@ -533,6 +733,7 @@ mod tests {
         let opening = Opening::new(
             "core.opening",
             os_model::OpeningParams {
+                open_state: Default::default(),
                 name: "Legacy window".into(),
                 host,
                 offset: 1.,
@@ -644,6 +845,7 @@ mod tests {
             Opening::new(
                 "core.opening",
                 os_model::OpeningParams {
+                    open_state: Default::default(),
                     width_override: None,
                     height_override: None,
                     sill_override: None,

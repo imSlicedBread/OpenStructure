@@ -45,6 +45,7 @@ impl Harness {
             let opening = Opening::new(
                 "core.opening",
                 OpeningParams {
+                    open_state: Default::default(),
                     name: format!("{kind:?}"),
                     host: wall,
                     offset,

@@ -10,6 +10,10 @@ mod face_tests;
 mod junction_tests;
 #[path = "split_tests.rs"]
 mod split_tests;
+#[path = "wall_set_copy_tests.rs"]
+mod wall_set_copy_tests;
+#[path = "wall_set_move_tests.rs"]
+mod wall_set_move_tests;
 
 const PROFILES: [(egui::Vec2, f32); 2] = [
     (egui::vec2(1280.0, 800.0), 1.0),
@@ -1457,6 +1461,7 @@ fn add_dimension_test_opening(h: &mut Harness, kind: os_model::OpeningKind) -> (
     let opening = Opening::new(
         "core.opening",
         OpeningParams {
+            open_state: Default::default(),
             name: format!("Dimension {kind:?}"),
             host: h.wall,
             offset: 0.3,
@@ -2288,6 +2293,7 @@ fn install_transform_openings(
     let door = Opening::new(
         "core.opening",
         OpeningParams {
+            open_state: Default::default(),
             name: "Preserve door".into(),
             host: h.wall,
             offset: 0.2,
@@ -2308,6 +2314,7 @@ fn install_transform_openings(
     let window = Opening::new(
         "core.opening",
         OpeningParams {
+            open_state: Default::default(),
             name: "Preserve window".into(),
             host: h.wall,
             offset: 1.2,

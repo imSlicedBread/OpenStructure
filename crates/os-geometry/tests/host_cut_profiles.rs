@@ -22,6 +22,7 @@ fn wall(profile: Vec<Point2>, reverse: bool) -> NativeWall {
         ..Default::default()
     };
     let opening = ResolvedOpening {
+        open_state: Default::default(),
         window_operation: Default::default(),
         family,
         name: "Cut".into(),

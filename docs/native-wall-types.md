@@ -15,12 +15,14 @@ committed wall UUID appears in plan, 3D, section and sheet projections; preview
 does not mutate the document or 3D scene. Center/radius/sweep are editable in
 Properties. Schema 53 straight walls migrate losslessly to `Straight` paths.
 
-Circular-wall joins, hosted doors/windows and room-boundary participation are
-not implemented. Those consumers reject or omit arcs rather than treating
-chords as semantic paths. Straight-only endpoint transforms, outer-face
-dimensions, generic API-2 wall commands, rectangular-Solid export and IFC export
-also do not convert arcs. Arc authoring currently requires the bundled native
-Wall provider; installed API-2 Wall gestures cannot express analytic paths.
+Circular walls host native doors and windows using analytic centerline stations,
+radial apertures and per-layer quantities; curved plan placement and door swing
+symbols are covered by bounded egui/model/geometry tests. Circular-wall joins
+and room-boundary participation remain unsupported. Straight-only endpoint
+transforms and wall-face/angular dimensions, generic API-2 wall commands,
+rectangular-Solid export and IFC export also do not convert arcs. Arc authoring
+currently requires the bundled native Wall provider; installed API-2 Wall
+gestures cannot express analytic paths.
 Evidence: `crates/os-model/tests/wall_arcs.rs`,
 `crates/os-geometry/tests/wall_arcs.rs`,
 `crates/os-storage/tests/wall_arcs.rs`,
@@ -54,7 +56,7 @@ invalidate dependent walls and views. Explicit butt/corner/tee joins use the
 resolved compound profile and require compatible joined profiles; arbitrary
 layer termination and compound-profile junction design remain unresolved.
 
-The current built-in native Wall plugin path uses API 35 / model schema 54. The older
+The current built-in native Wall plugin path uses API 37 / model schema 56. The older
 single-Solid wall export and IFC wall export reject assigned compound walls
 instead of silently flattening or losing their layer data. API-2 generic DTO
 contracts and envelopes are unchanged; this feature does not grant arbitrary

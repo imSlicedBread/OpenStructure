@@ -1,6 +1,8 @@
 //! Real egui frames for native floor boundary authoring; no native-window claim.
 use super::*;
 use os_model::{Floor, FloorParams, Wall};
+#[path = "floor_properties_tests.rs"]
+mod floor_properties_tests;
 
 const PROFILES: [(egui::Vec2, f32); 2] = [
     (egui::vec2(1280.0, 800.0), 1.0),
@@ -14,6 +16,7 @@ struct Harness {
     scale: f32,
     time: f64,
     view: Id,
+    output: egui::FullOutput,
 }
 
 impl Harness {
@@ -35,6 +38,7 @@ impl Harness {
             scale,
             time: 0.0,
             view,
+            output: egui::FullOutput::default(),
         };
         harness.settle();
         let camera = harness.app.plans.cameras.get_mut(&view).unwrap();
@@ -58,7 +62,7 @@ impl Harness {
             .get_mut(&egui::ViewportId::ROOT)
             .unwrap()
             .native_pixels_per_point = Some(self.scale);
-        let _ = self.ctx.run(input, |ctx| self.app.show(ctx));
+        self.output = self.ctx.run(input, |ctx| self.app.show(ctx));
     }
 
     fn settle(&mut self) {
@@ -531,6 +535,10 @@ fn floor_vertex_escape_invalid_release_stale_context_and_canvas_pan_are_safe() {
     assert_eq!(h.app.editor.document.history_stats().undo_entries, 2);
 
     // A drag that starts on floor body, away from a handle, remains canvas pan.
+    // The concurrent edit above invalidates the asynchronous plan drawing.
+    // Wait for the current drawing before sending input to its canvas; a fixed
+    // number of empty frames races worker completion under the full test load.
+    h.settle();
     let center = h.app.plans.cameras[&h.view].center;
     let body = h.point(Point2::new(0.0, 0.0));
     let moved = body + egui::vec2(30.0, 12.0);

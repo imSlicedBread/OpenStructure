@@ -7,7 +7,9 @@ use os_geometry::{
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 mod angular;
+mod casework;
 mod columns;
+pub use casework::PlanCaseworkItem;
 pub use columns::PlanColumnItem;
 mod detail_lines;
 mod room_separation_lines;
@@ -15,10 +17,12 @@ pub use room_separation_lines::{
     PlanRoomSeparationLine, ROOM_SEPARATOR_WEIGHT_MM, clip_room_separation_line,
 };
 mod opening_tags;
+mod ramps;
 mod room_tags;
 mod stairs;
 pub use detail_lines::{DETAIL_LINE_WEIGHT_MM, PlanDetailLine, clip_detail_line};
 pub use opening_tags::PlanOpeningTag;
+pub use ramps::PlanRampItem;
 pub use room_tags::PlanRoomTag;
 pub use stairs::PlanStairItem;
 mod grids;
@@ -81,8 +85,8 @@ pub struct PlanItem {
     pub split_edges: Vec<(Point2, Point2)>,
 }
 
-/// Paper-space stroke resolved by the owning model adapter. Kept independent
-/// of model types so the renderer does not depend on `os-model`.
+/// Paper-space stroke resolved by the owning model adapter, independent of
+/// model-specific type definitions.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PlanStroke {
     pub color: [u8; 3],
@@ -363,7 +367,9 @@ pub struct PlanDrawing {
     floors: Vec<PlanFloorItem>,
     ceilings: Vec<PlanCeilingItem>,
     stairs: Vec<PlanStairItem>,
+    ramps: Vec<PlanRampItem>,
     columns: Vec<PlanColumnItem>,
+    casework: Vec<PlanCaseworkItem>,
     room_boundary_diagnostic: Option<String>,
     line_segments: Vec<crate::snapping::SnapSegment>,
     provider_segment_count: usize,
@@ -549,7 +555,9 @@ impl PlanDrawing {
             floors: Vec::new(),
             ceilings: Vec::new(),
             stairs: Vec::new(),
+            ramps: Vec::new(),
             columns: Vec::new(),
+            casework: Vec::new(),
             room_boundary_diagnostic: None,
             line_segments: Vec::new(),
             provider_segment_count: 0,
@@ -701,6 +709,7 @@ impl PlanDrawing {
                 .items
                 .iter()
                 .chain(self.columns.iter())
+                .chain(self.casework.iter())
                 .any(|item| item.entity == *entity && item.footprint.role == PlanRole::Cut)
                 || (self.native_line_ids.contains(entity)
                     && self
@@ -711,6 +720,7 @@ impl PlanDrawing {
                 .items
                 .iter()
                 .chain(self.columns.iter())
+                .chain(self.casework.iter())
                 .any(|item| item.entity == *entity && item.footprint.role != PlanRole::Cut)
                 || (self.native_line_ids.contains(entity)
                     && self
@@ -759,6 +769,7 @@ impl PlanDrawing {
                 .saturating_add(self.floors.len())
                 .saturating_add(self.ceilings.len())
                 .saturating_add(self.columns.len())
+                .saturating_add(self.casework.len())
                 .saturating_add(rooms.len())
                 <= MAX_PLAN_ELEMENTS,
             "plan exceeds 10000 elements",
@@ -835,6 +846,7 @@ impl PlanDrawing {
                 .saturating_add(self.floors.len())
                 .saturating_add(self.ceilings.len())
                 .saturating_add(self.columns.len())
+                .saturating_add(self.casework.len())
                 .saturating_add(self.rooms.len())
                 .saturating_add(faces.len())
                 <= MAX_PLAN_ELEMENTS,
@@ -876,6 +888,7 @@ impl PlanDrawing {
                 .saturating_add(self.floors.len())
                 .saturating_add(self.ceilings.len())
                 .saturating_add(self.columns.len())
+                .saturating_add(self.casework.len())
                 .saturating_add(self.rooms.len())
                 .saturating_add(self.room_faces.len())
                 .saturating_add(self.grids.len())
@@ -1039,6 +1052,7 @@ impl PlanDrawing {
                 .saturating_add(self.floors.len())
                 .saturating_add(self.ceilings.len())
                 .saturating_add(self.columns.len())
+                .saturating_add(self.casework.len())
                 .saturating_add(ceilings.len())
                 <= MAX_PLAN_ELEMENTS,
             "plan exceeds 10000 elements",
@@ -1136,6 +1150,7 @@ impl PlanDrawing {
                 + self.floors.len()
                 + self.ceilings.len()
                 + self.columns.len()
+                + self.casework.len()
                 + self.rooms.len()
                 <= MAX_PLAN_ELEMENTS,
             "angular graphics exceed plan budget",

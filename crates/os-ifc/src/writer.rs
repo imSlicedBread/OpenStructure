@@ -163,9 +163,35 @@ pub fn export(m: &Model) -> Result<Exchange<Vec<u8>>> {
             "IFC export does not support native columns; keep the native .osb document".into(),
         ));
     }
+    if !m.casework.is_empty() || !m.casework_types.is_empty() {
+        return Err(os_core::Error::Unsupported(
+            "IFC export does not support native casework or types; keep the native .osb document"
+                .into(),
+        ));
+    }
+    if !m.railings.is_empty() || !m.railing_types.is_empty() {
+        return Err(os_core::Error::Unsupported(
+            "IFC export cannot preserve native railings or types; keep the native .osb document"
+                .into(),
+        ));
+    }
     if !m.stairs.is_empty() {
         return Err(os_core::Error::Unsupported(
             "IFC export does not support native stairs; keep the native .osb document".into(),
+        ));
+    }
+    if !m.ramps.is_empty() {
+        return Err(os_core::Error::Unsupported(
+            "IFC export does not support native ramps; keep the native .osb document".into(),
+        ));
+    }
+    if !m.curtain_systems.is_empty()
+        || !m.curtain_panel_types.is_empty()
+        || !m.curtain_mullion_types.is_empty()
+    {
+        return Err(os_core::Error::Unsupported(
+            "IFC export cannot preserve curtain systems or types; keep the native .osb document"
+                .into(),
         ));
     }
     if !m.roofs.is_empty() {
@@ -184,6 +210,27 @@ pub fn export(m: &Model) -> Result<Exchange<Vec<u8>>> {
         ));
     }
     let mut type_operations = BTreeMap::new();
+    if m.opening_types.values().any(|ty| {
+        matches!(
+            ty.parameters.family.door_leaves,
+            os_model::DoorLeaves::Paired { .. }
+        )
+    }) {
+        return Err(os_core::Error::Unsupported(
+            "IFC paired hinged doors are unsupported; keep the native .osb document".into(),
+        ));
+    }
+    if !m.length_parameters.is_empty() || !m.opening_type_length_bindings.is_empty() {
+        return Err(os_core::Error::Unsupported(
+            "IFC cannot preserve project shared Length parameters; keep the native .osb document"
+                .into(),
+        ));
+    }
+    if !m.opening_clearances.is_empty() {
+        return Err(os_core::Error::Unsupported(
+            "IFC cannot preserve host-end clearance locks; keep the native .osb document".into(),
+        ));
+    }
     for e in m.openings.values() {
         let p = m.resolve_opening(&e.parameters)?;
         if p.family != OpeningFamily::default() || p.pane_position != WindowPanePosition::Center {

@@ -124,6 +124,12 @@ impl PluginHost {
     pub fn activation_id(&self, plugin: &str) -> Option<os_core::Id> {
         self.loaded.get(plugin).map(|p| p.activation_id)
     }
+    /// Built-in-only hosts cannot have a bounded Wasm worker.
+    #[cfg(not(feature = "wasm"))]
+    pub fn worker_supported(&self, plugin: &str) -> bool {
+        let _ = plugin;
+        false
+    }
     pub fn manifests(&self) -> impl Iterator<Item = &Manifest> {
         self.loaded.values().map(|p| &p.manifest)
     }
@@ -183,11 +189,11 @@ impl PluginHost {
         }
         ensure(
             p.manifest.api_version == API_VERSION,
-            "native Model request requires API 35/schema 54; rebuild and reinstall older guests",
+            "native Model request requires API 43/schema 62; rebuild and reinstall older guests",
         )?;
         ensure(
             model.schema_version == REQUIRED_MODEL_SCHEMA_VERSION,
-            "native Model request requires schema 54",
+            "native Model request requires schema 62",
         )?;
         require(p, Permission::ModelRead)?;
         let geometry = matches!(request, Request::GenerateWall { .. });

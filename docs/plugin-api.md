@@ -1,10 +1,34 @@
-# Plugin protocols: native Model API 35 and generic API 2
+# Plugin protocols: native Model API 43 and generic API 2
 
-API 35 requires model schema 54 and carries analytic `WallPath` data in native
-wall requests. Circular paths are never approximated into endpoint chords for
-storage or native geometry. Generic API 2 remains the independent straight-wall
+Native API 43 requires model schema 62. Schema 61→62 adds native casework types
+and instances. Schema 60→61 adds the required native ramp collection; rise and slope are derived from two same-building levels, with
+one rectangular straight-run slab. The bounded IFC writer refuses ramps rather
+than dropping them. Schema 59→60 added stair railings and shared types; those
+members remain derived and IFC also refuses them. Container 2 and generic API 2
+are unchanged. API 42 and older native guests must rebuild and reinstall.
+
+Schema 58→59 added required curtain system, panel-type and mullion-type
+collections and persistent grid/panel/member UUID topology. Curtain systems are
+native full-model data; generic API 2 and container 2 are unchanged.
+
+API 39 introduced schema 58 and added the persisted paired-door layout to native
+opening-family Model transport. Existing opening families migrate to `Single`;
+per-instance opening poses are preserved. Native API 38/schema 57 and older
+guests must rebuild and reinstall. Generic API 2 remains unchanged.
+
+API 38 requires schema 57 and adds persisted per-instance door/window opening
+poses to native Model transport. API 37 required schema 56 and added
+project-owned Length parameter entities and opening-type dimension bindings.
+Native API 37 and older guests must rebuild and reinstall. Generic API 2 remains
+unchanged and does not gain these native commands. IFC export explicitly rejects
+project Length semantics rather than discarding drivers or bindings.
+
+API 36 required model schema 55 and carried analytic `WallPath` data plus
+persistent native opening host-end clearances in full-model requests. API 35
+introduced analytic wall paths; circular paths are never approximated into
+endpoint chords for storage or native geometry. Generic API 2 remains the independent straight-wall
 DTO protocol; installed API-2 Wall commands are explicitly rejected for arc
-authoring. API 34/schema 53 guests must rebuild and reinstall.
+authoring. API 35/schema 54 and older full-model guests must rebuild and reinstall.
 
 API 34 required schema 53 and added outer-wall-face dimension anchors with wall
 UUID, Left/Right side and metric station. The model resolver and plan snapshot
@@ -13,10 +37,10 @@ API 33 and older model guests must rebuild and reinstall. Generic API 2 and
 the Wasm buffer ABI are unchanged. Version gates cover API 33 rejection and
 current schema agreement in `os-plugin-api` and `os-plugin-host` tests.
 
-Current native full-model transport uses API 35 with model schema 54. Opening
-types now include required Fixed/Sliding/Casement window-symbol metadata; older
-models migrate existing types to Fixed. Native API 34 and older guests must
-rebuild and reinstall. Generic API 2 and container 2 are unchanged.
+API 35/schema 54 added required Fixed/Sliding/Casement window-symbol metadata;
+older models migrate existing types to Fixed. Current native full-model
+transport uses API 43/schema 62. Native API 42 and older guests must rebuild and
+reinstall. Generic API 2 and container 2 are unchanged.
 
 API 32 requires model schema 51. It retains required `ScheduleParams.group_by`
 (ordered, at most two distinct Level/Kind/Type/Width/Height/Sill keys),
@@ -42,7 +66,7 @@ API and independent examples to develop and distribute compatible plugins.
 Plugin authors retain ownership of their independently authored code.
 
 Current compatibility boundary: native Wall guests that receive the full model
-must use API 35 with model schema 54. API-34 and older native guests are rejected and must be
+must use API 43 with model schema 62. API-42 and older native guests are rejected and must be
 rebuilt/reinstalled; API 2 remains the independent generic DTO protocol. The
 [B/C baseline audit](bc-baseline-audit.md) verifies independently
 installed Wall/column commands, descriptor forms, checked geometry, workers,
@@ -57,7 +81,7 @@ independent plan services acceptance remain required implementation work in D.
 
 Contract metadata can now be consumed with `default-features = false`, without
 host/model/document/kernel dependencies. The Cargo feature named `legacy-v1` is
-historical: it enables the native message structs now transported as API 35. See the separately resolved
+historical: it enables the native message structs now transported as API 38. See the separately resolved
 [contract consumer and compatibility notes](independent-contract.md).
 The independent [API-2 command service](generic-plugin-commands.md) now supports
 registered extension create/edit/delete with descriptors and scoped transactions.
@@ -73,7 +97,7 @@ private model pointers, document mutation handles or database connections cross
 the boundary. `plugins/walls` is the working reference plugin.
 
 A manifest declares its ID, display name, numeric major.minor.patch version,
-numeric `api_version = 32` for native Model guests or `api_version = 2` for
+numeric `api_version = 38` for native Model guests or `api_version = 2` for
 generic DTO guests, dependencies with exact versions, entrypoint,
 capabilities, requested permissions and registrations. The prototype master
 prompt used a string API version; the implemented TOML protocol uses an integer

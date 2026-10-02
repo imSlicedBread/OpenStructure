@@ -1,7 +1,7 @@
 //! Import/export UI for portable native door and window types.
 use super::*;
 use os_core::ensure;
-use os_model::{Material, OpeningType, OpeningTypeParams};
+use os_model::{Material, OpeningType};
 use os_storage::{
     OpeningTypeLibraryScan, OpeningTypePackage, read_opening_type_package,
     scan_opening_type_library, write_opening_type_package,
@@ -29,6 +29,7 @@ pub(super) struct PackageDialog {
     selected_type: Option<Id>,
     package: Option<OpeningTypePackage>,
     update_selected: bool,
+    reset_paired_poses: bool,
     import_id: Id,
     type_name: String,
     name_was_adjusted: bool,
@@ -67,8 +68,10 @@ enum PackageDialogMode {
 }
 
 struct ImportPlan {
+    session: Id,
+    revision: u64,
+    commands: Vec<Command>,
     id: Id,
-    parameters: OpeningTypeParams,
     materials: Vec<Material>,
     affected_instances: usize,
     pinned_dimensions: usize,
@@ -86,6 +89,7 @@ impl PackageDialog {
             selected_type,
             package: None,
             update_selected: false,
+            reset_paired_poses: false,
             import_id: Id::new(),
             type_name: String::new(),
             name_was_adjusted: false,
@@ -141,6 +145,7 @@ impl PackageDialog {
             self.type_name.trim(),
             self.update_selected,
             self.selected_type,
+            self.reset_paired_poses,
         ) {
             Ok(plan) => {
                 self.plan = Some(plan);
@@ -285,8 +290,8 @@ impl DesktopApp {
                                         ));
                                         ui.small(format!(
                                             "{:.3} × {:.3} m · {} material(s) · {}",
-                                            entry.package.parameters.width,
-                                            entry.package.parameters.height,
+                                            entry.package.resolved_parameters().expect("validated package").width,
+                                            entry.package.resolved_parameters().expect("validated package").height,
                                             entry.package.materials.len(),
                                             entry.path.display()
                                         ));
@@ -465,8 +470,8 @@ impl DesktopApp {
                             "Package: {} · {:?} · {:.3} × {:.3} m",
                             package.parameters.name,
                             package.parameters.kind,
-                            package.parameters.width,
-                            package.parameters.height,
+                            package.resolved_parameters().expect("validated package").width,
+                            package.resolved_parameters().expect("validated package").height,
                         ));
                         if let Some(target) = dialog.selected_type.filter(|id| {
                             self.editor
@@ -502,6 +507,9 @@ impl DesktopApp {
                                     dialog.type_name = suggested;
                                 }
                                 dialog.dirty = true;
+                            }
+                            if dialog.update_selected && self.editor.document.model().openings.values().any(|o| o.parameters.type_id() == Some(target) && matches!(o.parameters.open_state, os_model::OpeningState::DoorPairAngles { .. })) {
+                                dialog.dirty |= ui.checkbox(&mut dialog.reset_paired_poses, "Reset paired poses to Default").changed();
                             }
                             ui.small(format!(
                                 "Update target: {}",
@@ -629,6 +637,7 @@ fn build_import_plan(
     name: &str,
     update_selected: bool,
     selected_type: Option<Id>,
+    reset_paired_poses: bool,
 ) -> Result<ImportPlan> {
     package.validate()?;
     let model = editor.document.model();
@@ -702,6 +711,42 @@ fn build_import_plan(
         additions.push(material);
     }
 
+    // Always copy shared Length dependencies to fresh project identities. Names
+    // never imply identity or permission to overwrite an existing driver.
+    let mut commands: Vec<_> = additions
+        .iter()
+        .cloned()
+        .map(Command::AddMaterial)
+        .collect();
+    let mut length_remaps = std::collections::BTreeMap::new();
+    for (source, snapshot) in &package.length_parameters {
+        let mut p = snapshot.clone();
+        p.name = unique_name(
+            &p.name,
+            candidate
+                .length_parameters
+                .values()
+                .map(|p| p.parameters.name.as_str()),
+        );
+        let parameter = os_model::LengthParameter::new("core.length_parameter", p);
+        material_remaps.push(format!(
+            "Length {} ({source}) → {} ({}) · {:.3} m · new independent copy",
+            snapshot.name,
+            parameter.parameters.name,
+            parameter.id(),
+            parameter.parameters.value
+        ));
+        length_remaps.insert(*source, parameter.id());
+        candidate
+            .length_parameters
+            .insert(parameter.id(), parameter.clone());
+        commands.push(Command::AddLengthParameter(parameter));
+    }
+    let bindings = os_model::OpeningTypeLengthBindings {
+        width: package.length_bindings.width.map(|id| length_remaps[&id]),
+        height: package.length_bindings.height.map(|id| length_remaps[&id]),
+        sill: package.length_bindings.sill.map(|id| length_remaps[&id]),
+    };
     let mut parameters = package.parameters.clone();
     parameters.name = name.trim().to_owned();
     if let Some(id) = parameters.family.panel_material {
@@ -715,19 +760,44 @@ fn build_import_plan(
     {
         lite.material = remapped.get(&id).copied();
     }
-    parameters.validate()?;
     if update_selected {
-        candidate
-            .opening_types
-            .get_mut(&target_id)
-            .ok_or_else(|| Error::Invalid("Selected update target no longer exists".into()))?
-            .parameters = parameters.clone();
+        if reset_paired_poses {
+            for opening in model
+                .openings
+                .values()
+                .filter(|o| o.parameters.type_id() == Some(target_id))
+            {
+                if matches!(
+                    opening.parameters.open_state,
+                    os_model::OpeningState::DoorPairAngles { .. }
+                ) {
+                    let mut parameters = opening.parameters.clone();
+                    parameters.open_state = os_model::OpeningState::Default;
+                    commands.push(Command::UpdateOpening {
+                        id: opening.id(),
+                        parameters,
+                    });
+                }
+            }
+        }
+        commands.push(Command::SetOpeningTypeLengthBindings {
+            id: target_id,
+            bindings,
+        });
+        commands.push(Command::UpdateOpeningType {
+            id: target_id,
+            parameters: parameters.clone(),
+        });
     } else {
         let mut ty = OpeningType::new("core.opening_type", parameters.clone());
         ty.header.id = target_id;
-        candidate.opening_types.insert(target_id, ty);
+        commands.push(Command::AddOpeningType(ty));
+        commands.push(Command::SetOpeningTypeLengthBindings {
+            id: target_id,
+            bindings,
+        });
     }
-    candidate.validate()?;
+    let candidate = editor.document.preview_commands(commands.clone())?;
 
     let affected: Vec<_> = candidate
         .openings
@@ -747,8 +817,10 @@ fn build_import_plan(
         opening_tools::host_mesh(&candidate, host)?;
     }
     Ok(ImportPlan {
+        session: editor.document.session_id(),
+        revision: editor.document.revision(),
+        commands,
         id: target_id,
-        parameters,
         materials: additions,
         affected_instances: affected.len(),
         pinned_dimensions,
@@ -758,24 +830,15 @@ fn build_import_plan(
 }
 
 fn apply_import_plan(editor: &mut Editor, plan: ImportPlan) -> Result<Id> {
-    let mut commands: Vec<_> = plan
-        .materials
-        .into_iter()
-        .map(Command::AddMaterial)
-        .collect();
-    if plan.is_update {
-        commands.push(Command::UpdateOpeningType {
-            id: plan.id,
-            parameters: plan.parameters,
-        });
-    } else {
-        let mut ty = OpeningType::new("core.opening_type", plan.parameters);
-        ty.header.id = plan.id;
-        commands.push(Command::AddOpeningType(ty));
-    }
+    ensure(
+        plan.session == editor.document.session_id() && plan.revision == editor.document.revision(),
+        "Package import preview is stale",
+    )?;
+    let candidate = editor.document.preview_commands(plan.commands.clone())?;
+    super::opening_lengths::preflight_lengths(&candidate)?;
     editor
         .document
-        .execute("Import opening type package", commands)?;
+        .execute("Import opening type package", plan.commands)?;
     if let Err(regenerate_error) = editor.regenerate() {
         let original_error = regenerate_error.to_string();
         return match editor.undo() {

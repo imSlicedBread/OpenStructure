@@ -41,6 +41,7 @@ fn existing_model() -> Model {
     let opening = Opening::new(
         "core.opening",
         OpeningParams {
+            open_state: Default::default(),
             width_override: None,
             height_override: None,
             sill_override: None,

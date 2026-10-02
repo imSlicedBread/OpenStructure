@@ -21,14 +21,7 @@ pub(crate) fn opening_tag_graphic(
         let host = &model.walls.get(&opening.host)?.parameters;
         opening.validate_host(host).ok()?;
         let distance = opening.offset + opening.width * 0.5;
-        let length = host.start().distance(host.end());
-        context
-            .basis
-            .world_to_plane(Point2::new(
-                host.start().x + (host.end().x - host.start().x) * distance / length,
-                host.start().y + (host.end().y - host.start().y) * distance / length,
-            ))
-            .ok()
+        context.basis.world_to_plane(host.path.point(distance)).ok()
     });
     Ok(os_render::plan::PlanOpeningTag {
         entity,
@@ -58,7 +51,7 @@ pub struct PreparedProviderPlan {
 
 pub(crate) enum NativeViewSnapshot {
     Plan(Box<PlanSnapshot>),
-    Section(Box<SectionSnapshot>),
+    Section(Box<PreparedSectionSnapshot>),
 }
 impl NativeViewSnapshot {
     pub(crate) fn derive(self) -> Result<PlanDrawing> {
@@ -317,7 +310,7 @@ impl Editor {
         }
     }
 
-    pub(crate) fn section_snapshot(&self, view: Id) -> Result<SectionSnapshot> {
+    pub(crate) fn section_snapshot(&self, view: Id) -> Result<PreparedSectionSnapshot> {
         let context = self.native_section_context(view)?;
         let model = self.document.model();
         let view_parameters = &model.views[&view].parameters;
@@ -335,8 +328,12 @@ impl Editor {
                 .saturating_add(model.floors.len())
                 .saturating_add(model.ceilings.len())
                 .saturating_add(model.columns.len())
+                .saturating_add(model.casework.len())
                 .saturating_add(model.stairs.len())
+                .saturating_add(model.ramps.len())
+                .saturating_add(model.railings.len())
                 .saturating_add(model.openings.len())
+                .saturating_add(model.curtain_systems.len())
                 <= MAX_PLAN_ELEMENTS,
             "section exceeds 10000 model elements",
         )?;
@@ -403,32 +400,99 @@ impl Editor {
                 (stair.id(), stair.parameters.clone(), lower, upper)
             })
             .collect();
-        Ok(SectionSnapshot {
-            roofs: model
-                .roofs
+        let ramps = model
+            .ramps
+            .values()
+            .filter(|ramp| {
+                model.levels[&ramp.parameters.lower_level]
+                    .parameters
+                    .building
+                    == building
+            })
+            .map(|ramp| {
+                let lower = model.levels[&ramp.parameters.lower_level]
+                    .parameters
+                    .elevation;
+                let upper = model.levels[&ramp.parameters.upper_level]
+                    .parameters
+                    .elevation;
+                (ramp.id(), ramp.parameters.clone(), lower, upper)
+            })
+            .collect();
+        let curtain_component_count =
+            model
+                .curtain_systems
                 .values()
-                .filter(|roof| model.levels[&roof.parameters.level].parameters.building == building)
-                .map(|roof| {
-                    (
-                        roof.id(),
-                        roof.parameters.clone(),
-                        model.levels[&roof.parameters.level].parameters.elevation,
-                    )
-                })
-                .collect(),
-            context,
-            interfaces: os_geometry::walls::butt_interfaces(model)?,
-            plane: os_geometry::section::VerticalSectionPlane {
-                origin: section.start,
-                direction: Point2::new(
-                    section.end.x - section.start.x,
-                    section.end.y - section.start.y,
-                ),
+                .fold(0usize, |count, curtain| {
+                    count
+                        .saturating_add(curtain.parameters.panels.len())
+                        .saturating_add(curtain.parameters.mullions.len())
+                });
+        ensure(
+            curtain_component_count <= MAX_PLAN_ELEMENTS,
+            "section exceeds 10000 curtain components",
+        )?;
+        let curtains = model
+            .curtain_systems
+            .values()
+            .filter(|curtain| {
+                model.levels[&curtain.parameters.level].parameters.building == building
+            })
+            .map(|curtain| {
+                Ok((
+                    curtain.id(),
+                    os_geometry::curtain_systems::curtain_geometry(&curtain.parameters, model)?
+                        .components,
+                ))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let mut railing_members = BTreeMap::new();
+        let mut member_count = 0usize;
+        for railing in model.railings.values().filter(|railing| {
+            let stair = &model.stairs[&railing.parameters.stair].parameters;
+            model.levels[&stair.lower_level].parameters.building == building
+        }) {
+            let geometry = os_geometry::railings::railing_geometry(&railing.parameters, model)?;
+            member_count = member_count.saturating_add(geometry.members.len());
+            ensure(
+                member_count <= MAX_PLAN_ELEMENTS,
+                "section exceeds 10000 railing members",
+            )?;
+            railing_members.insert(railing.id(), geometry.members);
+        }
+        Ok(PreparedSectionSnapshot {
+            railing_members,
+            source: SectionSnapshot {
+                roofs: model
+                    .roofs
+                    .values()
+                    .filter(|roof| {
+                        model.levels[&roof.parameters.level].parameters.building == building
+                    })
+                    .map(|roof| {
+                        (
+                            roof.id(),
+                            roof.parameters.clone(),
+                            model.levels[&roof.parameters.level].parameters.elevation,
+                        )
+                    })
+                    .collect(),
+                context,
+                interfaces: os_geometry::walls::butt_interfaces(model)?,
+                plane: os_geometry::section::VerticalSectionPlane {
+                    origin: section.start,
+                    direction: Point2::new(
+                        section.end.x - section.start.x,
+                        section.end.y - section.start.y,
+                    ),
+                },
+                walls,
+                floors,
+                ceilings,
+                stairs,
+                ramps,
+                curtains,
             },
-            walls,
-            floors,
-            ceilings,
-            stairs,
         })
     }
 
@@ -512,11 +576,15 @@ impl Editor {
                 .saturating_add(model.openings.len())
                 .saturating_add(model.floors.len())
                 .saturating_add(model.stairs.len())
+                .saturating_add(model.ramps.len())
+                .saturating_add(model.railings.len())
                 .saturating_add(model.roofs.len())
                 .saturating_add(model.ceilings.len())
                 .saturating_add(model.columns.len())
+                .saturating_add(model.casework.len())
                 .saturating_add(model.rooms.len())
                 .saturating_add(model.room_separation_lines.len())
+                .saturating_add(model.curtain_systems.len())
                 <= MAX_PLAN_ELEMENTS,
             "plan phase inputs exceed 10000 elements",
         )?;
@@ -530,11 +598,15 @@ impl Editor {
             .chain(model.openings.keys())
             .chain(model.floors.keys())
             .chain(model.stairs.keys())
+            .chain(model.ramps.keys())
+            .chain(model.railings.keys())
             .chain(model.roofs.keys())
             .chain(model.ceilings.keys())
             .chain(model.columns.keys())
+            .chain(model.casework.keys())
             .chain(model.rooms.keys())
             .chain(model.room_separation_lines.keys())
+            .chain(model.curtain_systems.keys())
             .map(|id| Ok((*id, model.phase_status(*id, target)?)))
             .collect::<Result<BTreeMap<_, _>>>()?;
         let mut excluded: std::collections::BTreeSet<_> = phase_statuses
@@ -545,6 +617,11 @@ impl Editor {
         for opening in model.openings.values() {
             if !context.show_walls || excluded.contains(&opening.parameters.host) {
                 excluded.insert(opening.id());
+            }
+        }
+        for railing in model.railings.values() {
+            if excluded.contains(&railing.parameters.stair) {
+                excluded.insert(railing.id());
             }
         }
         // Resolve openings and joins against a view-only model copy. The document,
@@ -559,6 +636,9 @@ impl Editor {
             let source = wall_source.to_mut();
             source.walls.retain(|id, _| !excluded.contains(id));
             source.openings.retain(|id, _| !excluded.contains(id));
+            source
+                .opening_clearances
+                .retain(|id, _| !excluded.contains(id));
             source.wall_joins.retain(|_, join| {
                 join.parameters
                     .members()
@@ -572,10 +652,16 @@ impl Editor {
                 .len()
                 .saturating_add(model.floors.len())
                 .saturating_add(model.stairs.len().saturating_mul(4))
+                .saturating_add(model.ramps.len())
+                .saturating_add(model.railings.len())
                 .saturating_add(model.columns.len())
+                .saturating_add(model.casework.len())
                 .saturating_add(model.extensions.len())
                 .saturating_add(model.grids.len())
-                .saturating_add(model.openings.len().saturating_mul(64))
+                // Count sources here. Native line attachment below enforces the
+                // actual 10000-segment budget; a fixed 64x reservation rejects
+                // otherwise valid 256-instance opening selections.
+                .saturating_add(model.openings.len())
                 .saturating_add(model.dimensions.len())
                 .saturating_add(model.room_tags.len())
                 .saturating_add(model.opening_tags.len())
@@ -648,7 +734,62 @@ impl Editor {
                 excluded.insert(*id);
             }
         }
+        let mut curtain_lines = BTreeMap::new();
+        let mut curtain_line_count = 0usize;
+        for curtain in model.curtain_systems.values().filter(|curtain| {
+            !excluded.contains(&curtain.id())
+                && model.levels[&curtain.parameters.level].parameters.building == building
+        }) {
+            let components = curtain.parameters.resolve(model)?;
+            curtain_line_count = curtain_line_count.saturating_add(components.len() * 4);
+            ensure(
+                curtain_line_count <= MAX_PLAN_ELEMENTS,
+                "curtain plan lines exceed 10000 segments",
+            )?;
+            curtain_lines.insert(
+                curtain.id(),
+                curtain_plan_lines(
+                    curtain.id(),
+                    &curtain.parameters,
+                    &components,
+                    model.levels[&curtain.parameters.level].parameters.elevation,
+                    context,
+                )?,
+            );
+        }
+        let mut railing_lines = BTreeMap::new();
+        let mut railing_surfaces = BTreeMap::new();
+        let mut railing_line_count = 0usize;
+        for railing in model.railings.values().filter(|railing| {
+            let stair = &model.stairs[&railing.parameters.stair].parameters;
+            !excluded.contains(&railing.id())
+                && model.levels[&stair.lower_level].parameters.building == building
+        }) {
+            let geometry = os_geometry::railings::railing_geometry(&railing.parameters, model)?;
+            let features = railing_plan_lines(railing.id(), &geometry.members, context)?;
+            railing_line_count = railing_line_count.saturating_add(features.len());
+            ensure(
+                railing_line_count <= MAX_PLAN_ELEMENTS,
+                "railing plan exceeds 10000 segments",
+            )?;
+            let material = model.railing_types[&railing.parameters.railing_type]
+                .parameters
+                .material;
+            for line in &features {
+                railing_surfaces.insert(
+                    (railing.id(), line.feature),
+                    os_geometry::SurfaceIdentity {
+                        layer: None,
+                        material,
+                    },
+                );
+            }
+            railing_lines.insert(railing.id(), features);
+        }
         Ok(PlanSnapshot {
+            railing_lines,
+            railing_surfaces,
+            curtain_lines,
             phase_statuses,
             excluded: excluded.clone(),
             material_colors: model
@@ -746,14 +887,12 @@ impl Editor {
             dimension_walls: model
                 .walls
                 .values()
-                .filter(|wall| wall.parameters.path.is_straight())
                 .filter(|wall| !excluded.contains(&wall.id()))
                 .map(|wall| {
                     (
                         wall.id(),
                         wall.parameters.level,
-                        wall.parameters.start(),
-                        wall.parameters.end(),
+                        wall.parameters.path,
                         model
                             .resolve_wall(wall.id())
                             .map_or(f64::NAN, |wall| wall.parameters.thickness),
@@ -768,6 +907,24 @@ impl Editor {
                 .map(|column| {
                     let elevation = model.levels[&column.parameters.level].parameters.elevation;
                     (column.id(), column.parameters.clone(), elevation)
+                })
+                .collect(),
+            casework: model
+                .casework
+                .values()
+                .filter(|casework| !excluded.contains(&casework.id()))
+                .map(|casework| {
+                    let casework_type =
+                        &model.casework_types[&casework.parameters.type_id].parameters;
+                    let elevation = model.levels[&casework.parameters.level]
+                        .parameters
+                        .elevation;
+                    (
+                        casework.id(),
+                        casework.parameters.clone(),
+                        casework_type.clone(),
+                        elevation,
+                    )
                 })
                 .collect(),
             floors: model
@@ -801,6 +958,26 @@ impl Editor {
                         .parameters
                         .elevation;
                     (stair.id(), stair.parameters.clone(), lower, upper)
+                })
+                .collect(),
+            ramps: model
+                .ramps
+                .values()
+                .filter(|ramp| !excluded.contains(&ramp.id()))
+                .filter(|ramp| {
+                    model.levels[&ramp.parameters.lower_level]
+                        .parameters
+                        .building
+                        == building
+                })
+                .map(|ramp| {
+                    let lower = model.levels[&ramp.parameters.lower_level]
+                        .parameters
+                        .elevation;
+                    let upper = model.levels[&ramp.parameters.upper_level]
+                        .parameters
+                        .elevation;
+                    (ramp.id(), ramp.parameters.clone(), lower, upper)
                 })
                 .collect(),
             section_markers,
@@ -859,7 +1036,181 @@ mod opening_visibility_tests;
 #[cfg(test)]
 pub(crate) mod phase_tests;
 
+/// Component edges keep assembly ownership; feature numbers include hidden
+/// components so range/crop changes do not renumber visible features.
+fn curtain_plan_lines(
+    entity: Id,
+    parameters: &os_model::CurtainSystemParams,
+    components: &[os_model::CurtainComponent],
+    elevation: f64,
+    context: PlanContext,
+) -> Result<Vec<os_render::plan::PlanLine>> {
+    ensure(
+        components.len() * 4 <= 4096,
+        "curtain exceeds native plan line limit",
+    )?;
+    let mut lines = Vec::new();
+    let mut components = components.iter().collect::<Vec<_>>();
+    components.sort_by_key(|component| component.id);
+    for (index, component) in components.into_iter().enumerate() {
+        let base = elevation + parameters.base_offset + component.min[2];
+        let top = elevation + parameters.base_offset + component.max[2];
+        let range = context.range;
+        let tolerance = os_geometry::plan::PLAN_TOLERANCE;
+        if top <= range.depth + tolerance || base >= range.top - tolerance {
+            continue;
+        }
+        let role = if base <= range.cut + tolerance && top > range.cut + tolerance {
+            PlanRole::Cut
+        } else if top <= range.cut + tolerance && top > range.bottom + tolerance {
+            PlanRole::Projected
+        } else if top <= range.bottom + tolerance && top > range.depth + tolerance {
+            PlanRole::Depth
+        } else {
+            continue;
+        };
+        let [x0, y0, z] = component.min;
+        let [x1, y1, _] = component.max;
+        let points = [[x0, y0, z], [x1, y0, z], [x1, y1, z], [x0, y1, z]]
+            .into_iter()
+            .map(|local| {
+                let world = parameters.world_point(local, elevation);
+                context
+                    .basis
+                    .world_to_plane(Point2::new(world[0], world[1]))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        for edge in 0..4 {
+            lines.push(os_render::plan::PlanLine {
+                entity,
+                feature: (index * 4 + edge) as u32,
+                start: points[edge],
+                end: points[(edge + 1) % 4],
+                role,
+            });
+        }
+    }
+    Ok(lines)
+}
+
+/// Plan marks come from the checked host-derived member geometry. The rail is
+/// split at range transitions; post footprints retain their original feature
+/// slots when the range or crop hides other members.
+fn railing_plan_lines(
+    entity: Id,
+    members: &[os_geometry::Mesh],
+    context: PlanContext,
+) -> Result<Vec<os_render::plan::PlanLine>> {
+    use os_geometry::plan::PLAN_TOLERANCE;
+    ensure(
+        !members.is_empty() && members.len() <= os_model::MAX_STAIR_RAILING_POSTS as usize + 1,
+        "railing exceeds plan member budget",
+    )?;
+    let role = |base: f64, top: f64| {
+        let range = context.range;
+        if top <= range.depth + PLAN_TOLERANCE || base >= range.top - PLAN_TOLERANCE {
+            None
+        } else if base <= range.cut + PLAN_TOLERANCE && top > range.cut + PLAN_TOLERANCE {
+            Some(PlanRole::Cut)
+        } else if top <= range.cut + PLAN_TOLERANCE && top > range.bottom + PLAN_TOLERANCE {
+            Some(PlanRole::Projected)
+        } else if top <= range.bottom + PLAN_TOLERANCE && top > range.depth + PLAN_TOLERANCE {
+            Some(PlanRole::Depth)
+        } else {
+            None
+        }
+    };
+    let mut lines = Vec::new();
+    for (index, member) in members.iter().enumerate() {
+        member.validate()?;
+        ensure(member.vertices.len() == 8, "invalid railing box member")?;
+        ensure(
+            member.vertices.iter().all(|v| {
+                [v.x, v.y, v.z].into_iter().all(|n| {
+                    n.is_finite() && n.abs() <= os_geometry::section::MAX_SECTION_COORDINATE
+                })
+            }),
+            "railing plan member outside coordinate envelope",
+        )?;
+        let vertices = &member.vertices;
+        if index == 0 {
+            let a = Point2::new(
+                (vertices[0].x + vertices[3].x) * 0.5,
+                (vertices[0].y + vertices[3].y) * 0.5,
+            );
+            let b = Point2::new(
+                (vertices[1].x + vertices[2].x) * 0.5,
+                (vertices[1].y + vertices[2].y) * 0.5,
+            );
+            let base = vertices[0].z;
+            let rise = vertices[1].z - base;
+            let depth = vertices[4].z - base;
+            ensure(rise > 0.0 && depth > 0.0, "invalid railing rail slope")?;
+            let mut stations = vec![0.0, 1.0];
+            for elevation in [
+                context.range.depth - depth,
+                context.range.bottom - depth,
+                context.range.cut - depth,
+                context.range.cut,
+                context.range.top,
+            ] {
+                let t = (elevation - base) / rise;
+                if t > 0.0 && t < 1.0 {
+                    stations.push(t);
+                }
+            }
+            stations.sort_by(f64::total_cmp);
+            stations.dedup();
+            for (feature, pair) in stations.windows(2).enumerate() {
+                let z = base + rise * (pair[0] + pair[1]) * 0.5;
+                let Some(role) = role(z, z + depth) else {
+                    continue;
+                };
+                let at = |t: f64| {
+                    context
+                        .basis
+                        .world_to_plane(Point2::new(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t))
+                };
+                let start = at(pair[0])?;
+                let end = at(pair[1])?;
+                if start.distance(end) > PLAN_TOLERANCE {
+                    lines.push(os_render::plan::PlanLine {
+                        entity,
+                        feature: feature as u32,
+                        start,
+                        end,
+                        role,
+                    });
+                }
+            }
+        } else {
+            let Some(role) = role(vertices[0].z, vertices[4].z) else {
+                continue;
+            };
+            for edge in 0..4 {
+                let a = vertices[edge];
+                let b = vertices[(edge + 1) % 4];
+                lines.push(os_render::plan::PlanLine {
+                    entity,
+                    feature: (8 + (index - 1) * 4 + edge) as u32,
+                    start: context.basis.world_to_plane(Point2::new(a.x, a.y))?,
+                    end: context.basis.world_to_plane(Point2::new(b.x, b.y))?,
+                    role,
+                });
+            }
+        }
+    }
+    ensure(
+        lines.len() <= 4096,
+        "railing exceeds native plan line budget",
+    )?;
+    Ok(lines)
+}
+
 pub(crate) struct PlanSnapshot {
+    railing_lines: BTreeMap<Id, Vec<os_render::plan::PlanLine>>,
+    railing_surfaces: BTreeMap<(Id, u32), os_geometry::SurfaceIdentity>,
+    curtain_lines: BTreeMap<Id, Vec<os_render::plan::PlanLine>>,
     phase_statuses: BTreeMap<Id, os_model::PhaseStatus>,
     excluded: std::collections::BTreeSet<Id>,
     roofs: Vec<(Id, os_model::RoofParams, f64)>,
@@ -877,12 +1228,19 @@ pub(crate) struct PlanSnapshot {
     room_segments: Vec<os_geometry::rooms::BoundarySegment>,
     rooms: Vec<(Id, os_model::RoomParams)>,
     dimensions: Vec<(Id, DimensionParams)>,
-    dimension_walls: Vec<(Id, Id, os_core::Point2, os_core::Point2, f64)>,
+    dimension_walls: Vec<(Id, Id, os_model::WallPath, f64)>,
     plan_level: Id,
     floors: Vec<(Id, os_model::FloorParams, f64)>,
     ceilings: Vec<(Id, os_model::CeilingParams, f64)>,
     stairs: Vec<(Id, os_model::StairParams, f64, f64)>,
+    ramps: Vec<(Id, os_model::RampParams, f64, f64)>,
     columns: Vec<(Id, os_model::ColumnParams, f64)>,
+    casework: Vec<(
+        Id,
+        os_model::CaseworkParams,
+        os_model::CaseworkTypeParams,
+        f64,
+    )>,
     section_markers: Vec<(Id, os_model::SectionViewSettings)>,
     unavailable: Vec<Id>,
     grids: Vec<os_render::plan::PlanGrid>,
@@ -911,15 +1269,18 @@ impl PlanSnapshot {
             .filter(|(_, p)| p.layout == os_model::DimensionLayout::Angular)
             .map(|(id, p)| {
                 let resolved = p.resolve_angular_with(|wall| {
-                    let (_, level, start, end, _) = self
+                    let (_, level, path, _) = self
                         .dimension_walls
                         .iter()
-                        .find(|(id, _, _, _, _)| *id == wall)
+                        .find(|(id, _, _, _)| *id == wall)
                         .ok_or(os_model::DimensionDiagnostic::MissingWall)?;
                     if *level != self.plan_level {
                         return Err(os_model::DimensionDiagnostic::WrongLevel);
                     }
-                    Ok((*start, *end))
+                    if !path.is_straight() {
+                        return Err(os_model::DimensionDiagnostic::InvalidGeometry);
+                    }
+                    Ok((path.start(), path.end()))
                 });
                 angular_graphic(self.context, *id, p.orphan_hint, resolved)
             })
@@ -934,6 +1295,20 @@ impl PlanSnapshot {
                     os_geometry::SurfaceIdentity {
                         layer: None,
                         material: parameters.material,
+                    },
+                ))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let casework_items = self
+            .casework
+            .iter()
+            .map(|(id, parameters, casework_type, elevation)| {
+                Ok((
+                    *id,
+                    os_geometry::casework::casework_solid(parameters, casework_type, *elevation)?,
+                    os_geometry::SurfaceIdentity {
+                        layer: None,
+                        material: casework_type.material,
                     },
                 ))
             })
@@ -1030,9 +1405,27 @@ impl PlanSnapshot {
                 project_stair_for_plan(*entity, parameters, *lower, *upper, self.context)
             })
             .collect::<Result<Vec<_>>>()?;
+        let ramp_items = self
+            .ramps
+            .iter()
+            .filter_map(|(entity, parameters, lower, upper)| {
+                match os_render::plan::PlanRampItem::from_plan_data(
+                    *entity,
+                    parameters,
+                    *lower,
+                    *upper,
+                    self.context,
+                ) {
+                    Ok(Some(item)) => Some(Ok(item)),
+                    Ok(None) => None,
+                    Err(error) => Some(Err(error)),
+                }
+            })
+            .collect::<Result<Vec<_>>>()?;
         let mut solids = BTreeMap::new();
         let mut segments = Vec::new();
-        let mut native_lines = BTreeMap::new();
+        let mut native_lines = self.curtain_lines;
+        native_lines.extend(self.railing_lines);
         let mut seams = BTreeMap::new();
         for (id, roof, elevation) in &self.roofs {
             let plan = os_geometry::roofs::roof_plan(
@@ -1167,8 +1560,10 @@ impl PlanSnapshot {
             grid.end = self.context.basis.world_to_plane(grid.end)?;
         }
         let mut drawing = drawing
+            .with_line_surfaces(self.railing_surfaces)
             .with_grids(grids)?
             .with_stairs(stair_items)?
+            .with_ramps(ramp_items)?
             .with_native_lines(native_lines)?
             .with_provider_lines(lines)?
             .with_detail_lines(self.detail_lines)?
@@ -1181,6 +1576,7 @@ impl PlanSnapshot {
             .with_floors(floor_items)?
             .with_ceilings(ceiling_items)?
             .with_columns(&column_items)?
+            .with_casework(&casework_items)?
             .with_angular_dimensions(angular_items)?
             .with_room_tags(self.room_tags)?
             .with_opening_tags(self.opening_tags)?
@@ -1270,6 +1666,7 @@ impl PlanSnapshot {
             .items(self.context)?
             .iter()
             .chain(drawing.columns(self.context)?)
+            .chain(drawing.casework(self.context)?)
         {
             apply_phase(
                 item.entity,
@@ -1365,6 +1762,26 @@ struct SectionFloor {
     thickness: f64,
 }
 
+/// Additional independent solids travel with the frozen section source, without
+/// changing the existing curtain/stair source constructors.
+pub(crate) struct PreparedSectionSnapshot {
+    source: SectionSnapshot,
+    railing_members: BTreeMap<Id, Vec<os_geometry::Mesh>>,
+}
+
+impl std::ops::Deref for PreparedSectionSnapshot {
+    type Target = SectionSnapshot;
+    fn deref(&self) -> &Self::Target {
+        &self.source
+    }
+}
+
+impl PreparedSectionSnapshot {
+    pub(crate) fn derive(self) -> Result<PlanDrawing> {
+        self.source.derive_with_railings(self.railing_members)
+    }
+}
+
 pub(crate) struct SectionSnapshot {
     roofs: Vec<(Id, os_model::RoofParams, f64)>,
     context: PlanContext,
@@ -1374,10 +1791,20 @@ pub(crate) struct SectionSnapshot {
     floors: Vec<SectionFloor>,
     ceilings: Vec<(Id, os_model::CeilingParams, f64)>,
     stairs: Vec<(Id, os_model::StairParams, f64, f64)>,
+    ramps: Vec<(Id, os_model::RampParams, f64, f64)>,
+    curtains: Vec<(Id, Vec<os_geometry::curtain_systems::CurtainComponentMesh>)>,
 }
 
 impl SectionSnapshot {
+    #[cfg(test)]
     pub(crate) fn derive(self) -> Result<PlanDrawing> {
+        self.derive_with_railings(BTreeMap::new())
+    }
+
+    fn derive_with_railings(
+        self,
+        railing_members: BTreeMap<Id, Vec<os_geometry::Mesh>>,
+    ) -> Result<PlanDrawing> {
         use os_geometry::section::SECTION_TOLERANCE;
         use os_geometry::{plan::PlanRole, section::vertical_section};
         use os_render::plan::PlanLine;
@@ -1479,6 +1906,11 @@ impl SectionSnapshot {
             .iter()
             .map(|(id, parameters, _, _)| (*id, parameters.material))
             .collect::<BTreeMap<_, _>>();
+        let ramp_materials = self
+            .ramps
+            .iter()
+            .map(|(id, parameters, _, _)| (*id, parameters.material))
+            .collect::<BTreeMap<_, _>>();
         for (entity, parameters, lower, upper) in self.stairs {
             let mesh = os_geometry::stairs::stair_mesh(&parameters, lower, upper)?;
             add_section_contours(
@@ -1487,10 +1919,125 @@ impl SectionSnapshot {
                 &mut raw_segment_count,
             )?;
         }
+        for (entity, parameters, lower, upper) in self.ramps {
+            let mesh = os_geometry::ramps::ramp_mesh(&parameters, lower, upper)?;
+            add_section_contours(
+                segments.entry(entity).or_default(),
+                vertical_section(&mesh, self.plane)?,
+                &mut raw_segment_count,
+            )?;
+        }
+
+        let mut curtain_lines: BTreeMap<Id, Vec<PlanLine>> = BTreeMap::new();
+        for (assembly, components) in self.curtains {
+            for component in components {
+                // Components are sectioned independently; their touching shells
+                // cannot be passed to the section kernel as a single union.
+                if !section_plane_crosses_component(&component.mesh, self.plane)? {
+                    continue;
+                }
+                let contours = vertical_section(&component.mesh, self.plane)?;
+                let mut component_edges = Vec::new();
+                add_section_contours(&mut component_edges, contours, &mut raw_segment_count)?;
+                let retained = reduce_section_edges(component_edges)?;
+                ensure(
+                    retained.len() <= 256,
+                    "curtain component exceeds cut segment limit",
+                )?;
+                let output = curtain_lines.entry(assembly).or_default();
+                ensure(
+                    output.len().saturating_add(retained.len()) <= MAX_PLAN_ELEMENTS,
+                    "curtain assembly exceeds section line limit",
+                )?;
+                for segment in retained {
+                    ensure(
+                        [
+                            segment.start.x,
+                            segment.start.y,
+                            segment.end.x,
+                            segment.end.y,
+                        ]
+                        .into_iter()
+                        .all(|v| {
+                            v.is_finite() && v.abs() <= os_geometry::section::MAX_SECTION_COORDINATE
+                        }),
+                        "curtain section line outside finite coordinate envelope",
+                    )?;
+                    let feature = u32::try_from(output.len()).map_err(|_| {
+                        os_core::Error::Invalid("curtain section feature overflow".into())
+                    })?;
+                    output.push(PlanLine {
+                        entity: assembly,
+                        feature,
+                        start: segment.start,
+                        end: segment.end,
+                        role: PlanRole::Cut,
+                    });
+                    line_surfaces.insert(
+                        (assembly, feature),
+                        os_geometry::SurfaceIdentity {
+                            layer: None,
+                            material: component.component.material,
+                        },
+                    );
+                }
+            }
+        }
+
+        for (entity, members) in railing_members {
+            ensure(
+                members.len() <= os_model::MAX_STAIR_RAILING_POSTS as usize + 1,
+                "railing exceeds section member budget",
+            )?;
+            let output = curtain_lines.entry(entity).or_default();
+            for (member_index, member) in members.into_iter().enumerate() {
+                // The rail and posts touch, but are not a sectionable mesh union.
+                if !section_plane_crosses_component(&member, self.plane)? {
+                    continue;
+                }
+                let mut edges = Vec::new();
+                add_section_contours(
+                    &mut edges,
+                    vertical_section(&member, self.plane)?,
+                    &mut raw_segment_count,
+                )?;
+                let retained = reduce_section_edges(edges)?;
+                ensure(
+                    retained.len() <= 4,
+                    "railing box exceeds section edge budget",
+                )?;
+                ensure(
+                    output.len().saturating_add(retained.len()) <= 4096,
+                    "railing exceeds native section line budget",
+                )?;
+                let surface = member.surfaces.first().copied().unwrap_or_default();
+                for (edge, segment) in retained.into_iter().enumerate() {
+                    let feature = (member_index * 4 + edge) as u32;
+                    output.push(PlanLine {
+                        entity,
+                        feature,
+                        start: segment.start,
+                        end: segment.end,
+                        role: PlanRole::Cut,
+                    });
+                    line_surfaces.insert((entity, feature), surface);
+                }
+            }
+        }
 
         os_geometry::walls::remove_section_interfaces(&mut segments, &self.interfaces, self.plane)?;
         let mut lines = layer_lines;
+        for (assembly, features) in curtain_lines {
+            if !features.is_empty() {
+                ensure(
+                    !lines.contains_key(&assembly),
+                    "duplicate section source identity",
+                )?;
+                lines.insert(assembly, features);
+            }
+        }
         let mut stair_lines = Vec::new();
+        let mut ramp_lines = Vec::new();
         let mut line_count = lines.values().map(Vec::len).sum::<usize>();
         ensure(
             line_count <= MAX_PLAN_ELEMENTS,
@@ -1518,7 +2065,10 @@ impl SectionSnapshot {
                     segment.start.distance(segment.end) > SECTION_TOLERANCE,
                     "section contains a sub-tolerance edge",
                 )?;
-                if let Some(material) = stair_materials.get(&entity) {
+                if let Some(material) = stair_materials
+                    .get(&entity)
+                    .or_else(|| ramp_materials.get(&entity))
+                {
                     line_surfaces.insert(
                         (entity, feature as u32),
                         os_geometry::SurfaceIdentity {
@@ -1542,6 +2092,12 @@ impl SectionSnapshot {
                         stair_materials[&entity],
                         features,
                     ));
+                } else if ramp_materials.contains_key(&entity) {
+                    ramp_lines.push(os_render::plan::PlanRampItem::from_section_lines(
+                        entity,
+                        ramp_materials[&entity],
+                        features,
+                    ));
                 } else {
                     lines.insert(entity, features);
                 }
@@ -1551,6 +2107,7 @@ impl SectionSnapshot {
         PlanDrawing::from_prisms(self.context, &BTreeMap::new(), unavailable)?
             .with_native_lines(lines)
             .and_then(|drawing| drawing.with_stairs(stair_lines))
+            .and_then(|drawing| drawing.with_ramps(ramp_lines))
             .map(|drawing| drawing.with_line_surfaces(line_surfaces))
     }
 }
@@ -1706,6 +2263,52 @@ fn add_section_contours(
     Ok(())
 }
 
+/// The section kernel reports the boundary of a coplanar face. Curtain cut
+/// drawings omit that boundary when the plane only touches a component's
+/// exterior and does not cross its interior.
+fn section_plane_crosses_component(
+    mesh: &os_geometry::Mesh,
+    plane: os_geometry::section::VerticalSectionPlane,
+) -> Result<bool> {
+    use os_geometry::section::{MAX_SECTION_COORDINATE, SECTION_TOLERANCE};
+
+    let scale = plane.direction.x.abs().max(plane.direction.y.abs());
+    ensure(
+        scale.is_finite() && scale > 0.0,
+        "invalid curtain section direction",
+    )?;
+    let dx = plane.direction.x / scale;
+    let dy = plane.direction.y / scale;
+    let length = dx.hypot(dy);
+    let normal = Point2::new(-dy / length, dx / length);
+    ensure(
+        plane.origin.x.is_finite()
+            && plane.origin.y.is_finite()
+            && plane.origin.x.abs() <= MAX_SECTION_COORDINATE
+            && plane.origin.y.abs() <= MAX_SECTION_COORDINATE,
+        "invalid curtain section origin",
+    )?;
+    let mut positive = false;
+    let mut negative = false;
+    for vertex in &mesh.vertices {
+        ensure(
+            vertex.x.is_finite()
+                && vertex.y.is_finite()
+                && vertex.z.is_finite()
+                && vertex.x.abs() <= MAX_SECTION_COORDINATE
+                && vertex.y.abs() <= MAX_SECTION_COORDINATE
+                && vertex.z.abs() <= MAX_SECTION_COORDINATE,
+            "curtain section mesh outside coordinate envelope",
+        )?;
+        let distance =
+            normal.x * (vertex.x - plane.origin.x) + normal.y * (vertex.y - plane.origin.y);
+        ensure(distance.is_finite(), "curtain section distance overflow")?;
+        positive |= distance > SECTION_TOLERANCE;
+        negative |= distance < -SECTION_TOLERANCE;
+    }
+    Ok(positive && negative)
+}
+
 #[cfg(test)]
 #[allow(clippy::items_after_test_module)]
 mod stair_section_tests {
@@ -1764,6 +2367,8 @@ mod stair_section_tests {
                 0.0,
                 2.0,
             )],
+            ramps: Vec::new(),
+            curtains: Vec::new(),
         }
     }
 
@@ -1936,16 +2541,24 @@ mod stair_section_tests {
     }
 }
 
+#[cfg(test)]
+#[path = "plan/curtain_section_tests.rs"]
+mod curtain_section_tests;
+
+#[cfg(test)]
+#[path = "plan/railing_drawing_tests.rs"]
+mod railing_drawing_tests;
+
 fn derive_dimension_graphics(
     context: PlanContext,
     plan_level: Id,
-    walls: &[(Id, Id, os_core::Point2, os_core::Point2, f64)],
+    walls: &[(Id, Id, os_model::WallPath, f64)],
     openings: &[(Id, os_model::ResolvedOpening)],
     dimensions: &[(Id, DimensionParams)],
 ) -> Result<Vec<PlanDimensionItem>> {
     let walls: BTreeMap<_, _> = walls
         .iter()
-        .map(|(id, level, start, end, thickness)| (*id, (*level, *start, *end, *thickness)))
+        .map(|(id, level, path, thickness)| (*id, (*level, *path, *thickness)))
         .collect();
     let openings: BTreeMap<_, _> = openings.iter().map(|(id, p)| (*id, p)).collect();
     let mut output = Vec::new();

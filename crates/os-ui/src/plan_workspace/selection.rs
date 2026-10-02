@@ -242,10 +242,12 @@ fn candidates(
         .unwrap_or_default()
         .iter()
         .chain(drawing.columns(context).unwrap_or_default())
+        .chain(drawing.casework(context).unwrap_or_default())
     {
         if model.walls.contains_key(&item.entity)
             || model.openings.contains_key(&item.entity)
             || model.columns.contains_key(&item.entity)
+            || model.casework.contains_key(&item.entity)
         {
             add(item.entity, item.footprint.vertices());
         }

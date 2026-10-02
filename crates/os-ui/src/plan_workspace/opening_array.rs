@@ -39,10 +39,11 @@ impl Draft {
         let model = app.editor.document.model();
         let source = &model.openings[&guard.id].parameters;
         let width = model.resolve_opening(source)?.width;
-        // Native model walls are straight; external guest geometry is never a host.
+        // Only native model walls can host opening arrays; plugin elements are
+        // not reinterpreted as architectural hosts.
         ensure(
             model.walls.contains_key(&source.host),
-            "A native straight host is required",
+            "A native wall host is required",
         )?;
         Ok(Self {
             guard,
@@ -137,16 +138,32 @@ impl Draft {
             }
             candidate.openings.insert(opening.id(), opening.clone());
             if let Some(tag) = tag {
-                let mut parameters = tag.parameters.clone();
-                parameters.opening = opening.id();
-                parameters.position.x += (wall.end().x - wall.start().x) / wall.length() * delta;
-                parameters.position.y += (wall.end().y - wall.start().y) / wall.length() * delta;
-                if let Err(e) = parameters.validate_creation(&candidate) {
+                let mut tag_parameters = tag.parameters.clone();
+                tag_parameters.opening = opening.id();
+                let source_station = source.offset + resolved.width * 0.5;
+                let target_station = opening.parameters.offset + resolved.width * 0.5;
+                let source_center = wall.path.point(source_station);
+                let target_center = wall.path.point(target_station);
+                let source_tangent = wall.path.tangent(source_station);
+                let target_tangent = wall.path.tangent(target_station);
+                let source_normal = Point2::new(-source_tangent.y, source_tangent.x);
+                let target_normal = Point2::new(-target_tangent.y, target_tangent.x);
+                let relative = Point2::new(
+                    tag_parameters.position.x - source_center.x,
+                    tag_parameters.position.y - source_center.y,
+                );
+                let along = relative.x * source_tangent.x + relative.y * source_tangent.y;
+                let across = relative.x * source_normal.x + relative.y * source_normal.y;
+                tag_parameters.position = Point2::new(
+                    target_center.x + target_tangent.x * along + target_normal.x * across,
+                    target_center.y + target_tangent.y * along + target_normal.y * across,
+                );
+                if let Err(e) = tag_parameters.validate_creation(&candidate) {
                     preview
                         .error
                         .get_or_insert_with(|| format!("Copy {i} tag: {e}"));
                 }
-                let tag = OpeningTag::new("core.opening_tag", parameters);
+                let tag = OpeningTag::new("core.opening_tag", tag_parameters);
                 candidate.opening_tags.insert(tag.id(), tag.clone());
                 preview.tags.push(tag);
             }

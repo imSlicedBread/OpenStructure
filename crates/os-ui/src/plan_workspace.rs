@@ -2,18 +2,36 @@
 //! worker; obsolete work drains before replacement in each lane.
 use super::*;
 use crate::plan_gesture::WallEdit;
+mod casework;
+#[cfg(test)]
+mod casework_tests;
 mod ceilings;
 #[cfg(test)]
 mod column_tests;
 mod columns;
 mod crop;
+mod curtain_properties;
+#[cfg(test)]
+mod curtain_tests;
+mod curtains;
 mod detail_lines;
 #[cfg(test)]
 mod graphics_tests;
 mod junctions;
+mod opening_align;
 mod opening_array;
+mod opening_batch_edit;
 mod opening_tags;
+mod opening_type_assignment;
 mod overlap_selection;
+mod placement_orientation;
+mod placement_width;
+#[cfg(test)]
+mod railing_tests;
+mod railings;
+#[cfg(test)]
+mod ramp_tests;
+mod ramps;
 mod roofs;
 mod room_materials;
 #[cfg(test)]
@@ -27,6 +45,8 @@ mod sheet_sources;
 mod stair_tests;
 mod stairs;
 mod transforms;
+mod wall_set_copy;
+mod wall_set_move;
 use os_model::{
     DimensionEndpoint, DimensionParams, DimensionReference, Opening, OpeningDefinition,
     OpeningKind, OpeningParams, OpeningType, OpeningTypeParams, ResolvedOpening, Sheet,
@@ -50,6 +70,7 @@ mod ceiling_tests;
 mod detail_line_tests;
 #[cfg(test)]
 mod endpoint_tests;
+mod floor_properties;
 #[cfg(test)]
 mod floor_tests;
 #[cfg(test)]
@@ -820,6 +841,8 @@ pub(super) struct PlanWorkspace {
     junction_drag: Option<junctions::JunctionDrag>,
     transform: Option<transforms::Draft>,
     transform_claimed: bool,
+    wall_set_move: Option<wall_set_move::Draft>,
+    wall_set_move_claimed: bool,
     opening_move: Option<crate::opening_tools::OpeningMove>,
     opening_move_claimed: bool,
     opening_flip: Option<crate::opening_tools::OpeningFlip>,
@@ -828,8 +851,14 @@ pub(super) struct PlanWorkspace {
     opening_spacing_claimed: bool,
     opening_rehost: Option<crate::opening_tools::OpeningRehost>,
     opening_rehost_claimed: bool,
+    opening_align: Option<opening_align::Draft>,
+    opening_align_claimed: bool,
     opening_array: Option<opening_array::Draft>,
     opening_array_claimed: bool,
+    opening_type_assignment: Option<opening_type_assignment::Draft>,
+    opening_type_assignment_claimed: bool,
+    opening_batch_edit: Option<opening_batch_edit::Draft>,
+    opening_batch_edit_claimed: bool,
     // Retain ownership after cancellation until button-up, so the same press
     // cannot turn into a pan or selection. This is not a live wall draft.
     endpoint_pointer_claimed: bool,
@@ -847,16 +876,28 @@ pub(super) struct PlanWorkspace {
     opening_placement: Option<OpeningPlacementDraft>,
     opening_width_claimed: bool,
     floor_sketch: Option<FloorSketchDraft>,
+    curtain_draft: Option<curtains::Draft>,
+    pub(super) curtain_properties: Option<curtain_properties::Draft>,
+    curtain_pointer_claimed: bool,
     floor_hole_sketch: Option<FloorHoleSketchDraft>,
+    pub(super) floor_properties: Option<floor_properties::Draft>,
+    floor_visibility_cache: Option<(Id, Id, bool)>,
     column_placement: Option<columns::Placement>,
     column_edit: Option<columns::Edit>,
     column_pointer_claimed: bool,
+    casework_placement: Option<casework::Placement>,
+    casework_edit: Option<casework::Edit>,
+    casework_pointer_claimed: bool,
     stair_placement: Option<stairs::Placement>,
+    ramp_placement: Option<ramps::Placement>,
     roof_draft: Option<roofs::Draft>,
     ceiling_draft: Option<ceilings::Draft>,
     roof_pointer_claimed: bool,
     stair_edit: Option<stairs::Edit>,
+    ramp_edit: Option<ramps::Edit>,
+    railing_edit: Option<railings::Edit>,
     stair_pointer_claimed: bool,
+    ramp_pointer_claimed: bool,
     floor_vertex_drag: Option<FloorVertexDrag>,
     toolbar_height: f32,
     session: Option<Id>,
@@ -955,6 +996,9 @@ struct OpeningPlacementDraft {
     source: Option<Id>,
     draw_width: bool,
     width_drag: Option<OpeningWidthDrag>,
+    orientation: placement_orientation::Intent,
+    exact_width: placement_width::Intent,
+    width_snaps: SnapOptions,
 }
 
 #[derive(Clone)]
@@ -1098,16 +1142,6 @@ struct OpeningPlacementPreview {
     parameters: OpeningParams,
     resolved: ResolvedOpening,
     message: Option<String>,
-}
-
-fn project_to_segment(point: Point2, start: Point2, end: Point2) -> (f64, f64) {
-    let dx = end.x - start.x;
-    let dy = end.y - start.y;
-    let length_squared = dx * dx + dy * dy;
-    let t =
-        (((point.x - start.x) * dx + (point.y - start.y) * dy) / length_squared).clamp(0.0, 1.0);
-    let projected = Point2::new(start.x + t * dx, start.y + t * dy);
-    (t, point.distance(projected))
 }
 
 fn floor_snap_target(
@@ -1379,6 +1413,7 @@ pub(super) fn opening_host_hit(
         .iter()
         .map(|item| item.entity)
         .collect();
+    let world_point = context.basis.plane_to_world(point)?;
 
     let local_hit = drawing.pick_screen(context, camera, viewport, pointer, 7.0)?;
     let picked_host = local_hit.and_then(|id| {
@@ -1390,20 +1425,16 @@ pub(super) fn opening_host_hit(
         })
     });
     let host_candidate = if let Some(host) = picked_host {
-        os_core::ensure(
-            model.walls[&host].parameters.path.is_straight(),
-            "Doors and windows require a straight host; circular-wall hosting is not supported",
-        )?;
         model.walls.get(&host).and_then(|wall| {
             if wall.parameters.level != level || !visible.contains(&host) {
                 return None;
             }
-            let start = context.basis.world_to_plane(wall.parameters.start()).ok()?;
-            let end = context.basis.world_to_plane(wall.parameters.end()).ok()?;
-            let (t, distance) = project_to_segment(point, start, end);
-            let distance_pixels = distance * camera.pixels_per_metre;
+            let path = wall.parameters.path;
+            let station = path.project(world_point);
+            let projected = context.basis.world_to_plane(path.point(station)).ok()?;
+            let distance_pixels = point.distance(projected) * camera.pixels_per_metre;
             (distance_pixels <= wall.parameters.thickness * camera.pixels_per_metre * 0.5 + 8.0)
-                .then_some((host, t, distance_pixels))
+                .then_some((host, station, distance_pixels))
         })
     } else if local_hit.is_some() {
         // A dimension, room, grid or provider line has precedence over a wall
@@ -1414,21 +1445,20 @@ pub(super) fn opening_host_hit(
             .walls
             .iter()
             .filter(|(id, wall)| wall.parameters.level == level && visible.contains(id))
-            .filter(|(_, wall)| wall.parameters.path.is_straight())
             .filter_map(|(id, wall)| {
-                let start = context.basis.world_to_plane(wall.parameters.start()).ok()?;
-                let end = context.basis.world_to_plane(wall.parameters.end()).ok()?;
-                let (t, distance) = project_to_segment(point, start, end);
-                let distance_pixels = distance * camera.pixels_per_metre;
+                let path = wall.parameters.path;
+                let station = path.project(world_point);
+                let projected = context.basis.world_to_plane(path.point(station)).ok()?;
+                let distance_pixels = point.distance(projected) * camera.pixels_per_metre;
                 (distance_pixels <= wall.parameters.thickness * camera.pixels_per_metre * 0.5 + 8.0)
-                    .then_some((*id, t, distance_pixels))
+                    .then_some((*id, station, distance_pixels))
             })
             .min_by(|a, b| a.2.total_cmp(&b.2))
     };
-    let Some((host, t, _)) = host_candidate else {
+    let Some((host, station, _)) = host_candidate else {
         return Ok(None);
     };
-    Ok(Some((host, t * model.walls[&host].parameters.length())))
+    Ok(Some((host, station)))
 }
 
 fn opening_placement_preview(
@@ -1440,63 +1470,38 @@ fn opening_placement_preview(
     pointer: Point2,
     draft: &OpeningPlacementDraft,
 ) -> Result<Option<OpeningPlacementPreview>> {
-    let kind = draft.kind;
-    let type_id = draft.type_id;
-    let Some((host, station)) =
+    let hit = if draft.exact_width.is_exact() && !draft.draw_width {
+        let snaps = draft.width_snaps;
+        opening_width_station(
+            model,
+            drawing,
+            context,
+            os_render::snapping::SnapQuery {
+                camera,
+                viewport,
+                pointer,
+                radius_pixels: 10.0,
+                endpoints: snaps.enabled && snaps.endpoints,
+                midpoints: snaps.enabled && snaps.midpoints,
+                intersections: snaps.enabled && snaps.intersections,
+                perpendicular_from: None,
+                nearest: snaps.enabled && snaps.nearest,
+                axis_extensions: false,
+                exclude_entity: None,
+            },
+        )?
+    } else {
         opening_host_hit(model, drawing, context, camera, viewport, pointer)?
-    else {
+    };
+    let Some((host, station)) = hit else {
         return Ok(None);
     };
     let wall = &model.walls[&host].parameters;
-    let (mut parameters, width) = if let Some(source_id) = draft.source {
-        let source = model
-            .openings
-            .get(&source_id)
-            .ok_or_else(|| Error::Invalid("opening to copy no longer exists".into()))?;
-        let resolved = model.resolve_opening(&source.parameters)?;
-        os_core::ensure(resolved.kind == kind, "opening copy kind changed")?;
-        (source.parameters.clone(), resolved.width)
-    } else {
-        let (definition, width) = if let Some(type_id) = type_id {
-            let ty = model
-                .opening_types
-                .get(&type_id)
-                .ok_or_else(|| Error::Invalid("selected opening type no longer exists".into()))?;
-            os_core::ensure(
-                ty.parameters.kind == kind,
-                "selected opening type has the wrong kind",
-            )?;
-            (OpeningDefinition::Typed { type_id }, ty.parameters.width)
-        } else {
-            let width = if kind == OpeningKind::Door { 0.9 } else { 1.2 };
-            (
-                OpeningDefinition::Legacy {
-                    kind,
-                    width,
-                    height: if kind == OpeningKind::Door { 2.1 } else { 1.2 },
-                    sill: if kind == OpeningKind::Door { 0.0 } else { 0.9 },
-                },
-                width,
-            )
-        };
-        (
-            OpeningParams {
-                width_override: None,
-                height_override: None,
-                sill_override: None,
-                pane_position_override: None,
-                lite_side_override: None,
-                hinge: Default::default(),
-                swing: Default::default(),
-                name: format!("{kind:?}"),
-                host,
-                offset: station - width * 0.5,
-                definition,
-            },
-            width,
-        )
-    };
-    parameters.host = host;
+    let mut parameters = draft.base_parameters(model, host)?;
+    if !draft.draw_width {
+        draft.exact_width.apply(&mut parameters)?;
+    }
+    let width = model.resolve_opening(&parameters)?.width;
     parameters.offset = station - width * 0.5;
     if draft.draw_width {
         let Some(drag) = &draft.width_drag else {
@@ -1514,6 +1519,7 @@ fn opening_placement_preview(
             OpeningDefinition::Typed { .. } => parameters.width_override = Some(width),
         }
     }
+    parameters = draft.orientation.apply(model, parameters)?;
     let resolved = model.resolve_opening(&parameters)?;
     let message = resolved
         .validate_host(wall)
@@ -1567,9 +1573,7 @@ fn opening_width_station(
         model, host, None, context, drawing, query, projected,
     )?;
     let world = context.basis.plane_to_world(point)?;
-    let station = ((world.x - wall.start().x) * (wall.end().x - wall.start().x)
-        + (world.y - wall.start().y) * (wall.end().y - wall.start().y))
-        / wall.length();
+    let station = wall.path.project(world);
     let point = context
         .basis
         .world_to_plane(os_geometry::openings::world(wall, station, 0.0))?;
@@ -2346,11 +2350,16 @@ impl DesktopApp {
     }
 
     pub(super) fn cancel_plan_wall(&mut self) {
+        self.plans.curtain_draft = None;
+        self.plans.wall_set_move = None;
         self.plans.opening_array = None;
         self.plans.transform = None;
         self.plans.roof_draft = None;
         self.plans.stair_placement = None;
+        self.plans.ramp_placement = None;
+        self.plans.ramp_edit = None;
         self.plans.column_placement = None;
+        self.plans.casework_placement = None;
         self.plans.endpoint_drag = None;
         self.plans.junction_drag = None;
         self.wall_gesture = None;
@@ -2588,6 +2597,7 @@ impl DesktopApp {
                 self.cancel_aligned_dimension();
                 self.plans.crop.mode = None;
                 self.plans.column_placement = None;
+                self.plans.casework_placement = None;
                 self.plans.floor_sketch = None;
                 self.plans.floor_hole_sketch = None;
                 self.plans.section_placement = None;
@@ -2605,6 +2615,7 @@ impl DesktopApp {
     }
 
     pub(super) fn begin_opening_placement(&mut self, kind: OpeningKind) {
+        self.plans.opening_align = None;
         if !self.plan_shows_opening_kind(kind) {
             self.report(
                 Err(Error::Invalid(
@@ -2654,6 +2665,9 @@ impl DesktopApp {
                     source: None,
                     draw_width: false,
                     width_drag: None,
+                    orientation: Default::default(),
+                    exact_width: Default::default(),
+                    width_snaps: self.plans.snaps,
                 });
                 self.report(
                     Ok(()),
@@ -2721,6 +2735,9 @@ impl DesktopApp {
     }
 
     pub(super) fn cancel_opening_placement(&mut self) {
+        self.plans.opening_batch_edit = None;
+        self.plans.opening_type_assignment = None;
+        self.plans.opening_align = None;
         self.plans.opening_array = None;
         self.plans.opening_rehost = None;
         self.plans.opening_placement = None;
@@ -2993,6 +3010,8 @@ impl DesktopApp {
             self.plans.floor_sketch = None;
             self.plans.floor_hole_sketch = None;
             self.plans.ceiling_draft = None;
+            self.plans.ramp_placement = None;
+            self.plans.ramp_edit = None;
             self.select(Some(id));
             Ok(id)
         })();
@@ -3052,7 +3071,7 @@ impl DesktopApp {
             Some(id)
         };
         if source.is_none() {
-            if draft.draw_width {
+            if draft.draw_width || draft.exact_width.is_exact() {
                 parameters.width_override = Some(placed_width);
             }
             parameters.definition = OpeningDefinition::Typed {
@@ -3067,6 +3086,21 @@ impl DesktopApp {
         let opening = Opening::new("core.opening", parameters);
         let id = opening.id();
         commands.push(Command::AddOpening(opening));
+        let mut candidate = self.editor.document.model().clone();
+        for command in &commands {
+            match command {
+                Command::AddOpeningType(ty) => {
+                    candidate.opening_types.insert(ty.id(), ty.clone());
+                }
+                Command::AddOpening(opening) => {
+                    candidate.openings.insert(opening.id(), opening.clone());
+                }
+                _ => unreachable!("placement only adds its opening and optional type"),
+            }
+        }
+        candidate.validate()?;
+        crate::opening_tools::host_mesh(&candidate, preview.host)?;
+        crate::opening_tools::panel_mesh(&candidate, id)?;
         self.editor.document.execute(
             if source.is_some() {
                 "Copy door or window"
@@ -3407,6 +3441,18 @@ impl DesktopApp {
     }
 
     pub(super) fn finish_endpoint_input(&mut self, ctx: &egui::Context) {
+        self.validate_wall_set_move(ctx);
+        if self.plans.wall_set_move.is_none() && !ctx.input(|i| i.pointer.primary_down()) {
+            self.plans.wall_set_move_claimed = false;
+        }
+        if !ctx.input(|i| i.pointer.primary_down()) {
+            self.plans.opening_type_assignment_claimed = false;
+            self.plans.opening_batch_edit_claimed = false;
+        }
+        self.validate_opening_align(ctx);
+        if !ctx.input(|i| i.pointer.primary_down()) {
+            self.plans.opening_align_claimed = false;
+        }
         if !ctx.input(|i| i.pointer.primary_down() || i.pointer.primary_released()) {
             self.plans.opening_width_claimed = false;
         }
@@ -3552,6 +3598,7 @@ impl DesktopApp {
     fn begin_plan_wall(&mut self, view: Id) {
         self.plans.transform = None;
         self.plans.column_placement = None;
+        self.plans.casework_placement = None;
         self.cancel_aligned_dimension();
         self.cancel_opening_placement();
         self.plans.room_placement_active = false;
@@ -3821,11 +3868,15 @@ impl DesktopApp {
         }
     }
     pub(super) fn plan_workspace(&mut self, ctx: &egui::Context) {
+        self.opening_type_assignment_dialog(ctx);
+        self.opening_batch_edit_dialog(ctx);
         self.opening_array_dialog(ctx);
         self.validate_roof_interaction(ctx);
         self.validate_ceiling_interaction(ctx);
         self.validate_stair_interaction(ctx);
+        self.validate_ramp_interaction(ctx);
         self.plans.poll(&self.editor);
+        self.validate_curtain(ctx);
         if self.plans.drawing.is_none() {
             self.plans.crop.cancel();
         }
@@ -4065,6 +4116,22 @@ impl DesktopApp {
                             }
                         });
                     });
+                    if self.selected_ids.len() > 1
+                        && ui.button("Move walls").on_hover_text("Move 2–64 selected native straight walls together. Two clicks; one undo step.").clicked()
+                    {
+                        self.begin_wall_set_move();
+                    }
+                    if !self.selected_ids.is_empty() && ui.button("Copy walls").on_hover_text("Copy 1–64 native straight walls on this level, with all hosted openings, internal joins and this plan's opening tags. Choose base point then destination. No dimensions or rooms are copied.").clicked() {
+                        self.begin_wall_set_copy();
+                    }
+                    if let Some(draft) = &mut self.plans.wall_set_move {
+                        if let Some(summary) = draft.dependency_summary() { ui.label(summary); }
+                        ui.label("Distance (m)");
+                        ui.add(egui::TextEdit::singleline(&mut draft.gesture.length).desired_width(65.0));
+                        ui.label("Angle (°)");
+                        ui.add(egui::TextEdit::singleline(&mut draft.gesture.angle_degrees).desired_width(55.0));
+                        if ui.button(if draft.is_copy() { "Cancel copy walls" } else { "Cancel move walls" }).clicked() { self.plans.wall_set_move = None; }
+                    }
                     if let Some(mode) = transform_mode { self.begin_wall_transform(mode); }
                     if cancel_transform { self.plans.transform = None; }
                     if selection_filters_changed {
@@ -4082,12 +4149,20 @@ impl DesktopApp {
                             self.status = "Section placement canceled.".into();
                             self.status_error = false;
                         }
+                    } else if self.plans.ramp_placement.is_some() {
+                        ui.label("Ramp · click lower edge, then upper edge · Escape cancels");
+                        if ui.button("Finish ramp tool").clicked() {
+                            self.plans.ramp_placement = None;
+                        }
                     } else if self.plans.stair_placement.is_some() {
                         ui.label("Stair · click start, then upper arrival · Escape cancels");
                         if ui.button("Finish stairs").clicked() { self.plans.stair_placement = None; }
                     } else if self.plans.column_placement.is_some() {
                         ui.label("Column · click center · Escape cancels");
                         if ui.button("Cancel column").clicked() { self.plans.column_placement = None; }
+                    } else if self.plans.casework_placement.is_some() {
+                        ui.label("Casework · click to place · Escape cancels");
+                        if ui.button("Cancel casework").clicked() { self.plans.casework_placement = None; }
                     } else if let Some(draft) = self.plans.floor_hole_sketch.as_mut() {
                         let point_count = draft.points.len();
                         ui.label(format!("Slab opening · {point_count} vertices · metres"));
@@ -4165,9 +4240,21 @@ impl DesktopApp {
                             && ui.button("Place column").clicked() {
                             self.begin_column(view);
                         }
+                        if let Some(view) = self.plans.active {
+                            ui.menu_button("Place", |ui| {
+                                if ui.button("Casework").on_hover_text("Place a snapped casework instance with an editable shared type.").clicked() {
+                                    self.begin_casework(view);
+                                    ui.close();
+                                }
+                            });
+                        }
                         if let Some(view) = self.plans.active
                             && ui.button("Draw stair").clicked() {
                             self.begin_stair(view);
+                        }
+                        if let Some(view) = self.plans.active
+                            && ui.button("Draw ramp").on_hover_text("Place a straight slab between this level and a higher level in the same building.").clicked() {
+                            self.begin_ramp(view);
                         }
                         if ui.add_enabled(self.plans.active.is_some(),egui::Button::new("New grid")).clicked() {
                             self.begin_grid_form(None);
@@ -4214,7 +4301,7 @@ impl DesktopApp {
                         }
                         }
                     } else {
-                        ui.horizontal(|ui| {
+                        ui.horizontal_wrapped(|ui| {
                             let gesture = self.wall_gesture.as_mut().unwrap();
                             ui.label(gesture.prompt());
                             if !gesture.is_trim_extend() && !gesture.arc {
@@ -4290,8 +4377,11 @@ impl DesktopApp {
             });
         if !ctx.input(|i| i.pointer.primary_down()) {
             self.plans.crop.claimed = false;
+            self.plans.curtain_pointer_claimed = false;
             self.plans.column_pointer_claimed = false;
+            self.plans.casework_pointer_claimed = false;
             self.plans.stair_pointer_claimed = false;
+            self.plans.ramp_pointer_claimed = false;
             self.plans.roof_pointer_claimed = false;
         }
         if self.plans.pending.is_some() || self.plans.sheet_sources.busy() {
@@ -4304,6 +4394,7 @@ impl DesktopApp {
     }
 
     fn plan_canvas(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        self.validate_curtain(ctx);
         let repair_active = self
             .plans
             .dimension_draft
@@ -4328,10 +4419,20 @@ impl DesktopApp {
                 "Reference replacement canceled because its context changed.",
             );
         }
+        let assignment_input = self.plans.opening_type_assignment.is_some()
+            || self.plans.opening_type_assignment_claimed
+            || self.plans.opening_batch_edit.is_some()
+            || self.plans.opening_batch_edit_claimed;
+        self.validate_opening_batch_edit(ctx);
+        self.validate_opening_type_assignment(ctx);
         self.validate_opening_array(ctx);
         let array_input = self.plans.opening_array.is_some() || self.plans.opening_array_claimed;
         self.validate_wall_transform(ctx);
-        let transform_input = self.plans.transform.is_some() || self.plans.transform_claimed;
+        self.validate_wall_set_move(ctx);
+        let wall_set_move_input =
+            self.plans.wall_set_move.is_some() || self.plans.wall_set_move_claimed;
+        let transform_input =
+            self.plans.transform.is_some() || self.plans.transform_claimed || wall_set_move_input;
         if transform_input {
             self.plans.endpoint_pointer_claimed = true;
         }
@@ -4342,9 +4443,19 @@ impl DesktopApp {
                 .iter()
                 .any(|event| matches!(event, egui::Event::PointerGone))
         });
-        let rehost_input =
-            array_input || self.plans.opening_rehost.is_some() || self.plans.opening_rehost_claimed;
-        if !array_input && rehost_input && ctx.input(|i| i.pointer.primary_down()) {
+        let align_input = self.plans.opening_align.is_some() || self.plans.opening_align_claimed;
+        self.validate_opening_align(ctx);
+        let rehost_input = assignment_input
+            || align_input
+            || array_input
+            || self.plans.opening_rehost.is_some()
+            || self.plans.opening_rehost_claimed;
+        if !assignment_input
+            && !align_input
+            && !array_input
+            && rehost_input
+            && ctx.input(|i| i.pointer.primary_down())
+        {
             self.plans.opening_rehost_claimed = true;
         }
         let stale_rehost = self.plans.opening_rehost.as_ref().is_some_and(|d| {
@@ -4381,16 +4492,34 @@ impl DesktopApp {
             .column_placement
             .as_ref()
             .is_some_and(|d| d.stale(&self.editor, self.plans.active));
+        let stale_casework = self
+            .plans
+            .casework_placement
+            .as_ref()
+            .is_some_and(|d| d.stale(&self.editor, self.plans.active));
         if stale_column || escape_pressed {
             self.plans.column_placement = None;
+        }
+        if stale_casework || escape_pressed {
+            self.plans.casework_placement = None;
         }
         if stale_column {
             self.status =
                 "Column placement canceled because its plan, document, or providers changed."
                     .into();
         }
+        if stale_casework {
+            self.status =
+                "Casework placement canceled because its plan, document, or providers changed."
+                    .into();
+        }
         if !ctx.wants_keyboard_input() && ctx.input(|i| i.key_pressed(egui::Key::Delete)) {
             self.delete_column();
+            self.delete_casework();
+            self.delete_railing();
+            if self.plans.ramp_placement.is_none() {
+                self.delete_ramp();
+            }
             if self.plans.stair_placement.is_none() {
                 self.delete_stair();
             }
@@ -4512,6 +4641,7 @@ impl DesktopApp {
             || stale_separator
             || stale_move
             || stale_column
+            || stale_casework
             || escape_pressed
             || stale_detail
             || stale_wall
@@ -4623,7 +4753,7 @@ impl DesktopApp {
         };
         let camera = self.plans.cameras.entry(id).or_default();
         let fit = ui
-            .horizontal(|ui| {
+            .horizontal_wrapped(|ui| {
                 let fit = ui
                     .button(if self.editor.document.model().views[&id].parameters.kind
                         == os_model::ViewKind::Section
@@ -4633,12 +4763,17 @@ impl DesktopApp {
                         "Fit plan"
                     })
                     .clicked();
-                if let Some(draft) = self.plans.opening_placement.as_mut()
-                    && draft.source.is_none()
-                {
-                    ui.add_enabled_ui(!self.plans.opening_width_claimed, |ui| {
-                        ui.checkbox(&mut draft.draw_width, "Draw opening width")
-                            .on_hover_text("Drag from the first jamb to the second on one visible wall. Escape cancels.");
+                if let Some(draft) = self.plans.curtain_draft.as_mut() {
+                    ui.label("Curtain · height / base offset (m)");
+                    ui.add(egui::DragValue::new(&mut draft.height).speed(0.1).range(0.1..=1000.0));
+                    ui.add(egui::DragValue::new(&mut draft.base_offset).speed(0.1).range(-1000.0..=1000.0));
+                    ui.label("20 mm glazing · 50 × 100 mm frame · click start/end · Esc cancels");
+                }
+                if let Some(draft) = self.plans.opening_placement.as_mut() {
+                    draft.width_snaps = self.plans.snaps;
+                    ui.add_enabled_ui(!self.plans.opening_width_claimed && draft.width_drag.is_none(), |ui| {
+                        draft.width_controls(ui, self.editor.document.model());
+                        draft.orientation_controls(ui, self.editor.document.model());
                     });
                 }
                 ui.label(if self.plans.crop.mode.is_some() {
@@ -4768,6 +4903,9 @@ impl DesktopApp {
         let Ok(columns) = drawing.columns(context) else {
             return;
         };
+        let Ok(casework) = drawing.casework(context) else {
+            return;
+        };
         let room_boundary_diagnostic = drawing.room_boundary_diagnostic(context).ok().flatten();
         if let Some(message) = room_boundary_diagnostic {
             ui.colored_label(theme::ERROR, message);
@@ -4824,6 +4962,7 @@ impl DesktopApp {
             let points: Vec<_> = items
                 .iter()
                 .chain(columns.iter())
+                .chain(casework.iter())
                 .flat_map(|item| item.footprint.vertices().iter().copied())
                 .chain(grids.iter().flat_map(|grid| [grid.start, grid.end]))
                 .chain(
@@ -4896,13 +5035,26 @@ impl DesktopApp {
         {
             self.plans.column_pointer_claimed = true;
         }
+        if self.plans.casework_placement.is_some()
+            && response.contains_pointer()
+            && ctx.input(|i| i.pointer.primary_pressed())
+        {
+            self.plans.casework_pointer_claimed = true;
+        }
         if self.plans.stair_placement.is_some()
             && response.contains_pointer()
             && ctx.input(|i| i.pointer.primary_pressed())
         {
             self.plans.stair_pointer_claimed = true;
         }
+        if self.plans.ramp_placement.is_some()
+            && response.contains_pointer()
+            && ctx.input(|i| i.pointer.primary_pressed())
+        {
+            self.plans.ramp_pointer_claimed = true;
+        }
         let stair_input = self.plans.stair_placement.is_some() || self.plans.stair_pointer_claimed;
+        let ramp_input = self.plans.ramp_placement.is_some() || self.plans.ramp_pointer_claimed;
         if self
             .plans
             .roof_draft
@@ -4925,11 +5077,18 @@ impl DesktopApp {
             .as_ref()
             .is_some_and(ceilings::Draft::sketching);
         // Both native placement tools take precedence over handles, tags and pan.
-        let placement_input = array_input
+        let curtain_input =
+            self.plans.curtain_draft.is_some() || self.plans.curtain_pointer_claimed;
+        let placement_input = curtain_input
+            || assignment_input
+            || array_input
             || transform_input
             || self.plans.column_placement.is_some()
             || self.plans.column_pointer_claimed
+            || self.plans.casework_placement.is_some()
+            || self.plans.casework_pointer_claimed
             || stair_input
+            || ramp_input
             || roof_input
             || ceiling_sketching;
         let crop_action = if placement_input || rehost_input {
@@ -5296,7 +5455,12 @@ impl DesktopApp {
             rect,
             ui,
             self.selected,
-            allow_opening_move && !self.plans.opening_move_claimed,
+            allow_opening_move
+                && self.selected_ids.len() == 1
+                && self
+                    .selected
+                    .is_some_and(|id| self.selected_ids.contains(&id))
+                && !self.plans.opening_move_claimed,
         );
         let opening_move_release = crate::opening_tools::move_input(
             &self.editor,
@@ -5399,13 +5563,13 @@ impl DesktopApp {
                     .map(|(_, station)| station);
             }
         }
-        let width_preview = self
+        let placement_result = self
             .plans
             .opening_placement
             .as_ref()
-            .filter(|d| d.draw_width && !cancelled)
+            .filter(|d| !cancelled && (d.draw_width || response.hovered()))
             .zip(width_pointer)
-            .and_then(|(draft, p)| {
+            .map(|(draft, p)| {
                 opening_placement_preview(
                     self.editor.document.model(),
                     drawing,
@@ -5415,21 +5579,35 @@ impl DesktopApp {
                     Point2::new(f64::from(p.x - rect.left()), f64::from(p.y - rect.top())),
                     draft,
                 )
-                .ok()
-                .flatten()
-            });
+            })
+            .unwrap_or(Ok(None));
+        let (width_preview, mut placement_error) = match placement_result {
+            Ok(preview) => (preview, None),
+            Err(error) => (None, Some(error.to_string())),
+        };
         let width_drawing = width_preview
             .as_ref()
+            .filter(|_| {
+                self.plans
+                    .opening_placement
+                    .as_ref()
+                    .is_some_and(|d| d.draw_width || d.exact_width.is_exact())
+            })
             .filter(|p| p.message.is_none())
             .and_then(|p| {
                 let mut model = self.editor.document.model().clone();
                 let opening = Opening::new("core.opening", p.parameters.clone());
                 let id = opening.id();
                 model.openings.insert(id, opening);
-                model.validate().ok()?;
-                crate::opening_tools::opening_edit_preview(&model, id, &[p.host], context)
-                    .ok()
-                    .map(|drawing| (id, p.host, drawing))
+                match model.validate().and_then(|()| {
+                    crate::opening_tools::opening_edit_preview(&model, id, &[p.host], context)
+                }) {
+                    Ok(drawing) => Some((id, p.host, drawing)),
+                    Err(error) => {
+                        placement_error = Some(error.to_string());
+                        None
+                    }
+                }
             });
         let opening_move_input = self.plans.opening_width_claimed
             || self.plans.opening_move_claimed
@@ -5502,6 +5680,12 @@ impl DesktopApp {
             .as_ref()
             .zip(rehost_pointer)
             .map(|(draft, point)| draft.candidate(&self.editor, drawing, *camera, size, point));
+        let align_preview = self
+            .plans
+            .opening_align
+            .as_ref()
+            .zip(rehost_pointer)
+            .map(|(draft, point)| draft.candidate(&self.editor, drawing, *camera, size, point));
         let opening_move_preview = self
             .plans
             .opening_move
@@ -5517,6 +5701,13 @@ impl DesktopApp {
             .as_ref()
             .zip(rehost_preview.as_ref().and_then(|p| p.as_ref().ok()))
             .map(|(d, (parameters, preview))| (d.id, d.host(), parameters.host, preview))
+            .or_else(|| {
+                self.plans
+                    .opening_align
+                    .as_ref()
+                    .zip(align_preview.as_ref().and_then(|p| p.as_ref().ok()))
+                    .map(|(d, p)| (d.id(), d.host(), d.host(), &p.drawing))
+            })
             .or_else(|| {
                 self.plans
                     .opening_move
@@ -5551,6 +5742,54 @@ impl DesktopApp {
                 .chain(replacement_lines.iter().cloned())
                 .collect::<Vec<_>>();
             (preview_items.as_slice(), preview_lines.as_slice())
+        } else {
+            (items, provider_lines)
+        };
+        let assignment_items;
+        let assignment_lines;
+        let (items, provider_lines) = if let Some(draft) = &self.plans.opening_type_assignment
+            && let Ok(preview) = &draft.preview
+            && let (Ok(replacements), Ok(lines)) = (
+                preview.drawing.items(context),
+                preview.drawing.provider_lines(context),
+            ) {
+            assignment_items = items
+                .iter()
+                .filter(|i| !preview.hosts.contains(&i.entity))
+                .cloned()
+                .chain(replacements.iter().cloned())
+                .collect::<Vec<_>>();
+            assignment_lines = provider_lines
+                .iter()
+                .filter(|l| !draft.contains(l.entity))
+                .cloned()
+                .chain(lines.iter().cloned())
+                .collect::<Vec<_>>();
+            (assignment_items.as_slice(), assignment_lines.as_slice())
+        } else {
+            (items, provider_lines)
+        };
+        let batch_items;
+        let batch_lines;
+        let (items, provider_lines) = if let Some(draft) = &self.plans.opening_batch_edit
+            && let Ok(preview) = &draft.preview
+            && let (Ok(replacements), Ok(lines)) = (
+                preview.drawing.items(context),
+                preview.drawing.provider_lines(context),
+            ) {
+            batch_items = items
+                .iter()
+                .filter(|i| !preview.hosts.contains(&i.entity))
+                .cloned()
+                .chain(replacements.iter().cloned())
+                .collect::<Vec<_>>();
+            batch_lines = provider_lines
+                .iter()
+                .filter(|l| !draft.contains(l.entity))
+                .cloned()
+                .chain(lines.iter().cloned())
+                .collect::<Vec<_>>();
+            (batch_items.as_slice(), batch_lines.as_slice())
         } else {
             (items, provider_lines)
         };
@@ -5730,7 +5969,7 @@ impl DesktopApp {
                 ui.colored_label(theme::ERROR, error.to_string());
             }
         }
-        for item in columns.iter().chain(items.iter()) {
+        for item in columns.iter().chain(casework.iter()).chain(items.iter()) {
             let points: Result<Vec<_>> = item
                 .footprint
                 .vertices()
@@ -6408,6 +6647,17 @@ impl DesktopApp {
             }
             roofs::paint_sketch(&painter, d, target, camera, rect);
         }
+        let curtain_target = self.plans.curtain_draft.as_ref().and_then(|_| {
+            response
+                .hover_pos()
+                .filter(|pointer| rect.contains(*pointer))
+                .map(|pointer| {
+                    curtains::target(drawing, context, camera, rect, pointer, self.plans.snaps)
+                })
+        });
+        if let (Some(draft), Some(Ok(target))) = (&self.plans.curtain_draft, &curtain_target) {
+            curtains::paint(draft, *target, &painter, camera, rect);
+        }
         let stair_target = self.plans.stair_placement.as_ref().and_then(|draft| {
             response
                 .hover_pos()
@@ -6453,6 +6703,37 @@ impl DesktopApp {
                 );
             }
         }
+        let ramp_target = self.plans.ramp_placement.as_ref().and_then(|draft| {
+            response
+                .hover_pos()
+                .filter(|pointer| rect.contains(*pointer))
+                .map(|pointer| {
+                    ramps::target(
+                        draft,
+                        drawing,
+                        context,
+                        camera,
+                        rect,
+                        pointer,
+                        self.plans.snaps,
+                    )
+                })
+        });
+        if let (Some(draft), Some(Ok(target))) = (&self.plans.ramp_placement, &ramp_target) {
+            match ramps::preview(&self.editor, draft, *target) {
+                Ok(Some(preview)) => ramps::paint(&painter, &preview, context, camera, rect),
+                Ok(None) => {}
+                Err(error) => {
+                    painter.text(
+                        rect.left_bottom() + egui::vec2(8.0, -8.0),
+                        egui::Align2::LEFT_BOTTOM,
+                        error.to_string(),
+                        egui::FontId::proportional(12.0),
+                        theme::ERROR,
+                    );
+                }
+            }
+        }
         let column_preview = self.plans.column_placement.as_ref().and_then(|draft| {
             response
                 .hover_pos()
@@ -6472,6 +6753,26 @@ impl DesktopApp {
         });
         if let Some(Ok((_, footprint))) = &column_preview {
             columns::paint(&painter, footprint, camera, rect);
+        }
+        let casework_preview = self.plans.casework_placement.as_ref().and_then(|draft| {
+            response
+                .hover_pos()
+                .filter(|p| rect.contains(*p))
+                .map(|pointer| {
+                    casework::preview(
+                        &self.editor,
+                        draft,
+                        drawing,
+                        context,
+                        camera,
+                        rect,
+                        pointer,
+                        self.plans.snaps,
+                    )
+                })
+        });
+        if let Some(Ok((_, _, footprint))) = &casework_preview {
+            casework::paint(&painter, footprint, camera, rect);
         }
         if let Some(draft) = &self.plans.floor_hole_sketch
             && visible_floor_item.is_some_and(|floor| floor.entity == draft.id)
@@ -6707,30 +7008,16 @@ impl DesktopApp {
                 }
             }
         }
-        let opening_preview = width_preview.or_else(|| {
-            self.plans
-                .opening_placement
-                .as_ref()
-                .filter(|draft| !draft.draw_width && !cancelled && response.hovered())
-                .and_then(|draft| {
-                    let pointer = response.hover_pos()?;
-                    let local = Point2::new(
-                        f64::from(pointer.x - rect.left()),
-                        f64::from(pointer.y - rect.top()),
-                    );
-                    opening_placement_preview(
-                        self.editor.document.model(),
-                        drawing,
-                        context,
-                        camera,
-                        size,
-                        local,
-                        draft,
-                    )
-                    .ok()
-                    .flatten()
-                })
-        });
+        let opening_preview = width_preview;
+        if let Some(error) = &placement_error {
+            painter.text(
+                rect.left_top() + egui::vec2(8.0, 28.0),
+                egui::Align2::LEFT_TOP,
+                format!("Cannot place: {error}"),
+                egui::FontId::proportional(12.0),
+                theme::ERROR,
+            );
+        }
         if let Some(preview) = &opening_preview {
             let model = self.editor.document.model();
             if let Some(wall) = model.walls.get(&preview.host)
@@ -6902,7 +7189,11 @@ impl DesktopApp {
             self.editor.document.model(),
         );
         if transform_input {
-            self.wall_transform_frame(ctx, &response, &painter, camera);
+            if wall_set_move_input {
+                self.wall_set_move_frame(ctx, &response, &painter, camera);
+            } else {
+                self.wall_transform_frame(ctx, &response, &painter, camera);
+            }
             self.finish_endpoint_input(ctx);
             return;
         }
@@ -6965,6 +7256,10 @@ impl DesktopApp {
             self.finish_endpoint_input(ctx);
             return;
         }
+        if assignment_input {
+            self.finish_endpoint_input(ctx);
+            return;
+        }
         if array_input {
             if let Some(draft) = &self.plans.opening_array {
                 opening_array::paint(draft, self.editor.document.model(), &painter, camera, rect);
@@ -7001,6 +7296,61 @@ impl DesktopApp {
                     self.plans.drawing.as_ref(),
                 );
                 self.report(result, "Door handing updated.");
+                ctx.request_repaint();
+            }
+            self.finish_endpoint_input(ctx);
+            return;
+        }
+        if align_input {
+            let error = align_preview.as_ref().and_then(|p| p.as_ref().err());
+            if let Some(Ok(preview)) = &align_preview {
+                opening_align::paint(preview, &painter, camera, rect);
+            }
+            painter.text(
+                rect.left_top() + egui::vec2(12., 12.),
+                egui::Align2::LEFT_TOP,
+                error.map_or_else(
+                    || "Align opening center: pick a reference opening; Escape cancels".into(),
+                    |e| format!("Cannot align: {e}"),
+                ),
+                egui::FontId::proportional(12.),
+                if error.is_some() {
+                    theme::ERROR
+                } else {
+                    theme::ACCENT
+                },
+            );
+            if self.plans.opening_align_claimed
+                && ctx.input(|i| i.pointer.primary_released())
+                && rehost_pointer.is_none()
+            {
+                self.plans.opening_align = None;
+            } else if !cancelled
+                && response.clicked()
+                && let Some(draft) = self.plans.opening_align.as_ref()
+                && let Some(point) = rehost_pointer
+            {
+                let result = draft
+                    .candidate(&self.editor, drawing, camera, size, point)
+                    .and_then(|preview| {
+                        let id = draft.id();
+                        if preview.parameters
+                            == self.editor.document.model().openings[&id].parameters
+                        {
+                            return Ok(());
+                        }
+                        self.editor.command(
+                            "Align opening center",
+                            Command::UpdateOpening {
+                                id,
+                                parameters: preview.parameters,
+                            },
+                        )
+                    });
+                if result.is_ok() {
+                    self.plans.opening_align = None;
+                }
+                self.report(result, "Opening center aligned.");
                 ctx.request_repaint();
             }
             self.finish_endpoint_input(ctx);
@@ -7100,10 +7450,35 @@ impl DesktopApp {
             self.finish_endpoint_input(ctx);
             return;
         }
+        if curtain_input {
+            if !cancelled && response.clicked() && self.plans.curtain_draft.is_some() {
+                match curtain_target {
+                    Some(Ok(target)) => {
+                        let result = self.curtain_click(target);
+                        self.report(result, "Curtain · endpoint accepted.");
+                    }
+                    Some(Err(error)) => self.report(Err(error), ""),
+                    None => {}
+                }
+            }
+            self.finish_endpoint_input(ctx);
+            return;
+        }
         if stair_input {
             if !cancelled && response.clicked() && self.plans.stair_placement.is_some() {
                 match stair_target {
                     Some(Ok(target)) => self.stair_click(target),
+                    Some(Err(error)) => self.report(Err(error), ""),
+                    None => {}
+                }
+            }
+            self.finish_endpoint_input(ctx);
+            return;
+        }
+        if ramp_input {
+            if !cancelled && response.clicked() && self.plans.ramp_placement.is_some() {
+                match ramp_target {
+                    Some(Ok(target)) => self.ramp_click(target),
                     Some(Err(error)) => self.report(Err(error), ""),
                     None => {}
                 }
@@ -7180,6 +7555,13 @@ impl DesktopApp {
             if !cancelled && response.clicked() && self.plans.column_placement.is_some() {
                 match column_preview {
                     Some(Ok((parameters, _))) => self.commit_column(parameters),
+                    Some(Err(error)) => self.report(Err(error), ""),
+                    None => {}
+                }
+            }
+            if !cancelled && response.clicked() && self.plans.casework_placement.is_some() {
+                match casework_preview {
+                    Some(Ok((parameters, _, _))) => self.commit_casework(parameters),
                     Some(Err(error)) => self.report(Err(error), ""),
                     None => {}
                 }

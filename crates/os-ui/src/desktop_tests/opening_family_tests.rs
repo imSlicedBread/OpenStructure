@@ -1,5 +1,168 @@
 use super::*;
 
+fn reveal_profile_handles(h: &mut Harness) {
+    for _ in 0..12 {
+        h.frame(vec![]);
+    }
+    for _ in 0..8 {
+        let circles: Vec<_> = h
+            .output
+            .shapes
+            .iter()
+            .filter_map(|s| match &s.shape {
+                egui::Shape::Circle(c) if c.radius == 3. || c.radius == 5. => {
+                    Some((s.clip_rect, c.center))
+                }
+                _ => None,
+            })
+            .collect();
+        if circles
+            .iter()
+            .all(|(clip, center)| clip.shrink(20.).contains(*center))
+        {
+            break;
+        }
+        let pointer = circles[0].0.center();
+        h.frame(vec![
+            egui::Event::PointerMoved(pointer),
+            egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0., -80.),
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]);
+        for _ in 0..12 {
+            h.frame(vec![]);
+        }
+    }
+}
+
+#[test]
+fn paired_doors_egui_author_pose_cancel_apply_history_both_dpis() {
+    for (size, scale) in [
+        (egui::vec2(1280., 800.), 1.),
+        (egui::vec2(1000., 650.), 1.5),
+    ] {
+        let mut h = Harness::at_size(size, scale);
+        h.app.begin_new_opening_type(os_model::OpeningKind::Door);
+        h.frame(vec![]);
+        h.frame(vec![]);
+        let before = h.app.editor.document.model().clone();
+        h.click("Paired");
+        h.click("Cancel type");
+        assert_eq!(h.app.editor.document.model(), &before);
+        h.app.begin_new_opening_type(os_model::OpeningKind::Door);
+        h.frame(vec![]);
+        h.frame(vec![]);
+        h.click("Paired");
+        h.click("Apply type");
+        let ty = *h
+            .app
+            .editor
+            .document
+            .model()
+            .opening_types
+            .keys()
+            .next()
+            .unwrap();
+        assert_eq!(
+            h.app.editor.document.model().opening_types[&ty]
+                .parameters
+                .family
+                .door_leaves,
+            os_model::DoorLeaves::Paired {
+                active_fraction: 0.5
+            }
+        );
+        let view = h
+            .app
+            .editor
+            .create_floor_plan("Pair plan", h.app.active_level)
+            .unwrap();
+        h.app.focus_plan(Some(view));
+        let wall = os_model::Wall::new(os_walls::WALL_TYPE, default_wall(h.app.active_level));
+        let host = wall.id();
+        h.app
+            .editor
+            .command("Host", Command::AddWall(wall))
+            .unwrap();
+        h.app.select(Some(host));
+        h.app.begin_opening(Some(os_model::OpeningKind::Door));
+        assert!(h.app.opening_draft.is_some(), "{}", h.app.status);
+        h.frame(vec![]);
+        h.frame(vec![]);
+        h.click("Apply opening");
+        let id = *h
+            .app
+            .editor
+            .document
+            .model()
+            .openings
+            .keys()
+            .next()
+            .unwrap();
+        for cancel in [true, false] {
+            let before = h.app.editor.document.model().clone();
+            let history = h.app.editor.document.history_stats();
+            h.app.select(Some(id));
+            h.app.begin_opening(None);
+            h.frame(vec![]);
+            h.frame(vec![]);
+            for _ in 0..8 {
+                if h.visible_text_rect("Active leaf angle (0–90°)").is_some() {
+                    break;
+                }
+                let pointer = egui::pos2(size.x * 0.5, size.y * 0.5);
+                h.frame(vec![
+                    egui::Event::PointerMoved(pointer),
+                    egui::Event::MouseWheel {
+                        unit: egui::MouseWheelUnit::Point,
+                        delta: egui::vec2(0., 160.),
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ]);
+            }
+            assert!(
+                h.visible_text_rect("Active leaf angle (0–90°)").is_some(),
+                "{size:?}: {}",
+                h.app.status
+            );
+            h.click("Override pose");
+            h.app
+                .opening_draft
+                .as_mut()
+                .unwrap()
+                .set_open_state_for_test("30");
+            h.click(if cancel {
+                "Cancel opening"
+            } else {
+                "Apply opening"
+            });
+            if cancel {
+                assert_eq!(h.app.editor.document.model(), &before);
+                assert_eq!(h.app.editor.document.history_stats(), history);
+            } else {
+                let after = h.app.editor.document.model().clone();
+                assert_eq!(
+                    after.openings[&id].parameters.open_state,
+                    os_model::OpeningState::DoorPairAngles {
+                        active_degrees: 30.,
+                        inactive_degrees: 90.
+                    }
+                );
+                assert_eq!(
+                    h.app.editor.document.history_stats().undo_entries,
+                    history.undo_entries + 1
+                );
+                h.click("Undo");
+                assert_eq!(h.app.editor.document.model(), &before);
+                h.click("Redo");
+                assert_eq!(h.app.editor.document.model(), &after);
+            }
+        }
+    }
+}
+
 #[test]
 fn two_bay_controls_apply_cancel_and_history_at_both_dpis() {
     for (size, scale) in [
@@ -203,6 +366,7 @@ fn opening_family_profile_pointer_editor_apply_cancel_invalid_and_history_at_bot
         h.frame(vec![]);
         h.frame(vec![]);
         h.frame(vec![]);
+        reveal_profile_handles(&mut h);
         let points = handles(&h);
         assert_eq!(points.len(), 4, "profile handles were not drawn");
         // Real pointer drag of upper-right vertex changes the authored elevation.
@@ -231,6 +395,7 @@ fn opening_family_profile_pointer_editor_apply_cancel_invalid_and_history_at_bot
         h.app.begin_edit_opening_type(id);
         h.frame(vec![]);
         h.frame(vec![]);
+        reveal_profile_handles(&mut h);
         let points = handles(&h);
         h.drag(points[2], points[1]);
         h.click("Apply type");
@@ -254,6 +419,7 @@ fn opening_family_profile_pointer_editor_apply_cancel_invalid_and_history_at_bot
                 .frame_width_for_test(),
             0.05
         );
+        reveal_profile_handles(&mut h);
         let points = handles(&h);
         h.drag(points[2], points[2] + egui::vec2(-18., 12.));
         assert_ne!(
@@ -291,6 +457,7 @@ fn opening_family_profile_pointer_editor_apply_cancel_invalid_and_history_at_bot
         h.app.begin_edit_opening_type(id);
         h.frame(vec![]);
         h.frame(vec![]);
+        reveal_profile_handles(&mut h);
         let points = handles(&h);
         h.drag(points[2], points[2] + egui::vec2(-8., 5.));
         h.app
@@ -331,6 +498,7 @@ fn authored_host_cut_profile_pointer_editor_preview_and_history_at_both_dpis() {
         h.frame(vec![]);
         h.frame(vec![]);
         h.frame(vec![]);
+        reveal_profile_handles(&mut h);
         let points = profile_handles(&h);
         assert_eq!(points.len(), 4);
         h.drag(points[2], points[2] + egui::vec2(-18., 12.));
@@ -376,7 +544,7 @@ fn authored_host_cut_profile_pointer_editor_preview_and_history_at_both_dpis() {
 }
 
 #[test]
-fn window_type_pane_position_edit_cancel_stale_and_history_at_both_dpis() {
+fn window_type_edit_cancel_stale_and_history_at_both_dpis() {
     for (size, scale) in [
         (egui::vec2(1280.0, 800.0), 1.0),
         (egui::vec2(1000.0, 650.0), 1.5),
@@ -402,6 +570,7 @@ fn window_type_pane_position_edit_cancel_stale_and_history_at_both_dpis() {
             os_model::Opening::new(
                 "core.opening",
                 os_model::OpeningParams {
+                    open_state: Default::default(),
                     width_override: None,
                     height_override: None,
                     sill_override: None,
@@ -416,6 +585,7 @@ fn window_type_pane_position_edit_cancel_stale_and_history_at_both_dpis() {
                 },
             )
         });
+        let opening_ids: Vec<_> = openings.iter().map(|opening| opening.id()).collect();
         h.app
             .editor
             .document
@@ -472,6 +642,44 @@ fn window_type_pane_position_edit_cancel_stale_and_history_at_both_dpis() {
         h.click("Redo");
         assert_eq!(h.app.editor.document.model(), &updated);
 
+        let fixed_model = h.app.editor.document.model().clone();
+        let fixed_scene = h.app.editor.scene.clone();
+        h.app.begin_edit_opening_type(type_id);
+        h.frame(vec![]);
+        assert!(h.visible_text_rect("Window operation").is_some());
+        h.click("Casement");
+        h.click("Cancel type");
+        assert_eq!(h.app.editor.document.model(), &fixed_model);
+        assert_eq!(h.app.editor.scene, fixed_scene);
+
+        h.app.begin_edit_opening_type(type_id);
+        h.frame(vec![]);
+        h.click("Sliding");
+        h.click("Apply type");
+        let sliding_model = h.app.editor.document.model().clone();
+        assert_eq!(
+            sliding_model.opening_types[&type_id]
+                .parameters
+                .window_operation,
+            os_model::WindowOperation::Sliding
+        );
+        assert_eq!(sliding_model.openings.len(), opening_ids.len());
+        assert_eq!(h.app.editor.scene[&host], fixed_scene[&host]);
+        for id in opening_ids {
+            assert_ne!(h.app.editor.scene[&id], fixed_scene[&id]);
+            h.app.editor.scene[&id].validate().unwrap();
+            assert!(h.app.editor.scene[&id].signed_volume() > 0.);
+        }
+        assert_eq!(
+            h.app.editor.document.history_stats().undo_entries,
+            baseline_history.undo_entries + 2
+        );
+        h.click("Undo");
+        assert_eq!(h.app.editor.document.model(), &fixed_model);
+        assert_eq!(h.app.editor.scene, fixed_scene);
+        h.click("Redo");
+        assert_eq!(h.app.editor.document.model(), &sliding_model);
+
         h.app.begin_edit_opening_type(type_id);
         h.frame(vec![]);
         h.click("Center");
@@ -486,5 +694,157 @@ fn window_type_pane_position_edit_cancel_stale_and_history_at_both_dpis() {
         h.frame(vec![]);
         assert!(h.app.opening_type_draft.is_none());
         assert_eq!(h.app.editor.document.model(), &concurrent);
+    }
+}
+
+#[test]
+fn opening_pose_editor_apply_cancel_and_history_at_both_dpis() {
+    for (size, scale) in [
+        (egui::vec2(1280.0, 800.0), 1.0),
+        (egui::vec2(1000.0, 650.0), 1.5),
+    ] {
+        let mut h = Harness::at_size(size, scale);
+        let level = h.app.active_level;
+        let view = h.app.editor.create_floor_plan("Pose plan", level).unwrap();
+        h.app.focus_plan(Some(view));
+        h.app.apply_wall();
+        let host = h.app.selected.expect("created wall is selected");
+
+        let window_type = os_model::OpeningType::new(
+            "core.opening_type",
+            os_model::OpeningTypeParams {
+                window_operation: os_model::WindowOperation::Sliding,
+                family: Default::default(),
+                name: "Slider".into(),
+                kind: os_model::OpeningKind::Window,
+                width: 1.2,
+                height: 1.2,
+                sill: 0.8,
+                pane_position: Default::default(),
+            },
+        );
+        let window_type_id = window_type.id();
+        let door = os_model::Opening::new(
+            "core.opening",
+            os_model::OpeningParams {
+                open_state: Default::default(),
+                name: "Door".into(),
+                host,
+                offset: 1.0,
+                definition: os_model::OpeningDefinition::Legacy {
+                    kind: os_model::OpeningKind::Door,
+                    width: 0.9,
+                    height: 2.1,
+                    sill: 0.0,
+                },
+                width_override: None,
+                height_override: None,
+                sill_override: None,
+                pane_position_override: None,
+                lite_side_override: None,
+                hinge: Default::default(),
+                swing: Default::default(),
+            },
+        );
+        let window = os_model::Opening::new(
+            "core.opening",
+            os_model::OpeningParams {
+                open_state: Default::default(),
+                name: "Window".into(),
+                host,
+                offset: 3.0,
+                definition: os_model::OpeningDefinition::Typed {
+                    type_id: window_type_id,
+                },
+                width_override: None,
+                height_override: None,
+                sill_override: None,
+                pane_position_override: None,
+                lite_side_override: None,
+                hinge: Default::default(),
+                swing: Default::default(),
+            },
+        );
+        let door_id = door.id();
+        let window_id = window.id();
+        h.app
+            .editor
+            .document
+            .execute(
+                "Add pose test openings",
+                vec![
+                    Command::AddOpeningType(window_type),
+                    Command::AddOpening(door),
+                    Command::AddOpening(window),
+                ],
+            )
+            .unwrap();
+        h.app.editor.regenerate().unwrap();
+
+        for (id, label, value, expected) in [
+            (
+                door_id,
+                "Door angle (0–90°)",
+                "45",
+                os_model::OpeningState::DoorAngle(45.0),
+            ),
+            (
+                window_id,
+                "Sliding fraction (0–1)",
+                "0.5",
+                os_model::OpeningState::SlidingFraction(0.5),
+            ),
+        ] {
+            let before = h.app.editor.document.model().clone();
+            let scene = h.app.editor.scene.clone();
+            let history = h.app.editor.document.history_stats();
+            h.app.select(Some(id));
+            h.app.begin_opening(None);
+            assert!(
+                h.app.opening_draft.is_some(),
+                "opening edit did not start at {size:?}: {}",
+                h.app.status
+            );
+            h.frame(vec![]);
+            h.frame(vec![]);
+            assert!(h.visible_text_rect(label).is_some());
+            h.click("Override pose");
+            h.app
+                .opening_draft
+                .as_mut()
+                .unwrap()
+                .set_open_state_for_test(value);
+            h.click("Cancel opening");
+            assert_eq!(h.app.editor.document.model(), &before);
+            assert_eq!(h.app.editor.scene, scene);
+            assert_eq!(h.app.editor.document.history_stats(), history);
+
+            h.app.select(Some(id));
+            h.app.begin_opening(None);
+            h.frame(vec![]);
+            h.frame(vec![]);
+            h.click("Override pose");
+            h.app
+                .opening_draft
+                .as_mut()
+                .unwrap()
+                .set_open_state_for_test(value);
+            h.click("Apply opening");
+            let after = h.app.editor.document.model().clone();
+            assert_eq!(after.openings[&id].parameters.open_state, expected);
+            assert_eq!(after.openings[&id].header, before.openings[&id].header);
+            assert_eq!(h.app.editor.scene[&host], scene[&host]);
+            assert_ne!(h.app.editor.scene[&id], scene[&id]);
+            assert_eq!(
+                h.app.editor.document.history_stats().undo_entries,
+                history.undo_entries + 1
+            );
+
+            h.click("Undo");
+            assert_eq!(h.app.editor.document.model(), &before);
+            assert_eq!(h.app.editor.scene, scene);
+            h.click("Redo");
+            assert_eq!(h.app.editor.document.model(), &after);
+        }
     }
 }

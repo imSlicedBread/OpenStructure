@@ -97,6 +97,40 @@ impl DesktopApp {
             self.status = "Room edit cancelled: document changed.".into();
         }
         ui.heading("Properties");
+        if let Some(curtain) = self.selected.and_then(|id| {
+            self.editor
+                .document
+                .model()
+                .curtain_systems
+                .get(&id)
+                .cloned()
+        }) {
+            let id = curtain.id();
+            if ui
+                .add_enabled(
+                    self.can_edit_curtain_properties(id),
+                    egui::Button::new("Edit curtain properties…"),
+                )
+                .clicked()
+            {
+                self.begin_curtain_properties(id);
+            }
+            ui.label("Native curtain assembly");
+            ui.label(&curtain.parameters.name);
+            ui.label(format!(
+                "Height: {:.3} m · Base offset: {:.3} m",
+                curtain.parameters.height, curtain.parameters.base_offset
+            ));
+            ui.label(format!(
+                "{} panels · {} mullions",
+                curtain.parameters.panels.len(),
+                curtain.parameters.mullions.len()
+            ));
+            return;
+        }
+        if self.opening_batch_properties(ui) {
+            return;
+        }
         self.lifecycle_properties(ui);
         if self.ceiling_properties(ui) {
             return;
@@ -104,10 +138,19 @@ impl DesktopApp {
         if self.roof_properties(ui) {
             return;
         }
+        if self.railing_properties(ui) {
+            return;
+        }
         if self.stair_properties(ui) {
             return;
         }
+        if self.ramp_properties(ui) {
+            return;
+        }
         if self.column_properties(ui) {
+            return;
+        }
+        if self.casework_properties(ui) {
             return;
         }
         if let Some(ty) = self
@@ -115,7 +158,13 @@ impl DesktopApp {
             .and_then(|id| self.editor.document.model().opening_types.get(&id).cloned())
         {
             let id = ty.id();
-            let p = &ty.parameters;
+            let resolved = self
+                .editor
+                .document
+                .model()
+                .resolve_opening_type(id)
+                .expect("validated opening type");
+            let p = &resolved.parameters;
             let instances = self
                 .editor
                 .document
@@ -143,6 +192,15 @@ impl DesktopApp {
             .and_then(|id| self.editor.document.model().floors.get(&id).cloned())
         {
             let id = floor.id();
+            if ui
+                .add_enabled(
+                    self.can_edit_floor_properties(id),
+                    egui::Button::new("Edit floor properties…"),
+                )
+                .clicked()
+            {
+                self.begin_floor_properties(id);
+            }
             let model = self.editor.document.model();
             let level_name = model
                 .levels
@@ -198,6 +256,18 @@ impl DesktopApp {
                 self.editor.document.model().walls[&p.host].parameters.name
             ));
             ui.label(format!("Offset: {} m", p.offset));
+            if let Some(lock) = self
+                .editor
+                .document
+                .model()
+                .opening_clearances
+                .get(&opening.id())
+            {
+                ui.label(format!(
+                    "Locked to host {:?}: {:.3} m · edit/unlock in opening properties",
+                    lock.end, lock.distance
+                ));
+            }
             if resolved.kind == os_model::OpeningKind::Door {
                 ui.label(format!(
                     "Hinge: wall {:?} · Swing: {:?} of wall",
@@ -928,6 +998,13 @@ impl DesktopApp {
                         }
                     });
                 }
+                if !model.casework.is_empty() {
+                    egui::CollapsingHeader::new(format!("Casework ({})", model.casework.len())).id_salt("native_casework").default_open(true).show(ui, |ui| {
+                        for (id, item) in &model.casework {
+                            if ui.selectable_label(self.selected == Some(*id), &item.parameters.name).clicked() { self.select(Some(*id)); }
+                        }
+                    });
+                }
                 if !model.floors.is_empty() {
                     egui::CollapsingHeader::new(format!("Floors / Slabs ({})", model.floors.len()))
                         .id_salt("floors")
@@ -1001,10 +1078,11 @@ impl DesktopApp {
                     egui::CollapsingHeader::new(format!("Door / Window Types ({})", model.opening_types.len()))
                         .id_salt("opening_types").default_open(true).show(ui, |ui| {
                             for (id, ty) in &model.opening_types {
+                                let resolved = model.resolve_opening_type(*id).expect("validated opening type");
                                 ui.push_id(id, |ui| {
                                     if ui.selectable_label(self.selected == Some(*id),
                                         format!("{:?}: {} · {:.2} × {:.2} m", ty.parameters.kind,
-                                            ty.parameters.name, ty.parameters.width, ty.parameters.height))
+                                            ty.parameters.name, resolved.parameters.width, resolved.parameters.height))
                                         .clicked() { self.select(Some(*id)); }
                                 });
                             }

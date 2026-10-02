@@ -9,6 +9,45 @@ use std::collections::BTreeSet;
 /// are separately required to be acyclic by model validation.
 pub fn affected_entities(model: &Model, changed: &BTreeSet<Id>) -> BTreeSet<Id> {
     let mut reverse: BTreeMap<Id, Vec<Id>> = BTreeMap::new();
+    for ty in model.railing_types.values() {
+        if let Some(material) = ty.parameters.material {
+            reverse.entry(material).or_default().push(ty.id());
+        }
+    }
+    for rail in model.railings.values() {
+        for source in [rail.parameters.stair, rail.parameters.railing_type] {
+            reverse.entry(source).or_default().push(rail.id());
+        }
+    }
+    for ty in model.curtain_panel_types.values() {
+        if let Some(material) = ty.parameters.material {
+            reverse.entry(material).or_default().push(ty.id());
+        }
+    }
+    for ty in model.curtain_mullion_types.values() {
+        if let Some(material) = ty.parameters.material {
+            reverse.entry(material).or_default().push(ty.id());
+        }
+    }
+    for assembly in model.curtain_systems.values() {
+        let p = &assembly.parameters;
+        for source in [p.level, p.panel_type, p.mullion_type]
+            .into_iter()
+            .chain(p.panels.iter().map(|p| p.panel_type))
+            .chain(p.mullions.iter().map(|m| m.mullion_type))
+        {
+            reverse.entry(source).or_default().push(assembly.id());
+        }
+        reverse
+            .entry(assembly.id())
+            .or_default()
+            .extend(p.child_ids());
+    }
+    for (ty, bindings) in &model.opening_type_length_bindings {
+        for parameter in bindings.references() {
+            reverse.entry(parameter).or_default().push(*ty);
+        }
+    }
     for (wall, assignment) in &model.wall_type_assignments {
         reverse.entry(assignment.type_id).or_default().push(*wall);
     }
@@ -34,6 +73,24 @@ pub fn affected_entities(model: &Model, changed: &BTreeSet<Id>) -> BTreeSet<Id> 
             reverse.entry(material).or_default().push(column.id());
         }
     }
+    for casework_type in model.casework_types.values() {
+        if let Some(material) = casework_type.parameters.material {
+            reverse
+                .entry(material)
+                .or_default()
+                .push(casework_type.id());
+        }
+    }
+    for casework in model.casework.values() {
+        reverse
+            .entry(casework.parameters.type_id)
+            .or_default()
+            .push(casework.id());
+        reverse
+            .entry(casework.parameters.level)
+            .or_default()
+            .push(casework.id());
+    }
     for stair in model.stairs.values() {
         reverse
             .entry(stair.parameters.lower_level)
@@ -45,6 +102,19 @@ pub fn affected_entities(model: &Model, changed: &BTreeSet<Id>) -> BTreeSet<Id> 
             .push(stair.id());
         if let Some(material) = stair.parameters.material {
             reverse.entry(material).or_default().push(stair.id());
+        }
+    }
+    for ramp in model.ramps.values() {
+        reverse
+            .entry(ramp.parameters.lower_level)
+            .or_default()
+            .push(ramp.id());
+        reverse
+            .entry(ramp.parameters.upper_level)
+            .or_default()
+            .push(ramp.id());
+        if let Some(material) = ramp.parameters.material {
+            reverse.entry(material).or_default().push(ramp.id());
         }
     }
     for floor in model.floors.values() {
@@ -157,12 +227,21 @@ pub fn affected_entities(model: &Model, changed: &BTreeSet<Id>) -> BTreeSet<Id> 
     // Conservatively invalidate all plan views for a geometry/datum change;
     // settings edits invalidate their own view and any extension references.
     let geometry_changed = seen.iter().any(|id| {
-        model.walls.contains_key(id)
+        model.length_parameters.contains_key(id)
+            || model.walls.contains_key(id)
             || model.wall_types.contains_key(id)
             || model.wall_joins.contains_key(id)
             || model.floors.contains_key(id)
             || model.columns.contains_key(id)
+            || model.casework.contains_key(id)
+            || model.casework_types.contains_key(id)
             || model.stairs.contains_key(id)
+            || model.ramps.contains_key(id)
+            || model.curtain_systems.contains_key(id)
+            || model.curtain_panel_types.contains_key(id)
+            || model.railings.contains_key(id)
+            || model.railing_types.contains_key(id)
+            || model.curtain_mullion_types.contains_key(id)
             || model.roofs.contains_key(id)
             || model.ceilings.contains_key(id)
             || model.extensions.contains_key(id)
@@ -194,12 +273,23 @@ pub fn affected_entities(model: &Model, changed: &BTreeSet<Id>) -> BTreeSet<Id> 
             }
         }
     }
+    let curtain_children: BTreeSet<_> = model
+        .curtain_systems
+        .values()
+        .flat_map(|system| system.parameters.child_ids())
+        .collect();
     seen.retain(|id| {
-        model.extensions.contains_key(id)
+        curtain_children.contains(id)
+            || model.extensions.contains_key(id)
             || model.wall_joins.contains_key(id)
             || model.floors.contains_key(id)
             || model.columns.contains_key(id)
+            || model.casework.contains_key(id)
+            || model.casework_types.contains_key(id)
             || model.stairs.contains_key(id)
+            || model.ramps.contains_key(id)
+            || model.curtain_systems.contains_key(id)
+            || model.railings.contains_key(id)
             || model.roofs.contains_key(id)
             || model.ceilings.contains_key(id)
             || model.walls.contains_key(id)

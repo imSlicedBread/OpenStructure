@@ -346,6 +346,7 @@ mod tests {
         let door = os_model::Opening::new(
             "core.opening",
             os_model::OpeningParams {
+                open_state: Default::default(),
                 width_override: None,
                 height_override: None,
                 sill_override: None,
@@ -371,6 +372,7 @@ mod tests {
         let window = os_model::Opening::new(
             "core.opening",
             os_model::OpeningParams {
+                open_state: Default::default(),
                 width_override: None,
                 height_override: None,
                 sill_override: None,

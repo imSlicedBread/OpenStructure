@@ -1,6 +1,91 @@
 //! Opening-tag acceptance through the existing desktop egui frame harness.
 
 #[test]
+fn shared_lengths_parameter_only_changes_reach_canvas_tags_sheet_and_scene() {
+    use os_model::*;
+    for (size, scale) in PROFILES {
+        let (mut h, view, opening) = setup(size, scale);
+        let ty = OpeningType::new(
+            "core.opening_type",
+            OpeningTypeParams {
+                name: "Shared window".into(),
+                kind: OpeningKind::Window,
+                width: 0.9,
+                height: 1.2,
+                sill: 0.8,
+                family: Default::default(),
+                window_operation: Default::default(),
+                pane_position: Default::default(),
+            },
+        );
+        let type_id = ty.id();
+        let p = LengthParameter::new(
+            "core.length_parameter",
+            LengthParameterParams {
+                name: "Width".into(),
+                unit: LengthUnit::Metres,
+                value: 0.9,
+            },
+        );
+        let pid = p.id();
+        let mut params = h.app.editor.document.model().openings[&opening]
+            .parameters
+            .clone();
+        params.definition = OpeningDefinition::Typed { type_id };
+        h.app
+            .editor
+            .document
+            .execute(
+                "Shared type",
+                vec![
+                    Command::AddOpeningType(ty),
+                    Command::AddLengthParameter(p),
+                    Command::SetOpeningTypeLengthBindings {
+                        id: type_id,
+                        bindings: OpeningTypeLengthBindings {
+                            width: Some(pid),
+                            ..Default::default()
+                        },
+                    },
+                    Command::UpdateOpening {
+                        id: opening,
+                        parameters: params,
+                    },
+                ],
+            )
+            .unwrap();
+        h.app.editor.regenerate().unwrap();
+        h.settle_plan();
+        place(&mut h, view, opening);
+        h.app.create_sheet_from_active_view();
+        h.settle_plan();
+        let before = h.app.editor.scene[&opening].clone();
+        let before_label = tag_graphic(&h, view).label;
+        h.app
+            .editor
+            .command(
+                "Shared width",
+                Command::UpdateLengthParameter {
+                    id: pid,
+                    parameters: LengthParameterParams {
+                        name: "Width".into(),
+                        unit: LengthUnit::Metres,
+                        value: 1.1,
+                    },
+                },
+            )
+            .unwrap();
+        h.settle_plan();
+        let label = tag_graphic(&h, view).label;
+        assert_ne!(label, before_label);
+        assert!(label.contains("1.100 × 1.200"));
+        assert_ne!(h.app.editor.scene[&opening], before);
+        let page = h.app.sheet_page().unwrap();
+        assert!(page.marks().iter().any(|m| matches!(&m.kind, os_render::sheet::PaperMarkKind::Text { text, .. } if text == &label)));
+    }
+}
+
+#[test]
 fn opening_tag_only_orphan_plan_has_no_empty_geometry_warning() {
     for (size, scale) in PROFILES {
         let (mut h, view, opening) = setup(size, scale);
@@ -296,6 +381,7 @@ fn setup(size: egui::Vec2, scale: f32) -> (Harness, Id, Id) {
     let opening = os_model::Opening::new(
         "core.opening",
         os_model::OpeningParams {
+            open_state: Default::default(),
             name: "D-01".into(),
             host,
             offset: 1.,

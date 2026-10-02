@@ -1,7 +1,10 @@
 //! Portable opening types and their exact material dependencies. No project mutation.
 use crate::{json_guard, storage};
 use os_core::{Id, Result, ensure};
-use os_model::{MaterialParams, Model, OpeningTypeParams};
+use os_model::{
+    LengthParameter, LengthParameterParams, MaterialParams, Model, OpeningType,
+    OpeningTypeLengthBindings, OpeningTypeParams,
+};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeSet,
@@ -11,7 +14,7 @@ use std::{
 };
 
 pub const OPENING_TYPE_PACKAGE_FORMAT: &str = "OpenStructure.OpeningTypePackage";
-pub const OPENING_TYPE_PACKAGE_VERSION: u32 = 3;
+pub const OPENING_TYPE_PACKAGE_VERSION: u32 = 5;
 pub const MAX_OPENING_TYPE_PACKAGE_BYTES: usize = 1024 * 1024;
 
 /// Source identities are references for import remapping, not destination identities.
@@ -20,6 +23,8 @@ pub struct OpeningTypePackage {
     pub source_type_id: Id,
     pub parameters: OpeningTypeParams,
     pub materials: Vec<OpeningTypePackageMaterial>,
+    pub length_parameters: std::collections::BTreeMap<Id, LengthParameterParams>,
+    pub length_bindings: OpeningTypeLengthBindings,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -39,6 +44,8 @@ struct WirePackage {
     #[serde(deserialize_with = "deserialize_type_parameters")]
     parameters: OpeningTypeParams,
     materials: Vec<OpeningTypePackageMaterial>,
+    length_parameters: std::collections::BTreeMap<Id, LengthParameterParams>,
+    length_bindings: OpeningTypeLengthBindings,
 }
 
 // MaterialParams is intentionally permissive in the model. Packages have a
@@ -73,10 +80,45 @@ fn deserialize_type_parameters<'de, D: serde::Deserializer<'de>>(
 }
 
 impl OpeningTypePackage {
+    pub fn resolved_parameters(&self) -> Result<OpeningTypeParams> {
+        let mut model = Model::new("Package validation");
+        let mut ty = OpeningType::new("core.opening_type", self.parameters.clone());
+        ty.header.id = self.source_type_id;
+        model.opening_types.insert(ty.id(), ty);
+        model
+            .opening_type_length_bindings
+            .insert(self.source_type_id, self.length_bindings);
+        for (id, parameters) in &self.length_parameters {
+            let mut p = LengthParameter::new("core.length_parameter", parameters.clone());
+            p.header.id = *id;
+            model.length_parameters.insert(*id, p);
+        }
+        Ok(model.resolve_opening_type(self.source_type_id)?.parameters)
+    }
     /// Validate a package before importing or encoding it. Does not resolve hosts.
     pub fn validate(&self) -> Result<()> {
         ensure(!self.source_type_id.0.is_nil(), "nil opening type identity")?;
-        self.parameters.validate()?;
+        ensure(
+            self.length_parameters.len() <= 3,
+            "too many Length snapshots",
+        )?;
+        ensure(
+            self.length_parameters
+                .keys()
+                .copied()
+                .collect::<BTreeSet<_>>()
+                == self.length_bindings.references(),
+            "Length snapshots must exactly match bindings",
+        )?;
+        let mut source_identities = BTreeSet::from([self.source_type_id]);
+        for (id, p) in &self.length_parameters {
+            ensure(
+                !id.0.is_nil() && source_identities.insert(*id),
+                "duplicate or invalid package entity identity",
+            )?;
+            p.validate()?;
+        }
+        self.resolved_parameters()?;
         let referenced = material_references(&self.parameters);
         ensure(
             referenced.iter().all(|id| !id.0.is_nil()),
@@ -90,8 +132,8 @@ impl OpeningTypePackage {
         for material in &self.materials {
             ensure(!material.source_id.0.is_nil(), "nil material identity")?;
             ensure(
-                supplied.insert(material.source_id),
-                "duplicate material identity",
+                supplied.insert(material.source_id) && source_identities.insert(material.source_id),
+                "duplicate or conflicting package entity identity",
             )?;
             let params = &material.parameters;
             ensure(
@@ -157,6 +199,26 @@ pub fn export_opening_type_package(model: &Model, type_id: Id) -> Result<Vec<u8>
         source_type_id: type_id,
         parameters: ty.parameters.clone(),
         materials,
+        length_parameters: model
+            .opening_type_length_bindings
+            .get(&type_id)
+            .copied()
+            .unwrap_or_default()
+            .references()
+            .into_iter()
+            .map(|id| {
+                model
+                    .length_parameters
+                    .get(&id)
+                    .map(|p| (id, p.parameters.clone()))
+                    .ok_or_else(|| storage("Length dependency missing"))
+            })
+            .collect::<Result<_>>()?,
+        length_bindings: model
+            .opening_type_length_bindings
+            .get(&type_id)
+            .copied()
+            .unwrap_or_default(),
     };
     encode_opening_type_package(&package)
 }
@@ -170,6 +232,8 @@ fn encode_opening_type_package(package: &OpeningTypePackage) -> Result<Vec<u8>> 
         source_type_id: package.source_type_id,
         parameters: package.parameters.clone(),
         materials: package.materials.clone(),
+        length_parameters: package.length_parameters.clone(),
+        length_bindings: package.length_bindings,
     };
     canonical
         .materials
@@ -216,6 +280,34 @@ pub fn parse_opening_type_package(bytes: &[u8]) -> Result<OpeningTypePackage> {
         parameters.insert("window_operation".into(), "Fixed".into());
         value["version"] = 3.into();
     }
+    if value["version"] == 3 {
+        let object = value
+            .as_object_mut()
+            .ok_or_else(|| storage("invalid v3 package"))?;
+        ensure(
+            !object.contains_key("length_parameters") && !object.contains_key("length_bindings"),
+            "ambiguous legacy Length dependencies",
+        )?;
+        object.insert("length_parameters".into(), serde_json::json!({}));
+        object.insert(
+            "length_bindings".into(),
+            serde_json::json!({"width":null,"height":null,"sill":null}),
+        );
+        object.insert("version".into(), 4.into());
+    }
+    if value["version"] == 4 {
+        let family = value["parameters"]["family"]
+            .as_object_mut()
+            .ok_or_else(|| storage("invalid v4 family"))?;
+        ensure(
+            family.get("version") == Some(&serde_json::json!(5))
+                && !family.contains_key("door_leaves"),
+            "v4 packages require an unambiguous version 5 family",
+        )?;
+        family.insert("version".into(), 6.into());
+        family.insert("door_leaves".into(), "Single".into());
+        value["version"] = 5.into();
+    }
     let wire: WirePackage = serde_json::from_value(value).map_err(storage)?;
     ensure(
         wire.format == OPENING_TYPE_PACKAGE_FORMAT,
@@ -229,6 +321,8 @@ pub fn parse_opening_type_package(bytes: &[u8]) -> Result<OpeningTypePackage> {
         source_type_id: wire.source_type_id,
         parameters: wire.parameters,
         materials: wire.materials,
+        length_parameters: wire.length_parameters,
+        length_bindings: wire.length_bindings,
     };
     package.validate()?;
     package.materials.sort_by_key(|material| material.source_id);

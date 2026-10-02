@@ -567,6 +567,9 @@ impl JunctionDrag {
                         .values()
                         .filter(|o| o.parameters.host == *id)
                     {
+                        if self.original.opening_clearances.contains_key(&opening.id()) {
+                            continue;
+                        }
                         let mut parameters = opening.parameters.clone();
                         parameters.offset -= shift;
                         commands.push(Command::UpdateOpening {

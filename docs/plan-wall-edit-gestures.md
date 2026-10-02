@@ -238,3 +238,24 @@ Additional checks cover rotated plan basis at large coordinates, legacy walls,
 source visibility/crop, joins, and the installed-provider rejection guard
 without an external guest. E01.19 remains partial. Native-window visual
 acceptance has not been performed.
+
+## Native multi-wall move — 2026-09-29 automated evidence
+
+Select 2–64 visible native straight walls on the active floor-plan level and
+use **Move walls**. Two clicks specify a base and snapped destination; metric
+distance and angle fields can override the vector. Snap queries exclude the
+entire edited set. Candidates are disposable and validate the full document
+plus only affected wall/opening meshes and room faces on each preview frame.
+Commit changes every selected wall in one transaction while preserving IDs,
+properties, levels, hosted opening parameters, and associative dimensions.
+Opening tags move with their hosts. Complete room boundaries move their seed
+and tags; partial boundaries and partial explicit joins reject. The scope is
+intentionally native straight walls, not arbitrary/plugin entities.
+
+Headless desktop tests at 1280×800/1.0 and 1000×650/1.5 cover selection bounds,
+visibility, exact vectors, snapping/exclusion, preview non-mutation, one-step
+undo/redo, split plan/3D redraw, room/join safety, Escape/invalid/stale
+cancellation, and ordinary canvas pan. Focused validation passed:
+`cargo test -p os-ui --all-features --locked --offline wall_set_move --lib --
+--test-threads=1`. Native visual acceptance has not been performed; general
+multi-entity move/copy and Revit parity remain open.

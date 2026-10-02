@@ -1,9 +1,99 @@
 use serde_json::Value;
 
+#[allow(dead_code)]
+pub fn remove_curtains(value: &mut Value) {
+    for key in [
+        "curtain_systems",
+        "curtain_panel_types",
+        "curtain_mullion_types",
+    ] {
+        if let Some(removed) = value.as_object_mut().unwrap().remove(key) {
+            assert_eq!(
+                removed,
+                serde_json::json!({}),
+                "legacy fixture cannot discard curtain data"
+            );
+        }
+    }
+}
+
+#[allow(dead_code)]
+pub fn remove_railings(value: &mut Value) {
+    for key in ["railings", "railing_types"] {
+        if let Some(removed) = value.as_object_mut().unwrap().remove(key) {
+            assert_eq!(
+                removed,
+                serde_json::json!({}),
+                "legacy fixture cannot discard railing data"
+            );
+        }
+    }
+    remove_ramps(value);
+    remove_casework(value);
+}
+
+#[allow(dead_code)]
+pub fn remove_casework(value: &mut Value) {
+    for key in ["casework_types", "casework"] {
+        if let Some(removed) = value.as_object_mut().unwrap().remove(key) {
+            assert_eq!(
+                removed,
+                serde_json::json!({}),
+                "legacy fixture cannot discard casework data"
+            );
+        }
+    }
+}
+
+#[allow(dead_code)]
+pub fn remove_ramps(value: &mut Value) {
+    if let Some(removed) = value.as_object_mut().unwrap().remove("ramps") {
+        assert_eq!(
+            removed,
+            serde_json::json!({}),
+            "legacy fixture cannot discard ramp data"
+        );
+    }
+}
+
+#[allow(dead_code)]
+pub fn remove_door_leaves(value: &mut Value) {
+    remove_railings(value);
+    remove_curtains(value);
+    if let Some(types) = value
+        .get_mut("opening_types")
+        .and_then(Value::as_object_mut)
+    {
+        for ty in types.values_mut() {
+            let family = &mut ty["parameters"]["family"];
+            if family["version"] == 6 {
+                family["version"] = 5.into();
+            }
+            family.as_object_mut().unwrap().remove("door_leaves");
+        }
+    }
+}
+
 /// Test-only reversal of the documented 53 -> 54 representation change.
 /// Assert Straight: a legacy fixture must never silently chord-convert an arc.
 #[allow(dead_code)]
 pub fn reverse_wall_paths(value: &mut Value) {
+    remove_railings(value);
+    remove_door_leaves(value);
+    if let Some(openings) = value.get_mut("openings").and_then(Value::as_object_mut) {
+        for opening in openings.values_mut() {
+            opening["parameters"]
+                .as_object_mut()
+                .unwrap()
+                .remove("open_state");
+        }
+    }
+    value.as_object_mut().unwrap().remove("length_parameters");
+    value
+        .as_object_mut()
+        .unwrap()
+        .remove("opening_type_length_bindings");
+    value.as_object_mut().unwrap().remove("opening_clearances");
     if let Some(walls) = value.get_mut("walls").and_then(Value::as_object_mut) {
         for wall in walls.values_mut() {
             let p = wall["parameters"].as_object_mut().unwrap();
@@ -18,6 +108,32 @@ pub fn reverse_wall_paths(value: &mut Value) {
 }
 #[allow(dead_code)]
 pub fn apply_wall_paths(value: &mut Value) {
+    value["railings"] = serde_json::json!({});
+    value["railing_types"] = serde_json::json!({});
+    value["ramps"] = serde_json::json!({});
+    value["casework_types"] = serde_json::json!({});
+    value["casework"] = serde_json::json!({});
+    for key in [
+        "curtain_systems",
+        "curtain_panel_types",
+        "curtain_mullion_types",
+    ] {
+        value[key] = serde_json::json!({});
+    }
+    if let Some(types) = value
+        .get_mut("opening_types")
+        .and_then(Value::as_object_mut)
+    {
+        for ty in types.values_mut() {
+            ty["parameters"]["family"]["version"] = 6.into();
+            ty["parameters"]["family"]["door_leaves"] = "Single".into();
+        }
+    }
+    if let Some(openings) = value.get_mut("openings").and_then(Value::as_object_mut) {
+        for opening in openings.values_mut() {
+            opening["parameters"]["open_state"] = serde_json::json!("Default");
+        }
+    }
     if let Some(walls) = value.get_mut("walls").and_then(Value::as_object_mut) {
         for wall in walls.values_mut() {
             let p = wall["parameters"].as_object_mut().unwrap();
@@ -31,6 +147,11 @@ pub fn apply_wall_paths(value: &mut Value) {
             }
         }
     }
+    // Expected current-schema form for fixtures predating persistent opening
+    // clearances: old projects migrate with no authored locks.
+    value["opening_clearances"] = serde_json::json!({});
+    value["length_parameters"] = serde_json::json!({});
+    value["opening_type_length_bindings"] = serde_json::json!({});
 }
 
 #[allow(dead_code)]
@@ -212,6 +333,11 @@ pub fn reverse_schema_38_migration(model: &mut Value, original: &Value) {
     if original.get("ceilings").is_none() {
         model.as_object_mut().unwrap().remove("ceilings");
     }
+    for collection in ["casework_types", "casework"] {
+        if original.get(collection).is_none() {
+            model.as_object_mut().unwrap().remove(collection);
+        }
+    }
     if let (Some(original_views), Some(views)) = (
         original.get("views").and_then(serde_json::Value::as_object),
         model
@@ -261,6 +387,7 @@ pub fn remove_schedule_phase(value: &mut Value) {
 
 #[allow(dead_code)]
 pub fn remove_opening_visibility(value: &mut Value) {
+    remove_door_leaves(value);
     remove_window_operation(value);
     remove_lite_override(value);
     if let Some(types) = value
@@ -307,7 +434,8 @@ pub fn apply_opening_visibility(value: &mut Value) {
         .and_then(Value::as_object_mut)
     {
         for ty in types.values_mut() {
-            ty["parameters"]["family"]["version"] = 5.into();
+            ty["parameters"]["family"]["version"] = 6.into();
+            ty["parameters"]["family"]["door_leaves"] = "Single".into();
             ty["parameters"]["family"]["side_lite"] = Value::Null;
         }
     }

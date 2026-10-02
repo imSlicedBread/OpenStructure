@@ -15,6 +15,7 @@ use std::{
 
 mod exchange;
 mod grid_tools;
+mod opening_lengths;
 mod opening_schedule;
 mod opening_tools;
 mod opening_type_package_ui;
@@ -115,6 +116,10 @@ impl Editor {
         self.document.execute(label, vec![command])?;
         self.regenerate()
     }
+    pub fn commands(&mut self, label: &str, commands: Vec<Command>) -> Result<()> {
+        self.document.execute(label, commands)?;
+        self.regenerate()
+    }
     pub fn undo(&mut self) -> Result<()> {
         self.document.undo();
         self.regenerate()
@@ -141,7 +146,6 @@ impl Editor {
         for id in document.model().walls.keys() {
             scene.insert(*id, opening_tools::host_mesh(document.model(), *id)?);
         }
-        self.saved_model = Some(document.model().clone());
         for id in document.model().openings.keys() {
             scene.insert(*id, opening_tools::panel_mesh(document.model(), *id)?);
         }
@@ -167,6 +171,21 @@ impl Editor {
                 os_geometry::columns::column_mesh(&column.parameters, elevation)?,
             );
         }
+        for (id, casework) in &document.model().casework {
+            let casework_type =
+                &document.model().casework_types[&casework.parameters.type_id].parameters;
+            let elevation = document.model().levels[&casework.parameters.level]
+                .parameters
+                .elevation;
+            scene.insert(
+                *id,
+                os_geometry::casework::casework_mesh(
+                    &casework.parameters,
+                    casework_type,
+                    elevation,
+                )?,
+            );
+        }
         for (id, stair) in &document.model().stairs {
             let lower_z = document.model().levels[&stair.parameters.lower_level]
                 .parameters
@@ -177,6 +196,18 @@ impl Editor {
             scene.insert(
                 *id,
                 os_geometry::stairs::stair_mesh(&stair.parameters, lower_z, upper_z)?,
+            );
+        }
+        for (id, ramp) in &document.model().ramps {
+            let lower_z = document.model().levels[&ramp.parameters.lower_level]
+                .parameters
+                .elevation;
+            let upper_z = document.model().levels[&ramp.parameters.upper_level]
+                .parameters
+                .elevation;
+            scene.insert(
+                *id,
+                os_geometry::ramps::ramp_mesh(&ramp.parameters, lower_z, upper_z)?,
             );
         }
         for (id, roof) in &document.model().roofs {
@@ -202,6 +233,20 @@ impl Editor {
                 );
             }
         }
+        for (id, curtain) in &document.model().curtain_systems {
+            scene.insert(
+                *id,
+                os_geometry::curtain_systems::curtain_mesh(&curtain.parameters, document.model())?,
+            );
+        }
+        for (id, railing) in &document.model().railings {
+            scene.insert(
+                *id,
+                os_geometry::railings::railing_geometry(&railing.parameters, document.model())?
+                    .mesh,
+            );
+        }
+        self.saved_model = Some(document.model().clone());
         self.document = document;
         self.scene = scene;
         self.pending_geometry.clear();
@@ -217,6 +262,19 @@ impl Editor {
         let mut ceiling_resolver = os_geometry::ceilings::CeilingResolver::default();
         for id in self.pending_geometry.clone() {
             self.scene.remove(&id);
+            if let Some(curtain) = self.document.model().curtain_systems.get(&id) {
+                match os_geometry::curtain_systems::curtain_mesh(
+                    &curtain.parameters,
+                    self.document.model(),
+                ) {
+                    Ok(mesh) => {
+                        self.scene.insert(id, mesh);
+                        self.pending_geometry.remove(&id);
+                    }
+                    Err(e) => error = Some(e),
+                }
+                continue;
+            }
             #[cfg(feature = "external-plugins")]
             if self.plugin_jobs.managed.contains_key(&id) {
                 continue;
@@ -284,6 +342,35 @@ impl Editor {
                     }
                 }
             }
+            if let Some(casework) = self.document.model().casework.get(&id) {
+                let result = (|| {
+                    let model = self.document.model();
+                    let casework_type = model
+                        .casework_types
+                        .get(&casework.parameters.type_id)
+                        .ok_or_else(|| Error::Invalid("casework type missing".into()))?;
+                    let elevation = model
+                        .levels
+                        .get(&casework.parameters.level)
+                        .ok_or_else(|| Error::Invalid("casework level missing".into()))?
+                        .parameters
+                        .elevation;
+                    os_geometry::casework::casework_mesh(
+                        &casework.parameters,
+                        &casework_type.parameters,
+                        elevation,
+                    )
+                })();
+                match result {
+                    Ok(mesh) => {
+                        self.scene.insert(id, mesh);
+                    }
+                    Err(e) => {
+                        error = Some(e);
+                        continue;
+                    }
+                }
+            }
             if let Some(stair) = self.document.model().stairs.get(&id) {
                 let result = (|| {
                     let model = self.document.model();
@@ -304,6 +391,47 @@ impl Editor {
                 match result {
                     Ok(mesh) => {
                         self.scene.insert(id, mesh);
+                    }
+                    Err(e) => {
+                        error = Some(e);
+                        continue;
+                    }
+                }
+            }
+            if let Some(ramp) = self.document.model().ramps.get(&id) {
+                let result = (|| {
+                    let model = self.document.model();
+                    let lower_z = model
+                        .levels
+                        .get(&ramp.parameters.lower_level)
+                        .ok_or_else(|| Error::Invalid("ramp lower level missing".into()))?
+                        .parameters
+                        .elevation;
+                    let upper_z = model
+                        .levels
+                        .get(&ramp.parameters.upper_level)
+                        .ok_or_else(|| Error::Invalid("ramp upper level missing".into()))?
+                        .parameters
+                        .elevation;
+                    os_geometry::ramps::ramp_mesh(&ramp.parameters, lower_z, upper_z)
+                })();
+                match result {
+                    Ok(mesh) => {
+                        self.scene.insert(id, mesh);
+                    }
+                    Err(e) => {
+                        error = Some(e);
+                        continue;
+                    }
+                }
+            }
+            if let Some(railing) = self.document.model().railings.get(&id) {
+                match os_geometry::railings::railing_geometry(
+                    &railing.parameters,
+                    self.document.model(),
+                ) {
+                    Ok(geometry) => {
+                        self.scene.insert(id, geometry.mesh);
                     }
                     Err(e) => {
                         error = Some(e);
@@ -375,6 +503,7 @@ pub struct DesktopApp {
     opening_draft: Option<opening_tools::OpeningDraft>,
     opening_schedule: opening_schedule::OpeningSchedule,
     opening_type_draft: Option<opening_type_tools::OpeningTypeDraft>,
+    length_draft: Option<opening_lengths::LengthDraft>,
     opening_type_package_dialog: Option<opening_type_package_ui::PackageDialog>,
     opening_type_library_dialog: Option<opening_type_package_ui::OpeningTypeLibraryDialog>,
     opening_type_library_path: String,
@@ -441,6 +570,7 @@ impl DesktopApp {
             opening_draft: None,
             opening_schedule: opening_schedule::OpeningSchedule::default(),
             opening_type_draft: None,
+            length_draft: None,
             opening_type_package_dialog: None,
             opening_type_library_dialog: None,
             opening_type_library_path: "opening-library".into(),
@@ -514,6 +644,7 @@ impl DesktopApp {
         self.cancel_plan_wall();
         self.opening_draft = None;
         self.opening_type_draft = None;
+        self.length_draft = None;
         self.wall_type_draft = None;
         self.cancel_aligned_dimension();
         let selected = id.filter(|id| {
@@ -521,8 +652,12 @@ impl DesktopApp {
             model.walls.contains_key(id)
                 || model.floors.contains_key(id)
                 || model.columns.contains_key(id)
+                || model.casework.contains_key(id)
                 || model.stairs.contains_key(id)
+                || model.ramps.contains_key(id)
+                || model.railings.contains_key(id)
                 || model.roofs.contains_key(id)
+                || model.curtain_systems.contains_key(id)
                 || model.ceilings.contains_key(id)
                 || model.openings.contains_key(id)
                 || model.opening_types.contains_key(id)
@@ -872,6 +1007,13 @@ impl DesktopApp {
         }
     }
     fn history(&mut self, redo: bool) {
+        // Refreshing the single property target must not discard an opening batch.
+        let opening_selection = (self.selected_ids.len() > 1
+            && self
+                .selected_ids
+                .iter()
+                .all(|id| self.editor.document.model().openings.contains_key(id)))
+        .then(|| self.selected_ids.clone());
         let result = if redo {
             self.editor.redo()
         } else {
@@ -879,6 +1021,14 @@ impl DesktopApp {
         };
         self.report(result, if redo { "Edit redone." } else { "Edit undone." });
         self.refresh_document();
+        if let Some(ids) = opening_selection {
+            let ids: std::collections::BTreeSet<_> = ids
+                .into_iter()
+                .filter(|id| self.editor.document.model().openings.contains_key(id))
+                .collect();
+            self.select((ids.len() == 1).then(|| *ids.first().unwrap()));
+            self.selected_ids = ids;
+        }
     }
 
     fn apply_wall(&mut self) {
@@ -1015,6 +1165,23 @@ impl DesktopApp {
     }
 
     fn show(&mut self, ctx: &egui::Context) {
+        if self.plans.curtain_properties.is_some() {
+            self.curtain_properties_dialog(ctx);
+            ctx.input_mut(|input| {
+                input
+                    .events
+                    .retain(|event| !matches!(event, egui::Event::Key { .. }));
+            });
+        }
+        let floor_modal = self.plans.floor_properties.is_some();
+        if floor_modal {
+            self.floor_properties_dialog(ctx);
+            ctx.input_mut(|input| {
+                input
+                    .events
+                    .retain(|event| !matches!(event, egui::Event::Key { .. }));
+            });
+        }
         self.discard_hidden_opening_interaction();
         // Render the phase modal first so its keyboard input cannot reach the
         // document or plan tools, including on the frame that Cancel closes it.
@@ -1060,12 +1227,14 @@ impl DesktopApp {
         // Modal actions must not let global shortcuts modify the document underneath.
         if self.pending.is_none()
             && !phase_modal
+            && !floor_modal
             && self.exchange_pending.is_none()
             && !self.plans.sheet_pdf_pending()
             && self.plan_draft.is_none()
             && self.grid_draft.is_none()
             && self.opening_draft.is_none()
             && self.opening_type_draft.is_none()
+            && self.length_draft.is_none()
             && self.opening_type_package_dialog.is_none()
             && self.opening_type_library_dialog.is_none()
             && self.wall_type_draft.is_none()
@@ -1094,6 +1263,7 @@ impl DesktopApp {
         self.grid_dialog(ctx);
         self.opening_dialog(ctx);
         self.opening_type_dialog(ctx);
+        self.length_parameter_dialog(ctx);
         self.show_opening_type_library_dialog(ctx);
         self.show_opening_type_package_dialog(ctx);
         self.wall_type_dialog(ctx);
@@ -1170,6 +1340,7 @@ mod desktop_tests {
     mod plan_phase_tests;
     use super::*;
     mod opening_family_tests;
+    mod opening_length_tests;
     mod opening_tag_tests;
     mod opening_type_library_tests;
     mod opening_type_package_tests;
@@ -2115,7 +2286,15 @@ mod desktop_tests {
                 h.click("Draw wall in plan");
                 let center = h.app.plans.canvas_rect.unwrap().center();
                 h.click_at(center + egui::vec2(6.0, 4.0));
-                let start = h.app.wall_gesture.as_ref().unwrap().start.unwrap();
+                let start = h
+                    .app
+                    .wall_gesture
+                    .as_ref()
+                    .unwrap_or_else(|| {
+                        panic!("wall gesture missing at {size:?}/{scale}: {}", h.app.status)
+                    })
+                    .start
+                    .unwrap();
                 if enabled {
                     assert_eq!(start, Point2::default());
                 } else {

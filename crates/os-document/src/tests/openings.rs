@@ -141,6 +141,7 @@ fn fixture() -> (Document, Id, Vec<Id>, Vec<Id>, Id) {
             let opening = Opening::new(
                 "core.opening",
                 OpeningParams {
+                    open_state: Default::default(),
                     width_override: None,
                     height_override: None,
                     sill_override: None,

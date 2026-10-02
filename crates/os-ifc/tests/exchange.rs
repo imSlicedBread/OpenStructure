@@ -2,9 +2,11 @@ use os_core::{Id, Point2};
 use os_geometry::{GeometryKernel, PrismKernel};
 use os_ifc::{IfcAdapter, WallIfc};
 use os_model::{
-    Column, ColumnParams, DoorHinge, DoorSwing, Level, LevelParams, Model, Opening,
-    OpeningDefinition, OpeningFamily, OpeningHostCut, OpeningKind, OpeningParams, OpeningType,
-    OpeningTypeParams, Stair, StairParams, Wall, WallParams, WindowPanePosition,
+    Casework, CaseworkParams, CaseworkType, CaseworkTypeParams, Column, ColumnParams, DoorHinge,
+    DoorSwing, Level, LevelParams, Model, Opening, OpeningDefinition, OpeningFamily,
+    OpeningHostCut, OpeningKind, OpeningParams, OpeningType, OpeningTypeParams, Ramp, RampParams,
+    Stair, StairParams, StairRailing, StairRailingParams, StairRailingSide, StairRailingType,
+    StairRailingTypeParams, Wall, WallParams, WindowPanePosition,
 };
 
 fn model() -> Model {
@@ -196,6 +198,53 @@ fn ifc_export_fails_closed_for_native_columns() {
 }
 
 #[test]
+fn ifc_export_fails_closed_for_native_casework_and_types() {
+    let mut m = Model::new("Casework");
+    let level = *m.levels.keys().next().unwrap();
+    let casework_type = CaseworkType::new(
+        "core.casework_type",
+        CaseworkTypeParams {
+            name: "Base cabinet".into(),
+            width: 0.6,
+            depth: 0.6,
+            height: 0.9,
+            material: None,
+        },
+    );
+    let type_id = casework_type.id();
+    m.casework_types.insert(type_id, casework_type);
+    m.validate().unwrap();
+    assert!(
+        WallIfc
+            .export_report(&m)
+            .unwrap_err()
+            .to_string()
+            .contains("native casework")
+    );
+
+    let casework = Casework::new(
+        "core.casework",
+        CaseworkParams {
+            name: "Kitchen cabinet".into(),
+            type_id,
+            level,
+            center: Point2::new(1.0, 2.0),
+            yaw: 0.0,
+            base_offset: 0.0,
+        },
+    );
+    m.casework.insert(casework.id(), casework);
+    m.validate().unwrap();
+    assert!(
+        WallIfc
+            .export_report(&m)
+            .unwrap_err()
+            .to_string()
+            .contains("native casework")
+    );
+}
+
+#[test]
 fn ifc_export_fails_closed_for_native_stairs() {
     let mut model = Model::new("Stairs");
     let lower = *model.levels.keys().next().unwrap();
@@ -224,10 +273,78 @@ fn ifc_export_fails_closed_for_native_stairs() {
             material: None,
         },
     );
-    model.stairs.insert(stair.id(), stair);
+    let stair_id = stair.id();
+    model.stairs.insert(stair_id, stair);
     model.validate().unwrap();
     let error = WallIfc.export_report(&model).unwrap_err();
     assert!(error.to_string().contains("does not support native stairs"));
+
+    let ty = StairRailingType::new(
+        "core.railing_type",
+        StairRailingTypeParams {
+            name: "Standard".into(),
+            top_rail_height: 0.95,
+            top_rail_width: 0.05,
+            top_rail_depth: 0.05,
+            post_width: 0.08,
+            post_depth: 0.05,
+            max_post_spacing: 0.5,
+            material: None,
+        },
+    );
+    let type_id = ty.id();
+    model.railing_types.insert(type_id, ty);
+    let railing = StairRailing::new(
+        "core.railing",
+        StairRailingParams {
+            name: "Left guardrail".into(),
+            stair: stair_id,
+            railing_type: type_id,
+            side: StairRailingSide::Left,
+        },
+    );
+    model.railings.insert(railing.id(), railing);
+    model.validate().unwrap();
+    let error = WallIfc.export_report(&model).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("cannot preserve native railings")
+    );
+}
+
+#[test]
+fn ifc_export_fails_closed_for_native_ramps() {
+    let mut model = model();
+    let lower = model
+        .levels
+        .values()
+        .find(|level| level.parameters.elevation == 0.0)
+        .unwrap()
+        .id();
+    let upper = model
+        .levels
+        .values()
+        .find(|level| level.parameters.elevation == 4.2)
+        .unwrap()
+        .id();
+    let ramp = Ramp::new(
+        "core.ramp",
+        RampParams {
+            name: "Entry ramp".into(),
+            lower_level: lower,
+            upper_level: upper,
+            start: Point2::new(0.0, 0.0),
+            end: Point2::new(6.0, 0.0),
+            width: 1.5,
+            structural_thickness: 0.18,
+            material: None,
+        },
+    );
+    model.ramps.insert(ramp.id(), ramp);
+    model.validate().unwrap();
+    let error = WallIfc.export_report(&model).unwrap_err();
+    assert!(error.to_string().contains("does not support native ramps"));
 }
 
 #[test]
@@ -368,6 +485,7 @@ fn hosted(kind: OpeningKind, typed: bool, hinge: DoorHinge, swing: DoorSwing) ->
             let o = Opening::new(
                 "core.opening",
                 OpeningParams {
+                    open_state: Default::default(),
                     width_override: None,
                     height_override: None,
                     sill_override: None,
@@ -912,6 +1030,40 @@ fn custom_families_profiles_pane_alignment_and_unused_types_are_rejected() {
             Err(os_core::Error::Unsupported(_))
         ));
     }
+}
+
+#[test]
+fn paired_doors_ifc_fail_closed_import_and_export() {
+    let original = hosted(OpeningKind::Door, true, DoorHinge::Start, DoorSwing::Left);
+    let text = exported(&original);
+    for operation in [
+        "DOUBLE_DOOR_SINGLE_SWING",
+        "DOUBLE_DOOR_SINGLE_SWING_OPPOSITE_LEFT",
+    ] {
+        let paired = text.replace("SINGLE_SWING_LEFT", operation);
+        assert!(WallIfc.import(paired.as_bytes()).is_err());
+    }
+    let mut model = original;
+    model
+        .opening_types
+        .values_mut()
+        .next()
+        .unwrap()
+        .parameters
+        .family
+        .door_leaves = os_model::DoorLeaves::Paired {
+        active_fraction: 0.6,
+    };
+    model.validate().unwrap();
+    let before = model.clone();
+    assert!(
+        WallIfc
+            .export_report(&model)
+            .unwrap_err()
+            .to_string()
+            .contains("paired")
+    );
+    assert_eq!(model, before);
 }
 
 #[test]

@@ -20,7 +20,21 @@ release commits one `UpdateFloor` transaction if the resulting simple polygon
 is valid. Escape, stale plan/document/provider state, pointer loss, crop exit,
 or an invalid/collapsing release leaves the model unchanged. The committed slab
 regenerates in 3D; the preview never mutates the 3D scene. Dragging the slab
-body still pans the canvas; numeric inspector editing remains unavailable.
+body still pans the canvas.
+
+Choose **Edit floor properties…** in the selected slab's Properties panel to
+stage its name, level, material, thickness, and level-relative top offset.
+Candidate model, solid, and plan projection are checked as the draft changes;
+Apply performs an isolated full-scene regeneration before the live command.
+Typing does not mutate the model, history, plan drawing, or live 3D scene. Apply
+commits one `UpdateFloor` transaction and regenerates the plan,
+split scene, and dependent views while preserving the floor UUID, boundary, and
+opening rings. Undo/redo reverses/restores the whole edit. Cancel/Escape,
+changed selection/view, and stale session/revision discard the draft without
+partial mutation. Invalid values or geometry keep the draft open with an error
+so it can be corrected; no partial mutation occurs. Escape first dismisses an
+open level/material popup, and cancels the editor only when the popup is closed.
+No schema or plugin protocol change.
 
 Select a visible slab and choose **Add slab opening…** to sketch a closed
 inner loop. Click boundary vertices, then **Finish opening** or close near the
@@ -51,9 +65,8 @@ release does not yet provide a lossless floor exchange path.
 
 Limitations: boundaries/openings are straight-edged and horizontal; slopes,
 layered floor types, joins with walls, parametric constraints, floor-specific
-visibility controls, numeric/property inspector editing, and IFC slab
-import/export are not implemented. This adds slab voids, not Revit-equivalent
-floor authoring.
+visibility controls, and IFC slab import/export are not implemented. This adds
+slab voids and scalar property editing, not Revit-equivalent floor authoring.
 
 Evidence:
 
@@ -75,3 +88,8 @@ Evidence:
   precedence, and body-drag canvas pan. Opening authoring covers two DPI profiles,
   preview immutability, one-step update/undo/redo, escape/invalid finish, provider
   invalidation, removal, and direct inner-loop vertex edits.
+- `crates/os-ui/src/plan_workspace/floor_properties_tests.rs`: actual property
+  controls at both DPI profiles; draft/model/scene isolation; level/material,
+  thickness, offset, and name changes; boundary/hole/UUID preservation;
+  save/reopen; one-step undo/redo; invalid geometry; cancel/Escape; and stale
+  session/revision/selection/view rejection.

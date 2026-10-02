@@ -1,4 +1,4 @@
-//! Native rectangular apertures, measured along their straight host wall.
+//! Native apertures, measured in analytic host-path stations.
 use crate::{Entity, Model, WallParams};
 use os_core::{Id, Result, ensure};
 use serde::{Deserialize, Serialize};
@@ -9,13 +9,30 @@ pub enum OpeningKind {
     Window,
 }
 
-/// Type-level 2D symbol metadata; does not describe an operable 3D sash.
+/// Type-level plan symbol and static closed sash representation for rectangular
+/// windows on straight hosts. Curved/custom-profile windows use the symbol only.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WindowOperation {
     #[default]
     Fixed,
     Sliding,
     Casement,
+}
+
+/// Persisted instance pose. Default preserves historical doors at 90 degrees
+/// and windows closed. Unsupported hosts/profiles retain this value dormant.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub enum OpeningState {
+    #[default]
+    Default,
+    DoorAngle(f64),
+    DoorPairAngles {
+        active_degrees: f64,
+        inactive_degrees: f64,
+    },
+    SlidingFraction(f64),
+    CasementAngle(f64),
 }
 
 /// Jamb relative to the host's stored start-to-end direction.
@@ -76,9 +93,10 @@ pub enum OpeningDefinition {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OpeningParams {
+    pub open_state: OpeningState,
     pub name: String,
     pub host: Id,
-    /// Distance to the first jamb from the host start, in metres.
+    /// Centerline travel to the first jamb from the host start, in metres.
     pub offset: f64,
     pub definition: OpeningDefinition,
     /// Explicit null inherits; Some pins this instance, including equal defaults.
@@ -122,6 +140,7 @@ fn required_sill_override<'de, D: serde::Deserializer<'de>>(
 /// Ephemeral effective dimensions resolved from the current project model.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ResolvedOpening {
+    pub open_state: OpeningState,
     pub window_operation: WindowOperation,
     pub family: crate::OpeningFamily,
     pub name: String,
@@ -182,6 +201,7 @@ impl Model {
                 height,
                 sill,
             } => ResolvedOpening {
+                open_state: opening.open_state,
                 window_operation: WindowOperation::Fixed,
                 family: Default::default(),
                 name: opening.name.clone(),
@@ -198,13 +218,10 @@ impl Model {
                 swing: opening.swing,
             },
             OpeningDefinition::Typed { type_id } => {
-                let ty = self
-                    .opening_types
-                    .get(&type_id)
-                    .ok_or_else(|| os_core::Error::Invalid("opening type missing".into()))?;
-                ty.parameters.validate()?;
+                let ty = self.resolve_opening_type(type_id)?;
                 let p = &ty.parameters;
                 ResolvedOpening {
+                    open_state: opening.open_state,
                     window_operation: p.window_operation,
                     family: p.family.clone(),
                     name: opening.name.clone(),
@@ -255,6 +272,7 @@ impl Model {
         resolved
             .family
             .validate_for(resolved.width, resolved.height, resolved.kind)?;
+        resolved.validate_open_state()?;
         Ok(resolved)
     }
 }
@@ -295,12 +313,77 @@ fn validate_dimensions(kind: OpeningKind, width: f64, height: f64, sill: f64) ->
 }
 
 impl ResolvedOpening {
-    pub fn validate_host(&self, host: &WallParams) -> Result<()> {
+    pub fn validate_open_state(&self) -> Result<()> {
+        let valid = match self.open_state {
+            OpeningState::Default => true,
+            OpeningState::DoorPairAngles {
+                active_degrees,
+                inactive_degrees,
+            } => {
+                self.kind == OpeningKind::Door
+                    && matches!(self.family.door_leaves, crate::DoorLeaves::Paired { .. })
+                    && [active_degrees, inactive_degrees]
+                        .iter()
+                        .all(|v| v.is_finite() && (0. ..=90.).contains(v))
+            }
+            OpeningState::DoorAngle(v) => {
+                self.kind == OpeningKind::Door && v.is_finite() && (0. ..=90.).contains(&v)
+            }
+            OpeningState::SlidingFraction(v) => {
+                self.kind == OpeningKind::Window
+                    && self.window_operation == WindowOperation::Sliding
+                    && v.is_finite()
+                    && (0. ..=1.).contains(&v)
+            }
+            OpeningState::CasementAngle(v) => {
+                self.kind == OpeningKind::Window
+                    && self.window_operation == WindowOperation::Casement
+                    && v.is_finite()
+                    && (0. ..=90.).contains(&v)
+            }
+        };
         ensure(
-            host.path.is_straight(),
-            "doors and windows require a straight wall; circular hosts are not supported",
-        )?;
+            valid,
+            "opening state is out of range or incompatible with its kind/operation; reset paired poses to Default before switching to Single",
+        )
+    }
+
+    /// Matches the rectangular sash evaluator, including equivalent windings.
+    pub fn rectangular_component(&self) -> bool {
+        self.family.rectangular_cut()
+            && self
+                .family
+                .profile
+                .iter()
+                .all(|v| v.x == 0. || v.x == 1. || v.y == 0. || v.y == 1.)
+            && crate::OpeningFamily::rectangle()
+                .iter()
+                .all(|v| self.family.profile.contains(v))
+    }
+
+    pub fn supports_open_state(&self, host: &WallParams) -> bool {
+        host.path.is_straight()
+            && self.rectangular_component()
+            && (self.kind == OpeningKind::Door || self.window_operation != WindowOperation::Fixed)
+    }
+
+    pub fn door_angle(&self, host: &WallParams) -> f64 {
+        if self.supports_open_state(host)
+            && let OpeningState::DoorAngle(angle) = self.open_state
+        {
+            angle
+        } else {
+            90.
+        }
+    }
+
+    pub fn validate_host(&self, host: &WallParams) -> Result<()> {
+        self.validate_open_state()?;
         host.validate()?;
+        ensure(
+            self.family.door_leaves == crate::DoorLeaves::Single || host.path.is_straight(),
+            "paired doors require a straight host; choose a straight wall or a Single door type",
+        )?;
         self.family
             .validate_for(self.width, self.height, self.kind)?;
         validate_dimensions(self.kind, self.width, self.height, self.sill)?;
@@ -317,13 +400,48 @@ impl ResolvedOpening {
             offset + self.width <= host.length() - 0.001
                 && self.sill + self.height <= host.height - 0.001,
             "opening must fit inside host with at least 1 mm end/head clearance",
-        )
+        )?;
+        if let crate::WallPath::CircularArc { radius, .. } = host.path {
+            // Arc components use the same authored depths/caps as straight hosts.
+            // Check the *physical* inner-face clear widths too: centerline fit
+            // alone can accept a vanishing pane on a very tight bend.
+            let scale = (radius - host.thickness / 2.) / radius;
+            let bays = self.family.bays(self.width)?;
+            let clear = bays.map_or(self.width - 2. * self.family.frame_width, |b| {
+                (b.primary.1 - b.primary.0).min(b.lite.1 - b.lite.0)
+            });
+            ensure(
+                clear * scale >= 0.001,
+                "arc leaves less than 1 mm physical clear width",
+            )?;
+            ensure(
+                (self.family.frame_width == 0. || self.family.frame_width * scale >= 0.001)
+                    && self
+                        .family
+                        .side_lite
+                        .as_ref()
+                        .is_none_or(|lite| lite.mullion_width * scale >= 0.001),
+                "arc frame or mullion is narrower than 1 mm at the inner face",
+            )?;
+            if self.kind == OpeningKind::Door {
+                // The displayed leaf is rigid in the tangent-at-hinge frame.
+                // An inward leaf must not cross the circle centre or wrap onto
+                // another part of its own host. Conservatively bound its reach
+                // for both swing directions; never shorten an infeasible leaf.
+                let leaf = bays.map_or(self.width, |b| b.primary.1 - b.primary.0);
+                ensure(
+                    leaf < radius - host.thickness / 2.,
+                    "rigid door leaf is too long for the circular host radius",
+                )?;
+            }
+        }
+        Ok(())
     }
 }
 
 pub(crate) fn validate(model: &Model) -> Result<()> {
     for ty in model.opening_types.values() {
-        ty.parameters.validate()?;
+        model.resolve_opening_type(ty.id())?;
         for material in [
             ty.parameters.family.panel_material,
             ty.parameters.family.frame_material,
@@ -386,6 +504,7 @@ mod tests {
             },
         );
         let p = OpeningParams {
+            open_state: Default::default(),
             width_override: None,
             height_override: None,
             sill_override: None,
@@ -420,6 +539,45 @@ mod tests {
         model.walls.insert(wall.id(), wall);
         model.opening_types.insert(id, ty);
         (model, p, id)
+    }
+
+    #[test]
+    fn opening_state_validation_and_required_wire() {
+        let (mut model, mut p, ty) = fixture();
+        for value in [f64::NAN, f64::INFINITY, -1., 91.] {
+            p.open_state = OpeningState::DoorAngle(value);
+            assert!(model.resolve_opening(&p).is_err());
+        }
+        for value in [0., 45., 90.] {
+            p.open_state = OpeningState::DoorAngle(value);
+            model.resolve_opening(&p).unwrap();
+        }
+        p.definition = OpeningDefinition::Typed { type_id: ty };
+        let params = &mut model.opening_types.get_mut(&ty).unwrap().parameters;
+        params.kind = OpeningKind::Window;
+        params.sill = 0.7;
+        params.window_operation = WindowOperation::Sliding;
+        assert!(model.resolve_opening(&p).is_err());
+        for value in [-0.1, 1.1, f64::NAN, f64::INFINITY] {
+            p.open_state = OpeningState::SlidingFraction(value);
+            assert!(model.resolve_opening(&p).is_err());
+        }
+        p.open_state = OpeningState::SlidingFraction(0.5);
+        model.resolve_opening(&p).unwrap();
+        model
+            .opening_types
+            .get_mut(&ty)
+            .unwrap()
+            .parameters
+            .window_operation = WindowOperation::Fixed;
+        assert!(model.resolve_opening(&p).is_err());
+        p.open_state = OpeningState::Default;
+        model.resolve_opening(&p).unwrap();
+        let mut wire = serde_json::to_value(&p).unwrap();
+        wire.as_object_mut().unwrap().remove("open_state");
+        assert!(serde_json::from_value::<OpeningParams>(wire).is_err());
+        assert!(serde_json::from_str::<OpeningState>(r#"{"DoorAngle":45,"extra":0}"#).is_err());
+        assert!(serde_json::from_str::<OpeningState>(r#"{"Unknown":0}"#).is_err());
     }
 
     #[test]

@@ -10,6 +10,157 @@ const PROFILES: [(egui::Vec2, f32); 2] = [
 ];
 
 #[test]
+fn paired_doors_package_replace_explicit_reset_atomic_history_both_dpis() {
+    for (size, scale) in PROFILES {
+        let directory = tempfile::tempdir().unwrap();
+        let path = source_package(
+            directory.path(),
+            "Single Door",
+            OpeningKind::Door,
+            0.9,
+            false,
+        );
+        let mut h = Harness::at_size(size, scale);
+        let mut target = sample_type("Paired Door", OpeningKind::Door, 0.9);
+        target.parameters.family.door_leaves = os_model::DoorLeaves::Paired {
+            active_fraction: 0.6,
+        };
+        let tid = target.id();
+        let wall = os_model::Wall::new(os_walls::WALL_TYPE, default_wall(h.app.active_level));
+        let opening = Opening::new(
+            "core.opening",
+            OpeningParams {
+                name: "Pair".into(),
+                host: wall.id(),
+                offset: 1.,
+                definition: OpeningDefinition::Typed { type_id: tid },
+                open_state: os_model::OpeningState::DoorPairAngles {
+                    active_degrees: 30.,
+                    inactive_degrees: 60.,
+                },
+                width_override: None,
+                height_override: None,
+                sill_override: None,
+                pane_position_override: None,
+                lite_side_override: None,
+                hinge: Default::default(),
+                swing: Default::default(),
+            },
+        );
+        let id = opening.id();
+        h.app
+            .editor
+            .document
+            .execute(
+                "Pair fixture",
+                vec![
+                    Command::AddWall(wall),
+                    Command::AddOpeningType(target),
+                    Command::AddOpening(opening),
+                ],
+            )
+            .unwrap();
+        h.app.editor.regenerate().unwrap();
+        h.app.select(Some(tid));
+        let before = h.app.editor.document.model().clone();
+        let history = h.app.editor.document.history_stats();
+        read_button(&mut h, &path);
+        h.click("Update selected compatible type");
+        h.click("Import type");
+        assert_eq!(h.app.editor.document.model(), &before);
+        h.click("Reset paired poses to Default");
+        assert_eq!(h.app.editor.document.model(), &before);
+        h.click("Import type");
+        let after = h.app.editor.document.model().clone();
+        assert_eq!(
+            after.opening_types[&tid].parameters.family.door_leaves,
+            os_model::DoorLeaves::Single
+        );
+        assert_eq!(
+            after.openings[&id].parameters.open_state,
+            os_model::OpeningState::Default
+        );
+        assert_eq!(
+            h.app.editor.document.history_stats().undo_entries,
+            history.undo_entries + 1
+        );
+        h.app.history(false);
+        assert_eq!(h.app.editor.document.model(), &before);
+        h.app.history(true);
+        assert_eq!(h.app.editor.document.model(), &after);
+    }
+}
+
+#[test]
+fn shared_lengths_package_copy_conflicts_bindings_preview_history_both_dpi() {
+    for (size, scale) in PROFILES {
+        let mut source = Model::new("Shared parameter source");
+        let ty = sample_type("Shared window", OpeningKind::Window, 1.);
+        let type_id = ty.id();
+        let p = os_model::LengthParameter::new(
+            "core.length_parameter",
+            os_model::LengthParameterParams {
+                name: "Shared size".into(),
+                unit: os_model::LengthUnit::Metres,
+                value: 1.2,
+            },
+        );
+        let pid = p.id();
+        source.length_parameters.insert(pid, p.clone());
+        source.opening_types.insert(type_id, ty);
+        source.opening_type_length_bindings.insert(
+            type_id,
+            os_model::OpeningTypeLengthBindings {
+                width: Some(pid),
+                height: Some(pid),
+                sill: Some(pid),
+            },
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shared.osot");
+        os_storage::write_opening_type_package(&source, type_id, &path).unwrap();
+        let mut h = Harness::at_size(size, scale);
+        let mut conflicting = p.clone();
+        conflicting.parameters.value = 2.;
+        h.app
+            .editor
+            .document
+            .execute("Collision", vec![Command::AddLengthParameter(conflicting)])
+            .unwrap();
+        let before = h.app.editor.document.model().clone();
+        let history = h.app.editor.document.history_stats();
+        read_button(&mut h, &path);
+        assert_eq!(h.app.editor.document.model(), &before);
+        h.click("Import type");
+        let id = h.app.selected.unwrap();
+        let model = h.app.editor.document.model();
+        let bindings = model.opening_type_length_bindings[&id];
+        let imported = bindings.width.unwrap();
+        assert_ne!(imported, pid);
+        assert_eq!(bindings.height, Some(imported));
+        assert_eq!(bindings.sill, Some(imported));
+        assert_eq!(
+            model.length_parameters[&imported].parameters.name,
+            "Shared size (Imported)"
+        );
+        assert_eq!(model.length_parameters[&pid].parameters.value, 2.);
+        assert_eq!(
+            model.resolve_opening_type(id).unwrap().parameters.width,
+            1.2
+        );
+        assert_eq!(
+            h.app.editor.document.history_stats().undo_entries,
+            history.undo_entries + 1
+        );
+        let after = model.clone();
+        h.app.history(false);
+        assert_eq!(h.app.editor.document.model(), &before);
+        h.app.history(true);
+        assert_eq!(h.app.editor.document.model(), &after);
+    }
+}
+
+#[test]
 fn two_bay_package_dependencies_collisions_history_and_reopen() {
     for (size, scale) in PROFILES {
         for kind in [OpeningKind::Door, OpeningKind::Window] {
@@ -312,6 +463,7 @@ fn package_update_preserves_type_identity_instances_and_pinned_dimensions_in_one
     let wall = os_model::Wall::new(os_walls::WALL_TYPE, default_wall(level));
     let host = wall.id();
     let opening_params = OpeningParams {
+        open_state: Default::default(),
         name: "Pinned door".into(),
         host,
         offset: 2.0,
@@ -329,6 +481,7 @@ fn package_update_preserves_type_identity_instances_and_pinned_dimensions_in_one
     let inherited = Opening::new(
         "core.opening",
         OpeningParams {
+            open_state: Default::default(),
             name: "Inherited door".into(),
             host,
             offset: 3.5,
@@ -443,6 +596,7 @@ fn package_update_with_host_fit_failure_is_blocked_and_escape_cancels() {
     let opening = Opening::new(
         "core.opening",
         OpeningParams {
+            open_state: Default::default(),
             name: "Inherited narrow door".into(),
             host,
             offset: 0.3,

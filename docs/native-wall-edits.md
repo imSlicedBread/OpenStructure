@@ -123,3 +123,57 @@ Six focused tests pass, including both desktop DPI profiles, preview isolation,
 stale/cancel behavior, one-step undo/redo, save/reopen, and split 2D/3D updates.
 Joined walls and installed Wall providers are rejected. E01.19 remains partial:
 multi-wall/general entity splitting and native visual acceptance are open.
+
+## Multi-wall translation — 2026-09-29 automated evidence
+
+Select 2–64 visible native straight walls on the active floor-plan level and
+choose **Move walls**. A snapped or exact metric base-to-destination vector
+translates the selection in one validated transaction. Selected entities are
+excluded from snap candidates so the set cannot snap back to itself. Every wall
+keeps its UUID, level, dimensions, material, and metadata; hosted doors/windows
+keep their instance parameters. Opening tags translate with their hosted
+openings. Associative dimensions continue resolving from moved wall anchors.
+Room seeds and room tags translate only when every entity in the room boundary
+signature is selected; partial room boundaries reject rather than silently
+opening the room. Explicit joins likewise require every joined wall.
+
+The isolated candidate validates the full document and meshes only the moved
+walls/openings plus affected room faces during pointer preview. Preview does
+not mutate the live document, 3D scene, history, or plan camera. Invalid
+release, Escape, pointer loss, stale document/view/drawing/selection/provider
+context, or pending plugin work cancels without model changes. Commit is one
+undo step and regenerates plan/3D. Headless egui tests at 1280×800/1.0 and
+1000×650/1.5 cover exact vectors, semantic snap/exclusion,
+tags/dimensions/rooms/joins, stale and invalid cancellation, split redraw,
+ordinary pan, and undo/redo.
+
+Validation: `cargo test -p os-ui --all-features --locked --offline wall_set_move
+--lib -- --test-threads=1` passes five tests. Native-window visual acceptance
+has not been performed. This bounded native translation does not provide
+general multi-entity transforms, attached constraint solving, or Revit parity.
+
+## Copy wall assembly — 2026-10-02 automated evidence
+
+Select 1–64 visible native straight walls on one active floor-plan level and
+choose **Copy walls**. The operation copies every hosted door/window (including
+hosted openings outside the current view), complete internal wall joins, and
+opening tags attached in the active plan. IDs and intra-assembly references are
+remapped once at draft creation; wall type assignments, instance overrides,
+open states, clearance locks, lifecycle, and source metadata are retained.
+Snapped or exact metric displacement is previewed without changing the model,
+scene, history, or camera. A validated commit adds the entire assembly in one
+undo step and regenerates the plan/3D scene.
+
+Copy requires complete join membership and rejects wall collisions, invalid
+opening geometry, stale contexts, and out-of-bounds coordinates. It does not
+duplicate rooms, room tags, dimensions, or tags in other views. Curved/mixed-
+level walls, partial join groups, and an installed Wall worker provider are not
+supported. No schema, storage, or plugin protocol changed.
+
+`wall_set_copy_tests.rs` covers real-egui placement at 1280×800/1.0 and
+1000×650/1.5, rotated-plan exact displacement, stable draft IDs, model/scene/
+history isolation, typed door/window instance data, internal joins, tag and
+clearance remapping, implicit lifecycle preservation, collision and partial-join
+rejection, snapping, Escape/stale selection, one-step undo/redo, and save/reopen.
+These are automated assertions, not native-window visual qualification. See
+[native wall-set copy](native-wall-set-copy.md) for behavior and limits.
