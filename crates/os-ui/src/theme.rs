@@ -77,7 +77,6 @@ pub(crate) enum Icon {
     Save,
     Undo,
     Redo,
-    Measure,
 }
 
 fn icon(painter: &egui::Painter, rect: egui::Rect, kind: Icon, color: Color32) {
@@ -177,14 +176,6 @@ fn icon(painter: &egui::Painter, rect: egui::Rect, kind: Icon, color: Color32) {
             ] {
                 line((flip(a.0), a.1), (flip(b.0), b.1));
             }
-        }
-        Icon::Measure => {
-            line((0.15, 0.72), (0.85, 0.72));
-            line((0.15, 0.56), (0.15, 0.88));
-            line((0.85, 0.56), (0.85, 0.88));
-            line((0.22, 0.78), (0.34, 0.66));
-            line((0.48, 0.78), (0.60, 0.66));
-            line((0.72, 0.78), (0.84, 0.66));
         }
     }
 }

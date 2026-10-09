@@ -2,6 +2,7 @@
 //! worker; obsolete work drains before replacement in each lane.
 use super::*;
 use crate::plan_gesture::WallEdit;
+mod arc_dimensions;
 mod casework;
 #[cfg(test)]
 mod casework_tests;
@@ -15,6 +16,9 @@ mod curtain_properties;
 mod curtain_tests;
 mod curtains;
 mod detail_lines;
+mod elevation_dimensions;
+mod elevations;
+mod facades;
 #[cfg(test)]
 mod graphics_tests;
 mod junctions;
@@ -38,13 +42,16 @@ mod room_materials;
 mod room_separation_line_tests;
 mod room_separation_lines;
 mod room_tags;
+mod section_fills;
 mod selection;
 mod selection_filters;
+mod sheet_layout;
 mod sheet_sources;
 #[cfg(test)]
 mod stair_tests;
 mod stairs;
 mod transforms;
+mod wall_level_copy;
 mod wall_set_copy;
 mod wall_set_move;
 use os_model::{
@@ -99,6 +106,7 @@ struct PendingSheetPdf {
     replace: bool,
     session: Id,
     revision: u64,
+    provider_signature: Vec<(String, Id)>,
 }
 
 fn sheet_pdf_path(text: &str) -> Result<PathBuf> {
@@ -824,6 +832,9 @@ impl Default for SnapOptions {
 
 #[derive(Default)]
 pub(super) struct PlanWorkspace {
+    facade: Option<facades::Draft>,
+    facade_pointer_claimed: bool,
+    elevation: elevations::State,
     area_selection: selection::State,
     overlap_selection: overlap_selection::State,
     selection_filters: selection_filters::SelectionFilters,
@@ -842,6 +853,7 @@ pub(super) struct PlanWorkspace {
     transform: Option<transforms::Draft>,
     transform_claimed: bool,
     wall_set_move: Option<wall_set_move::Draft>,
+    wall_level_copy: Option<wall_level_copy::Draft>,
     wall_set_move_claimed: bool,
     opening_move: Option<crate::opening_tools::OpeningMove>,
     opening_move_claimed: bool,
@@ -873,6 +885,7 @@ pub(super) struct PlanWorkspace {
     pub(super) room_placement_active: bool,
     dimension_draft: Option<DimensionDraft>,
     dimension_repair_claimed: bool,
+    dimension_pointer_claimed: bool,
     opening_placement: Option<OpeningPlacementDraft>,
     opening_width_claimed: bool,
     floor_sketch: Option<FloorSketchDraft>,
@@ -910,11 +923,8 @@ pub(super) struct PlanWorkspace {
     snaps: SnapOptions,
     pdf_path: String,
     pending_pdf: Option<PendingSheetPdf>,
-    sheet_schedule: Option<Id>,
-    sheet_section: Option<Id>,
     sheet_sources: sheet_sources::State,
-    sheet_layout_revision: Option<(Id, u64)>,
-    sheet_layout_drafts: BTreeMap<Id, (f64, Point2)>,
+    sheet_draft: Option<sheet_layout::Draft>,
 }
 
 #[derive(Clone)]
@@ -934,6 +944,10 @@ struct SectionPlacementDraft {
 }
 
 struct DimensionDraft {
+    displayed_drawing_identity: Option<Id>,
+    session: Id,
+    revision: u64,
+    wall_activation: Option<Id>,
     repair: Option<DimensionRepair>,
     layout: os_model::DimensionLayout,
     additional: Vec<DimensionAnchorDraft>,
@@ -1016,6 +1030,8 @@ struct FloorSketchDraft {
     session: Id,
     revision: u64,
     provider_signature: Vec<(String, Id)>,
+    name: String,
+    material: Option<Id>,
     points: Vec<Point2>,
     thickness: String,
     top_offset: String,
@@ -1597,12 +1613,15 @@ impl PlanWorkspace {
         Some(rect.min + egui::vec2(screen.x as f32, screen.y as f32))
     }
     fn poll(&mut self, editor: &Editor) {
-        let session = editor.document.session_id();
-        let layout_revision = Some((session, editor.document.revision()));
-        if self.sheet_layout_revision != layout_revision {
-            self.sheet_layout_revision = layout_revision;
-            self.sheet_layout_drafts.clear();
+        if self
+            .sheet_draft
+            .as_ref()
+            .is_some_and(|draft| !draft.current(editor, self.active_sheet))
+        {
+            self.sheet_draft = None;
+            self.pending_pdf = None;
         }
+        let session = editor.document.session_id();
         if self.session != Some(session) {
             self.session = Some(session);
             self.active = None;
@@ -1627,8 +1646,12 @@ impl PlanWorkspace {
         {
             self.active = None;
         }
-        self.sheet_sources
-            .poll(editor, self.active_sheet, self.active);
+        self.sheet_sources.poll(
+            editor,
+            self.active_sheet,
+            self.active,
+            self.sheet_draft.as_ref().map(|d| &d.parameters),
+        );
         let requested = self.active.map(|id| editor.native_view_context(id));
         let current = requested.as_ref().and_then(|r| r.as_ref().ok()).copied();
         if self.desired != current {
@@ -1683,7 +1706,9 @@ impl DesktopApp {
     pub(super) fn create_sheet_from_active_view(&mut self) {
         let result = (|| {
             let view_id = self.plans.active.ok_or_else(|| {
-                Error::Invalid("Open a Plan or Section view before creating a sheet".into())
+                Error::Invalid(
+                    "Open a Plan, Section or Elevation view before creating a sheet".into(),
+                )
             })?;
             let context = self.editor.native_view_context(view_id)?;
             let model = self.editor.document.model();
@@ -1695,9 +1720,12 @@ impl DesktopApp {
             os_core::ensure(
                 matches!(
                     view.parameters.kind,
-                    os_model::ViewKind::Plan | os_model::ViewKind::Section
+                    os_model::ViewKind::Plan
+                        | os_model::ViewKind::Section
+                        | os_model::ViewKind::Elevation
+                        | os_model::ViewKind::Facade
                 ) && view.parameters.validate_edit().is_ok(),
-                "sheet source must be a configured Plan or Section view",
+                "sheet source must be a configured drawing view",
             )?;
             let number = (101..=9_999)
                 .map(|index| format!("A{index:03}"))
@@ -1708,7 +1736,7 @@ impl DesktopApp {
                         .any(|sheet| sheet.parameters.number.eq_ignore_ascii_case(number))
                 })
                 .ok_or_else(|| Error::Invalid("no available A-series sheet number".into()))?;
-            let center = if view.parameters.kind == os_model::ViewKind::Section {
+            let center = if view.parameters.kind != os_model::ViewKind::Plan {
                 let crop = context
                     .crop
                     .ok_or_else(|| Error::Invalid("section view has no drawing bounds".into()))?;
@@ -1807,21 +1835,9 @@ impl DesktopApp {
             "this preview supports one schedule table per sheet",
         )?;
         os_core::ensure(
-            (1..=2).contains(&parameters.viewports.len()),
-            "this sheet supports one Plan plus at most one Section",
+            (1..=64).contains(&parameters.viewports.len()),
+            "sheet requires one to 64 viewports",
         )?;
-        if parameters.viewports.len() == 2 {
-            let kinds: Vec<_> = parameters
-                .viewports
-                .iter()
-                .map(|v| model.views[&v.view].parameters.kind)
-                .collect();
-            os_core::ensure(
-                kinds.contains(&os_model::ViewKind::Plan)
-                    && kinds.contains(&os_model::ViewKind::Section),
-                "combined sheet requires one Plan and one Section",
-            )?;
-        }
         let mut views = Vec::new();
         for viewport in &parameters.viewports {
             let context = self.editor.native_view_context(viewport.view)?;
@@ -1848,7 +1864,7 @@ impl DesktopApp {
                 .is_some_and(|view| view.parameters.kind == os_model::ViewKind::Plan);
             #[cfg(feature = "external-plugins")]
             let drawing = {
-                if is_plan {
+                if is_plan && self.plans.active == Some(viewport.view) {
                     os_core::ensure(
                         self.plans.providers.current(&self.editor, viewport.view),
                         "plan providers changed; wait for current graphics",
@@ -1918,6 +1934,7 @@ impl DesktopApp {
         Ok(page)
     }
 
+    #[cfg(test)]
     fn place_sheet_schedule(&mut self, sheet: Id, schedule: Option<Id>) {
         let result = (|| {
             let mut parameters = self
@@ -1969,10 +1986,12 @@ impl DesktopApp {
         self.report(result, "Sheet table placement updated.");
     }
 
+    #[cfg(test)]
     fn apply_sheet_layout(&mut self, id: Id, scale_denominator: f64, center_mm: Point2) {
         self.apply_sheet_viewport_layout(id, 0, scale_denominator, center_mm);
     }
 
+    #[cfg(test)]
     fn apply_sheet_viewport_layout(
         &mut self,
         id: Id,
@@ -2005,6 +2024,7 @@ impl DesktopApp {
         self.report(result, "Sheet viewport layout updated.");
     }
 
+    #[cfg(test)]
     fn add_sheet_section(&mut self, sheet: Id, section: Id) {
         let result = (|| {
             let model = self.editor.document.model();
@@ -2073,6 +2093,14 @@ impl DesktopApp {
     fn prepare_sheet_pdf(&mut self, page: &SheetPage) {
         let result = (|| {
             os_core::ensure(
+                !self
+                    .plans
+                    .sheet_draft
+                    .as_ref()
+                    .is_some_and(sheet_layout::Draft::dirty),
+                "Apply or reset the layout draft before export",
+            )?;
+            os_core::ensure(
                 self.sheet_page()? == *page,
                 "sheet preview changed; prepare current graphics",
             )?;
@@ -2085,6 +2113,7 @@ impl DesktopApp {
                 bytes,
                 session: self.editor.document.session_id(),
                 revision: self.editor.document.revision(),
+                provider_signature: plan_provider_signature(&self.editor),
             })
         })();
         match result {
@@ -2098,6 +2127,12 @@ impl DesktopApp {
             return;
         };
         if pending.session != self.editor.document.session_id()
+            || pending.provider_signature != plan_provider_signature(&self.editor)
+            || self
+                .plans
+                .sheet_draft
+                .as_ref()
+                .is_some_and(sheet_layout::Draft::dirty)
             || pending.revision != self.editor.document.revision()
             || pending.sheet != self.plans.active_sheet
             || !self
@@ -2154,204 +2189,10 @@ impl DesktopApp {
         }
     }
 
-    fn sheet_workspace(&mut self, ui: &mut egui::Ui) {
-        let Some(id) = self.plans.active_sheet else {
-            return;
-        };
-        let sheet = self.editor.document.model().sheets.get(&id).cloned();
-        let Some(sheet) = sheet else {
-            self.plans.active_sheet = None;
-            return;
-        };
-        ui.horizontal_wrapped(|ui| {
-            ui.label(format!(
-                "{} - {}",
-                sheet.parameters.number, sheet.parameters.name
-            ));
-        });
-        for (index, viewport) in sheet.parameters.viewports.iter().enumerate() {
-            ui.push_id(viewport.id.to_string(), |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    let source_kind = self
-                        .editor
-                        .document
-                        .model()
-                        .views
-                        .get(&viewport.view)
-                        .map(|view| view.parameters.kind);
-                    if ui
-                        .button(if source_kind == Some(os_model::ViewKind::Section) {
-                            "Edit source section"
-                        } else {
-                            "Edit source plan"
-                        })
-                        .clicked()
-                    {
-                        self.focus_plan(Some(viewport.view));
-                        self.plans.active_sheet = None;
-                    }
-                    let (mut scale, mut center) = self
-                        .plans
-                        .sheet_layout_drafts
-                        .get(&viewport.id)
-                        .copied()
-                        .unwrap_or((viewport.scale_denominator, viewport.paper_center_mm));
-                    ui.label("Scale 1:");
-                    ui.add(
-                        egui::DragValue::new(&mut scale)
-                            .range(0.001..=1_000_000.0)
-                            .speed(1.0)
-                            .max_decimals(3),
-                    );
-                    ui.label("Center mm X/Y:");
-                    ui.add(
-                        egui::DragValue::new(&mut center.x)
-                            .speed(0.5)
-                            .max_decimals(1),
-                    );
-                    ui.add(
-                        egui::DragValue::new(&mut center.y)
-                            .speed(0.5)
-                            .max_decimals(1),
-                    );
-                    self.plans
-                        .sheet_layout_drafts
-                        .insert(viewport.id, (scale, center));
-                    if ui.button("Apply layout").clicked() {
-                        if index == 0 {
-                            self.apply_sheet_layout(id, scale, center);
-                        } else {
-                            self.apply_sheet_viewport_layout(id, index, scale, center);
-                        }
-                    }
-                    if ui.button("Reset layout draft").clicked() {
-                        self.plans.sheet_layout_drafts.remove(&viewport.id);
-                    }
-                })
-            });
-        }
-        if sheet.parameters.viewports.len() == 1
-            && sheet.parameters.viewports.first().is_some_and(|v| {
-                self.editor.document.model().views[&v.view].parameters.kind
-                    == os_model::ViewKind::Plan
-            })
-        {
-            ui.horizontal_wrapped(|ui| {
-                let sections: Vec<_> = self
-                    .editor
-                    .document
-                    .model()
-                    .views
-                    .values()
-                    .filter(|v| {
-                        v.parameters.kind == os_model::ViewKind::Section
-                            && v.parameters.validate_edit().is_ok()
-                    })
-                    .map(|v| (v.id(), v.parameters.name.clone()))
-                    .collect();
-                if !sections
-                    .iter()
-                    .any(|(id, _)| Some(*id) == self.plans.sheet_section)
-                {
-                    self.plans.sheet_section = sections.first().map(|(id, _)| *id);
-                }
-                egui::ComboBox::from_id_salt("sheet_section_picker")
-                    .selected_text(
-                        sections
-                            .iter()
-                            .find(|(id, _)| Some(*id) == self.plans.sheet_section)
-                            .map(|(_, name)| name.as_str())
-                            .unwrap_or("Create a Section first"),
-                    )
-                    .show_ui(ui, |ui| {
-                        for (id, name) in &sections {
-                            ui.selectable_value(&mut self.plans.sheet_section, Some(*id), name);
-                        }
-                    });
-                if ui
-                    .add_enabled(
-                        self.plans.sheet_section.is_some(),
-                        egui::Button::new("Add linked Section"),
-                    )
-                    .clicked()
-                    && let Some(section) = self.plans.sheet_section
-                {
-                    self.add_sheet_section(id, section);
-                }
-            });
-        }
-        ui.horizontal_wrapped(|ui| {
-            ui.label("PDF path");
-            ui.add(
-                egui::TextEdit::singleline(&mut self.plans.pdf_path)
-                    .desired_width(220.0)
-                    .char_limit(1024),
-            );
-        });
-        ui.horizontal_wrapped(|ui| {
-            if sheet.parameters.schedule_placements.is_empty() {
-                let schedules = &self.editor.document.model().schedules;
-                if self
-                    .plans
-                    .sheet_schedule
-                    .is_none_or(|id| !schedules.contains_key(&id))
-                {
-                    self.plans.sheet_schedule = schedules.keys().next().copied();
-                }
-                egui::ComboBox::from_id_salt("sheet_schedule_picker")
-                    .selected_text(
-                        self.plans
-                            .sheet_schedule
-                            .and_then(|id| schedules.get(&id))
-                            .map(|s| s.parameters.name.as_str())
-                            .unwrap_or("Create a saved schedule in View"),
-                    )
-                    .show_ui(ui, |ui| {
-                        for schedule in schedules.values() {
-                            ui.selectable_value(
-                                &mut self.plans.sheet_schedule,
-                                Some(schedule.id()),
-                                &schedule.parameters.name,
-                            );
-                        }
-                    });
-                if ui
-                    .add_enabled(
-                        self.plans.sheet_schedule.is_some(),
-                        egui::Button::new("Add saved schedule to sheet"),
-                    )
-                    .clicked()
-                {
-                    self.place_sheet_schedule(id, self.plans.sheet_schedule);
-                }
-            } else if ui.button("Remove schedule table").clicked() {
-                self.place_sheet_schedule(id, None);
-            }
-        });
-        ui.label(if sheet.parameters.viewports.len() == 2 { "Combined Plan/Section: schedule placement is unavailable. Each viewport has its own scale and center." } else { "Table layout: view 384 × 124 mm at (210,80); table 384 × 84 mm at top-left (18,154). One page; all rows must fit. Undo restores the prior layout." });
-        let page = self.sheet_page();
-        if let Err(error) = &page {
-            ui.colored_label(theme::ERROR, error.to_string());
-        }
-        if ui
-            .add_enabled(page.is_ok(), egui::Button::new("Export vector PDF"))
-            .clicked()
-            && let Ok(page) = &page
-        {
-            self.prepare_sheet_pdf(page);
-        }
-        let (response, painter) = ui.allocate_painter(ui.available_size(), egui::Sense::hover());
-        painter.rect_filled(response.rect, 0.0, theme::CANVAS);
-        if let Ok(page) = page
-            && let Err(error) = paint_sheet_page(&painter, response.rect, &page)
-        {
-            ui.colored_label(theme::ERROR, error.to_string());
-        }
-    }
-
     pub(super) fn cancel_plan_wall(&mut self) {
         self.plans.curtain_draft = None;
         self.plans.wall_set_move = None;
+        self.plans.wall_level_copy = None;
         self.plans.opening_array = None;
         self.plans.transform = None;
         self.plans.roof_draft = None;
@@ -2363,10 +2204,6 @@ impl DesktopApp {
         self.plans.endpoint_drag = None;
         self.plans.junction_drag = None;
         self.wall_gesture = None;
-    }
-
-    pub(super) fn begin_aligned_dimension(&mut self, view: Id) {
-        self.begin_dimension(view, os_model::DimensionLayout::Aligned);
     }
 
     pub(super) fn begin_dimension(&mut self, view: Id, layout: os_model::DimensionLayout) {
@@ -2385,6 +2222,12 @@ impl DesktopApp {
                 self.plans.floor_hole_sketch = None;
                 self.plans.room_placement_active = false;
                 self.plans.dimension_draft = Some(DimensionDraft {
+                    displayed_drawing_identity: self
+                        .dimension_repair_drawing()
+                        .map(PlanDrawing::identity),
+                    session: self.editor.document.session_id(),
+                    revision: self.editor.document.revision(),
+                    wall_activation: self.editor.host.activation_id(os_walls::PLUGIN_ID),
                     repair: None,
                     layout,
                     additional: Vec::new(),
@@ -2396,6 +2239,13 @@ impl DesktopApp {
                     second: None,
                 });
                 let guidance = match layout {
+                    os_model::DimensionLayout::ElevationHorizontal
+                    | os_model::DimensionLayout::ElevationVertical => {
+                        "Use the elevation dimension tools"
+                    }
+                    os_model::DimensionLayout::ArcLength => {
+                        "Arc length · choose a circular wall, then place the offset arc. Backspace chooses another wall; Escape cancels."
+                    }
                     os_model::DimensionLayout::Aligned => {
                         "Aligned dimension · select two wall endpoints or opening jambs, then place the line offset. Escape cancels."
                     }
@@ -2421,6 +2271,14 @@ impl DesktopApp {
     }
 
     pub(super) fn begin_dimension_repair(&mut self, anchor: usize) {
+        if self
+            .selected
+            .and_then(|id| self.editor.document.model().dimensions.get(&id))
+            .is_some_and(|d| d.parameters.layout.is_elevation())
+        {
+            self.begin_elevation_dimension_repair(anchor);
+            return;
+        }
         let result = (|| {
             let id = self
                 .selected
@@ -2463,6 +2321,10 @@ impl DesktopApp {
             self.plans.opening_flip = None;
             self.plans.opening_rehost = None;
             self.plans.dimension_draft = Some(DimensionDraft {
+                displayed_drawing_identity: Some(displayed_drawing),
+                session: self.editor.document.session_id(),
+                revision: self.editor.document.revision(),
+                wall_activation: self.editor.host.activation_id(os_walls::PLUGIN_ID),
                 layout: original.layout,
                 repair: Some(DimensionRepair {
                     id,
@@ -2553,6 +2415,22 @@ impl DesktopApp {
             .dimension_anchor_at(drawing, context, camera, rect, pointer)?
             .reference;
         let mut parameters = repair.original.clone();
+        if draft.layout == os_model::DimensionLayout::ArcLength {
+            os_core::ensure(
+                parameters.first.entity() != reference.entity(),
+                "Choose a different curve",
+            )?;
+            parameters.first = DimensionReference::WallEndpoint {
+                wall: reference.entity(),
+                endpoint: DimensionEndpoint::Start,
+            };
+            parameters.second = DimensionReference::WallEndpoint {
+                wall: reference.entity(),
+                endpoint: DimensionEndpoint::End,
+            };
+            parameters.validate_creation(self.editor.document.model())?;
+            return Ok((repair.id, parameters));
+        }
         let target = match repair.anchor {
             0 => &mut parameters.first,
             1 => &mut parameters.second,
@@ -2836,6 +2714,8 @@ impl DesktopApp {
                     session: self.editor.document.session_id(),
                     revision: self.editor.document.revision(),
                     provider_signature: plan_provider_signature(&self.editor),
+                    name: format!("Floor {}", self.editor.document.model().floors.len() + 1),
+                    material: None,
                     points: Vec::new(),
                     thickness: "0.2".into(),
                     top_offset: "0".into(),
@@ -2843,6 +2723,88 @@ impl DesktopApp {
                 self.plans.floor_hole_sketch = None;
                 self.status = "Floor boundary · click vertices, then Finish floor or close to the first point. Escape cancels.".into();
                 self.status_error = false;
+            }
+            Err(error) => self.report(Err(error), ""),
+        }
+    }
+
+    pub(crate) fn begin_floor_from_selected_room(&mut self, view: Id) {
+        let result = (|| {
+            os_core::ensure(
+                self.plans.active == Some(view) && self.plans.active_sheet.is_none(),
+                "Open the room's active plan first",
+            )?;
+            let room_id = self
+                .selected
+                .ok_or_else(|| Error::Invalid("Select a resolved room first".into()))?;
+            let model = self.editor.document.model();
+            let room = model
+                .rooms
+                .get(&room_id)
+                .ok_or_else(|| Error::Invalid("Selected element is not a room".into()))?;
+            let context = self.editor.native_plan_context(view)?;
+            let level = model.views[&view]
+                .parameters
+                .level
+                .ok_or_else(|| Error::Invalid("Floor needs an associated level".into()))?;
+            os_core::ensure(
+                room.parameters.level == level,
+                "Selected room belongs to a different level",
+            )?;
+            let graphic = self
+                .plans
+                .drawing
+                .as_ref()
+                .ok_or_else(|| Error::Invalid("Wait for the plan drawing to finish".into()))?
+                .rooms(context)?
+                .iter()
+                .find(|graphic| graphic.entity == room_id)
+                .ok_or_else(|| {
+                    Error::Invalid("Selected room is not visible in this plan".into())
+                })?;
+            os_core::ensure(
+                graphic.diagnostic.is_none() && graphic.boundary.len() >= 3,
+                graphic
+                    .diagnostic
+                    .clone()
+                    .unwrap_or_else(|| "Selected room has no resolved boundary".into()),
+            )?;
+            let boundary = graphic
+                .boundary
+                .iter()
+                .map(|point| context.basis.plane_to_world(*point))
+                .collect::<Result<Vec<_>>>()?;
+            let parameters = os_model::FloorParams {
+                name: format!("Floor · {}", room.parameters.name),
+                level,
+                material: room.parameters.floor_material,
+                boundary: boundary.clone(),
+                holes: Vec::new(),
+                thickness: 0.2,
+                top_offset: 0.0,
+            };
+            parameters.validate()?;
+            let elevation = model.levels[&level].parameters.elevation;
+            os_geometry::floors::extrude_floor(
+                &parameters.boundary,
+                elevation + parameters.top_offset,
+                parameters.thickness,
+            )?;
+            Ok((boundary, parameters.name, parameters.material))
+        })();
+
+        match result {
+            Ok((boundary, name, material)) => {
+                self.begin_floor_sketch(view);
+                if let Some(draft) = self.plans.floor_sketch.as_mut() {
+                    draft.points = boundary;
+                    draft.name = name;
+                    draft.material = material;
+                    self.report(
+                        Ok(()),
+                        "Room boundary copied into a floor draft. Review it, then finish the floor.",
+                    );
+                }
             }
             Err(error) => self.report(Err(error), ""),
         }
@@ -2990,9 +2952,9 @@ impl DesktopApp {
                 .level
                 .ok_or_else(|| Error::Invalid("floor needs a plan level".into()))?;
             let parameters = os_model::FloorParams {
-                name: format!("Floor {}", self.editor.document.model().floors.len() + 1),
+                name: draft.name.trim().to_owned(),
                 level,
-                material: None,
+                material: draft.material,
                 boundary: draft.points.clone(),
                 holes: Vec::new(),
                 thickness: draft.thickness.trim().parse().map_err(|_| {
@@ -3132,7 +3094,8 @@ impl DesktopApp {
             .ok_or_else(|| Error::Invalid("aligned dimension tool is not active".into()))?;
         let context = draft.context;
         os_core::ensure(
-            self.plans.active == Some(context.view_id)
+            self.dimension_current(draft)
+                && self.plans.active == Some(context.view_id)
                 && self.editor.native_plan_context(context.view_id)? == context
                 && draft.provider_signature == plan_provider_signature(&self.editor)
                 && self.plans.drawing.as_ref().is_some_and(|drawing| {
@@ -3147,6 +3110,17 @@ impl DesktopApp {
             .first
             .as_ref()
             .ok_or_else(|| Error::Invalid("first dimension endpoint is missing".into()))?;
+        if draft.layout == os_model::DimensionLayout::ArcLength {
+            let parameters =
+                Self::arc_length_parameters(draft, self.editor.document.model(), placement)?;
+            let dimension = os_model::Dimension::new("core.dimension", parameters);
+            let id = dimension.id();
+            self.editor
+                .command("Add arc length dimension", Command::AddDimension(dimension))?;
+            self.cancel_aligned_dimension();
+            self.select(Some(id));
+            return Ok(id);
+        }
         let second = draft
             .second
             .as_ref()
@@ -3235,6 +3209,14 @@ impl DesktopApp {
         rect: egui::Rect,
         pointer: egui::Pos2,
     ) -> Result<DimensionAnchorDraft> {
+        if self
+            .plans
+            .dimension_draft
+            .as_ref()
+            .is_some_and(|d| d.layout == os_model::DimensionLayout::ArcLength)
+        {
+            return self.arc_length_anchor_at(drawing, context, camera, rect, pointer);
+        }
         let view = self
             .editor
             .document
@@ -3489,19 +3471,19 @@ impl DesktopApp {
             self.plans.opening_spacing_claimed = false;
         }
         if self.plans.dimension_draft.as_ref().is_some_and(|d| {
-            d.repair.is_some()
-                && (!self.dimension_repair_current(d)
-                    || ctx.input(|i| {
-                        i.key_pressed(egui::Key::Escape)
-                            || i.events
-                                .iter()
-                                .any(|e| matches!(e, egui::Event::PointerGone))
-                    }))
+            !self.dimension_current(d)
+                || ctx.input(|i| {
+                    i.key_pressed(egui::Key::Escape)
+                        || i.events
+                            .iter()
+                            .any(|e| matches!(e, egui::Event::PointerGone))
+                })
         }) {
             self.cancel_aligned_dimension();
         }
         if !ctx.input(|i| i.pointer.primary_down()) {
             self.plans.dimension_repair_claimed = false;
+            self.plans.dimension_pointer_claimed = false;
         }
         self.validate_opening_array(ctx);
         if !ctx.input(|i| i.pointer.primary_down()) {
@@ -3790,6 +3772,8 @@ impl DesktopApp {
             self.plans.active_sheet = None;
         }
         if self.plans.active != id {
+            self.plans.facade = None;
+            self.plans.elevation = elevations::State::default();
             self.plans.area_selection.cancel();
             self.plans.overlap_selection.cancel();
             self.cancel_plan_wall();
@@ -3868,6 +3852,8 @@ impl DesktopApp {
         }
     }
     pub(super) fn plan_workspace(&mut self, ctx: &egui::Context) {
+        self.validate_elevation_interaction(ctx);
+        self.validate_facade(ctx);
         self.opening_type_assignment_dialog(ctx);
         self.opening_batch_edit_dialog(ctx);
         self.opening_array_dialog(ctx);
@@ -3905,7 +3891,7 @@ impl DesktopApp {
                         .filter(|v| {
                             matches!(
                                 v.parameters.kind,
-                                os_model::ViewKind::Plan | os_model::ViewKind::Section
+                                os_model::ViewKind::Plan | os_model::ViewKind::Section | os_model::ViewKind::Elevation | os_model::ViewKind::Facade
                             )
                         })
                         .map(|v| {
@@ -3914,6 +3900,8 @@ impl DesktopApp {
                                 os_model::ViewKind::Section => {
                                     format!("Section · {}", v.parameters.name)
                                 }
+                                os_model::ViewKind::Elevation => format!("Elevation · {}", v.parameters.name),
+                                os_model::ViewKind::Facade => format!("Facade · {}", v.parameters.name),
                                 os_model::ViewKind::Perspective => unreachable!(),
                             };
                             (v.id(), name)
@@ -3937,6 +3925,13 @@ impl DesktopApp {
                                 }
                             }
                             ui.separator();
+                            let can_place_facade = self.plans.active
+                                .and_then(|id| self.editor.document.model().views.get(&id))
+                                .is_some_and(|view| view.parameters.kind == os_model::ViewKind::Plan);
+                            if ui.add_enabled(can_place_facade, egui::Button::new("Place facade")).clicked() {
+                                ui.close();
+                                self.begin_facade();
+                            }
                             if ui
                                 .button("New reflected ceiling plan")
                                 .on_hover_text(
@@ -4029,7 +4024,7 @@ impl DesktopApp {
                             .add_enabled(
                                 self.plans.active.and_then(|id| self.editor.document.model().views.get(&id))
                                     .is_some_and(|view| matches!(view.parameters.kind,
-                                        os_model::ViewKind::Plan | os_model::ViewKind::Section)
+                                        os_model::ViewKind::Plan | os_model::ViewKind::Section | os_model::ViewKind::Elevation | os_model::ViewKind::Facade)
                                         && view.parameters.validate_edit().is_ok()),
                                 egui::Button::new("New sheet from view"),
                             )
@@ -4124,6 +4119,9 @@ impl DesktopApp {
                     if !self.selected_ids.is_empty() && ui.button("Copy walls").on_hover_text("Copy 1–64 native straight walls on this level, with all hosted openings, internal joins and this plan's opening tags. Choose base point then destination. No dimensions or rooms are copied.").clicked() {
                         self.begin_wall_set_copy();
                     }
+                    if !self.selected_ids.is_empty() && ui.button("Copy to level…").on_hover_text("Copy the selected wall assembly, with hosted doors and windows, to another floor plan at the same XY.").clicked() {
+                        self.begin_wall_level_copy();
+                    }
                     if let Some(draft) = &mut self.plans.wall_set_move {
                         if let Some(summary) = draft.dependency_summary() { ui.label(summary); }
                         ui.label("Distance (m)");
@@ -4189,6 +4187,8 @@ impl DesktopApp {
                         }
                     } else if let Some(draft) = self.plans.floor_sketch.as_mut() {
                         ui.label(format!("Floor boundary · {} vertices · metres", draft.points.len()));
+                        ui.label("Name");
+                        ui.add(egui::TextEdit::singleline(&mut draft.name).desired_width(100.0).char_limit(256));
                         ui.label("Thickness");
                         ui.add(egui::TextEdit::singleline(&mut draft.thickness).desired_width(56.0).char_limit(32));
                         ui.label("Top offset");
@@ -4293,10 +4293,41 @@ impl DesktopApp {
                         if ui.add_enabled(self.plans.active.is_some(),egui::Button::new("Draw arc wall")).on_hover_text("Click start, a point on the curve, then end. Edit radius, center and sweep in Properties.").clicked() && let Some(view)=self.plans.active { self.begin_plan_arc(view); }
                         if let (Some(view),Some(id))=(self.plans.active,self.selected)
                             && self.editor.document.model().walls.contains_key(&id) {
+                            ui.menu_button("Wall elevation", |ui| {
+                                for (label, side) in [("View left side", os_model::ElevationSide::Left), ("View right side", os_model::ElevationSide::Right)] {
+                                    if ui.button(label).clicked() {
+                                        self.open_wall_elevation(id, side);
+                                        ui.close();
+                                    }
+                                }
+                            });
                             for (label,mode) in [("Move wall",WallEdit::Move),("Resize start",WallEdit::ResizeStart),("Resize end",WallEdit::ResizeEnd),("Trim/Extend start",WallEdit::TrimStart),("Trim/Extend end",WallEdit::TrimEnd),("Offset wall",WallEdit::OffsetCopy)] {
                                 if ui.button(label).clicked() {
                                     self.begin_plan_wall_edit(view,id,mode);
                                 }
+                            }
+                        }
+                        if let Some(view) = self.plans.active {
+                            let room_matches_view = self
+                                .selected
+                                .and_then(|id| self.editor.document.model().rooms.get(&id))
+                                .is_some_and(|room| {
+                                    self.editor
+                                        .document
+                                        .model()
+                                        .views
+                                        .get(&view)
+                                        .is_some_and(|view| {
+                                            view.parameters.level == Some(room.parameters.level)
+                                        })
+                                });
+                            if room_matches_view
+                                && ui
+                                    .small_button("Floor from room")
+                                    .on_hover_text("Copy the selected resolved room outline and floor material into an editable floor draft. The floor is an independent snapshot.")
+                                    .clicked()
+                            {
+                                self.begin_floor_from_selected_room(view);
                             }
                         }
                         }
@@ -4335,6 +4366,10 @@ impl DesktopApp {
                             }
                         });
                     }
+                    } else if self.active_elevation().is_some() {
+                        self.elevation_toolbar(ui);
+                    } else if self.active_facade().is_some() {
+                        ui.label("World-oriented facade · straight walls/openings, slabs and single-plane roofs.");
                     } else {
                         ui.label("Section view · native wall and slab cut contours · drag to pan, scroll to zoom, click a source to select.");
                     }
@@ -4359,7 +4394,9 @@ impl DesktopApp {
                             .is_some_and(|view| view.parameters.kind == os_model::ViewKind::Plan)
                     });
                     self.plans.providers.poll(&mut self.editor, provider_view);
+                    self.plans.sheet_sources.poll_providers(&mut self.editor);
                 }
+                if self.plans.facade.is_some() || self.active_facade().is_some() { self.facade_toolbar(ui); }
                 if self.plans.active_sheet.is_some() {
                     self.sheet_workspace(ui);
                 } else if self.plans.active.is_some() {
@@ -4394,7 +4431,33 @@ impl DesktopApp {
     }
 
     fn plan_canvas(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        if self.plans.facade_pointer_claimed && self.plans.facade.is_none() {
+            return;
+        }
+        if self.plans.facade.is_some() && self.active_facade().is_none() {
+            self.facade_plan_canvas(ui, ctx);
+            return;
+        }
+        if self.active_elevation().is_some() || self.active_facade().is_some() {
+            self.elevation_canvas(ui, ctx);
+            return;
+        }
         self.validate_curtain(ctx);
+        let dimension_active = self.plans.dimension_draft.is_some();
+        if dimension_active && ctx.input(|i| i.pointer.primary_down()) {
+            self.plans.dimension_pointer_claimed = true;
+        }
+        let stale_dimension_input = self.plans.dimension_draft.as_ref().is_some_and(|d| {
+            !self.dimension_current(d)
+                || ctx.input(|i| {
+                    i.events
+                        .iter()
+                        .any(|e| matches!(e, egui::Event::PointerGone))
+                })
+        });
+        if stale_dimension_input {
+            self.cancel_aligned_dimension();
+        }
         let repair_active = self
             .plans
             .dimension_draft
@@ -4429,8 +4492,9 @@ impl DesktopApp {
         let array_input = self.plans.opening_array.is_some() || self.plans.opening_array_claimed;
         self.validate_wall_transform(ctx);
         self.validate_wall_set_move(ctx);
-        let wall_set_move_input =
-            self.plans.wall_set_move.is_some() || self.plans.wall_set_move_claimed;
+        let wall_set_move_input = self.plans.wall_set_move.is_some()
+            || self.plans.wall_set_move_claimed
+            || self.plans.wall_level_copy.is_some();
         let transform_input =
             self.plans.transform.is_some() || self.plans.transform_claimed || wall_set_move_input;
         if transform_input {
@@ -4633,7 +4697,9 @@ impl DesktopApp {
         if stale_separator {
             self.plans.room_separation_line_draft = None;
         }
-        let cancelled = stale_repair
+        let cancelled = stale_dimension_input
+            || (self.plans.dimension_pointer_claimed && !dimension_active)
+            || stale_repair
             || (self.plans.dimension_repair_claimed && !repair_active)
             || transform_input
             || stale_rehost
@@ -4713,7 +4779,10 @@ impl DesktopApp {
             && draft.repair.is_none()
         {
             draft.placing = false;
-            if draft.additional.pop().is_none() && draft.second.take().is_none() {
+            if draft.layout == os_model::DimensionLayout::ArcLength {
+                draft.first = None;
+                draft.second = None;
+            } else if draft.additional.pop().is_none() && draft.second.take().is_none() {
                 draft.first = None;
             }
         }
@@ -4934,6 +5003,13 @@ impl DesktopApp {
         let size = [f64::from(rect.width()), f64::from(rect.height())];
         if fit && !self.plans.crop.claimed {
             let mut dimension_fit_points = Vec::new();
+            for arc in drawing.arc_length_dimensions(context).unwrap_or_default() {
+                if let Ok(segments) = arc.segments(context) {
+                    for (a, b) in segments {
+                        dimension_fit_points.extend([a, b]);
+                    }
+                }
+            }
             for angle in angular_dimensions {
                 if let Ok(segments) = angle.segments(context) {
                     for (a, b) in segments {
@@ -5794,6 +5870,7 @@ impl DesktopApp {
             (items, provider_lines)
         };
         if response.dragged()
+            && !self.plans.dimension_pointer_claimed
             && self.wall_gesture.is_none()
             && !self.plans.area_selection.claimed
             && !opening_move_input
@@ -5830,6 +5907,16 @@ impl DesktopApp {
             );
         }
         painter.rect_filled(rect, 0.0, theme::CANVAS);
+        match section_fills::mesh(drawing, context, *camera, rect) {
+            Ok(mesh) if !mesh.is_empty() => {
+                painter.add(egui::Shape::mesh(mesh));
+            }
+            Ok(_) => {}
+            Err(error) => {
+                ui.colored_label(theme::ERROR, error.to_string());
+                return;
+            }
+        }
         if self.selected_ids.len() > 1 {
             painter.text(
                 rect.left_top() + egui::vec2(8.0, 8.0),
@@ -6223,6 +6310,16 @@ impl DesktopApp {
                 ui.colored_label(theme::ERROR, error.to_string());
             }
         }
+        for graphic in drawing.arc_length_dimensions(context).unwrap_or_default() {
+            let _ = arc_dimensions::paint(
+                &painter,
+                context,
+                *camera,
+                rect,
+                graphic,
+                self.selected == Some(graphic.entity),
+            );
+        }
         if let Some(draft) = &self.plans.dimension_draft {
             let anchors: Vec<_> = draft
                 .first
@@ -6250,7 +6347,19 @@ impl DesktopApp {
                     f64::from(pointer.x - rect.left()),
                     f64::from(pointer.y - rect.top()),
                 );
-                if draft.layout == os_model::DimensionLayout::Angular {
+                if draft.layout == os_model::DimensionLayout::ArcLength {
+                    if let Ok(params) = camera.unproject(screen, size).and_then(|placement| {
+                        Self::arc_length_parameters(draft, self.editor.document.model(), placement)
+                    }) && let Ok(graphic) = crate::plan::arc_length_graphic(
+                        context,
+                        Id::new(),
+                        params.orphan_hint,
+                        params.resolve_arc_length(self.editor.document.model()),
+                    ) {
+                        let _ =
+                            arc_dimensions::paint(&painter, context, *camera, rect, &graphic, true);
+                    }
+                } else if draft.layout == os_model::DimensionLayout::Angular {
                     if let Ok(params) = camera.unproject(screen, size).and_then(|placement| {
                         Self::angular_parameters(draft, self.editor.document.model(), placement)
                     }) && let Ok(graphic) = crate::plan::angular_graphic(
@@ -6312,6 +6421,10 @@ impl DesktopApp {
             && rooms.is_empty()
             && dimensions.is_empty()
             && angular_dimensions.is_empty()
+            && drawing
+                .arc_length_dimensions(context)
+                .unwrap_or_default()
+                .is_empty()
             && drawing.opening_tags(context).is_ok_and(|tags| {
                 tags.iter()
                     .all(|tag| tag.bounds(context, *camera, size).ok().flatten().is_none())
@@ -6505,6 +6618,10 @@ impl DesktopApp {
             let screen = rect.min + egui::vec2(screen.x as f32, screen.y as f32);
             painter.circle_stroke(screen, 7.0, egui::Stroke::new(2.0, theme::ACCENT));
             let label = match anchor.reference {
+                DimensionReference::ElevationWall { feature, .. } => format!("Wall {feature:?}"),
+                DimensionReference::ElevationOpening { feature, .. } => {
+                    format!("Opening {feature:?}")
+                }
                 DimensionReference::WallFace {
                     side, station_m, ..
                 } => format!("Wall {side:?} face at {station_m:.3} m"),
@@ -6553,6 +6670,17 @@ impl DesktopApp {
                             egui::FontId::proportional(12.0),
                             theme::ACCENT,
                         );
+                    } else if parameters.layout == os_model::DimensionLayout::ArcLength {
+                        if let Ok(graphic) = crate::plan::arc_length_graphic(
+                            context,
+                            id,
+                            parameters.orphan_hint,
+                            parameters.resolve_arc_length(model),
+                        ) {
+                            let _ = arc_dimensions::paint(
+                                &painter, context, camera, rect, &graphic, true,
+                            );
+                        }
                     } else if parameters.layout == os_model::DimensionLayout::Angular {
                         if let Ok(graphic) = crate::plan::angular_graphic(
                             context,
@@ -7797,11 +7925,31 @@ impl DesktopApp {
                     let preview = if gesture.start.is_some()
                         && (!gesture.arc || gesture.arc_bulge.is_some())
                     {
-                        Some(gesture.parameters(point))
+                        Some(gesture.parameters(point).and_then(|parameters| {
+                            let opening_lines = if matches!(
+                                gesture.edit_mode(),
+                                Some(
+                                    crate::plan_gesture::WallEdit::ResizeStart
+                                        | crate::plan_gesture::WallEdit::ResizeEnd
+                                )
+                            ) {
+                                gesture.source_id().map_or(Ok(Vec::new()), |source| {
+                                    crate::opening_tools::endpoint_resize_preview(
+                                        self.editor.document.model(),
+                                        source,
+                                        &parameters,
+                                        context,
+                                    )
+                                })?
+                            } else {
+                                Vec::new()
+                            };
+                            Ok((parameters, opening_lines))
+                        }))
                     } else {
                         None
                     };
-                    if let Some(Ok(parameters)) = &preview {
+                    if let Some(Ok((parameters, opening_lines))) = &preview {
                         if let (Ok(a), Ok(b)) = (
                             context
                                 .basis
@@ -7835,6 +7983,16 @@ impl DesktopApp {
                                         points,
                                         egui::Stroke::new(2.0, theme::ACCENT),
                                     ));
+                                }
+                            }
+                            for line in opening_lines {
+                                if let (Ok(a), Ok(b)) = (project(line.start), project(line.end))
+                                    && a.distance(b) > 0.01
+                                {
+                                    painter.line_segment(
+                                        [a, b],
+                                        egui::Stroke::new(1.5_f32, theme::ACCENT),
+                                    );
                                 }
                             }
                             if let Some(distance) = gesture.offset_measurement(parameters) {
@@ -8197,7 +8355,28 @@ impl DesktopApp {
                 match self.dimension_anchor_at(drawing, context, camera, rect, pointer) {
                     Ok(anchor) => {
                         let draft = self.plans.dimension_draft.as_mut().unwrap();
-                        if let Some(second) = &draft.second {
+                        if draft.layout == os_model::DimensionLayout::ArcLength {
+                            let wall =
+                                &self.editor.document.model().walls[&anchor.reference.entity()];
+                            draft.first = Some(DimensionAnchorDraft {
+                                reference: DimensionReference::WallEndpoint {
+                                    wall: wall.id(),
+                                    endpoint: DimensionEndpoint::Start,
+                                },
+                                point: context
+                                    .basis
+                                    .world_to_plane(wall.parameters.start())
+                                    .unwrap(),
+                            });
+                            draft.second = Some(DimensionAnchorDraft {
+                                reference: DimensionReference::WallEndpoint {
+                                    wall: wall.id(),
+                                    endpoint: DimensionEndpoint::End,
+                                },
+                                point: context.basis.world_to_plane(wall.parameters.end()).unwrap(),
+                            });
+                            draft.placing = true;
+                        } else if let Some(second) = &draft.second {
                             let first = draft.first.as_ref().unwrap();
                             let mut additional: Vec<_> =
                                 draft.additional.iter().map(|a| a.reference).collect();

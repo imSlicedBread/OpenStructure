@@ -1,128 +1,116 @@
 # Native sheet preview and vector PDF
 
-Room Finish table cells share the live schedule text: assigned catalog name plus
-independent code (`Oak · F-01`), name alone, or an unassigned finish's code.
-Material renames reach preview and PDF; color edits leave text unchanged. The
-eight existing columns, placement limits and explicit fit checks are unchanged.
-Floor finish RGB fills belong to the active plan display; this slice does not
-qualify physical print output.
+## Coordinated A3 sheet
 
-Open a named Plan or configured Section view and choose **New sheet from view**.
-The app creates a persisted A3 landscape sheet (420 × 297 mm), assigns the next
-unused A-series number starting at A101, and places one viewport linked to the
-active view. Section viewports start centered on their authored section bounds;
-plan viewports start centered on the navigation camera. Choose the sheet in the
-picker to open paper preview. **Edit source plan/section** returns to model-space
-authoring.
+Open a named Plan, Section or straight-wall Elevation and choose **New sheet from
+view**. The persisted A3 landscape page is 420 × 297 mm; the next unused A-series
+number starts at A101. Its first viewport links to the active source. Plans start
+at the navigation camera center; Sections and Elevations use their source bounds.
 
-Plan viewports start centered on the current plan camera; Section viewports start
-centered on the section's authored bounds. The viewport uses the source context's
-scale (currently 1:100 for Sections). **Apply layout** commits a new viewport
-scale and paper-space center (millimetres) as one undoable edit. At 1:100, one
-source-view-plane metre maps to exactly 10 paper millimetres. Model center is
-persisted separately from the navigation camera. Changes to source geometry,
-Plan settings, or section definitions regenerate the checked 2D drawing before
-preview/export.
+**Add linked view** places an existing named Plan, Section or Elevation in the
+layout draft. Up to 64 viewports are supported. Adding never changes existing
+frames, source links, placement UUIDs, scales or titles. A new viewport starts at
+(210,120) mm with a 100 × 65 mm frame; overlaps are reported until the user moves
+or resizes frames. Duplicate placements of a source share its checked drawing.
 
-Preview and export consume the same paper-space marks generated from the checked
-`PlanDrawing`. Plan viewports can contain walls, grids, floors, rooms, room tags,
-dimensions, angular dimensions and provider lines. Section viewports contain
-native wall/opening/floor cut contours. Both use crop clipping, viewport clipping,
-a simple frame, and a basic title block. A stale drawing or unavailable source
-element blocks export rather than silently publishing partial geometry. Export
-asks for an explicit path and confirmation; existing files require explicit
-replacement consent. A same-directory temporary file is synced and atomically
-persisted, and export does not save the native project or alter its dirty state.
+Select a placement with the picker or on paper. Drag its frame to move it; drag
+the bottom-right square to resize it. Exact fields edit paper center, width and
+height in mm, source center in metres, scale denominator and title override.
+An empty title inherits the source name. Source centers use plan-plane coordinates
+for Plans and station/absolute elevation for Sections and Elevations. At 1:100,
+one source metre maps to exactly 10 paper mm; at 1:50 it maps to 20 mm.
 
-## Linked Plan and Section on one sheet
+**Apply layout** validates the entire draft and commits one UpdateSheet transaction.
+Undo/redo restores the complete arrangement. Until Apply, the model, history and
+3D scene are unchanged. **Reset layout draft** or Escape discards it. Document
+session/revision, sheet selection or provider activation changes invalidate a
+draft; source definition changes are document edits and also invalidate it.
+Navigation occurs only through the selected placement's **Edit source plan**,
+**Edit source section**, or **Edit source elevation** action, which discards any
+unapplied draft. Return using the sheet picker.
 
-On a Plan-only sheet, choose a configured Section and **Add linked Section**.
-This undoable edit retains both source links and creates two 184 × 220 mm
-viewports centered at (110,128) and (310,128). The Section starts centered on its
-authored bounds, with a scale large enough to fit those bounds. Each viewport
-has independent scale and paper-center controls. **Apply layout** commits that
-viewport's draft; **Reset layout draft** discards its uncommitted numeric edits.
-Overlapping viewports and placements crossing the frame/title block are rejected.
-Plan-only and Section-only sheets remain supported.
+New edits reject overlapping frames, invalid/missing sources, invalid scales,
+and crossings of the 8 mm border or bottom 48 mm title-block reservation.
+Historical single-viewport sheets retain their existing renderer/storage
+contract; opening an old sheet does not rewrite its layout or schema.
 
-**Edit source plan** and **Edit source section** open the corresponding linked
-view. Return through the sheet picker. Opening a combined sheet activates its
-Plan, preserving the checked asynchronous native/provider drawing path. One
-additional background worker caches the Section snapshot; it is bound to the
-document session/revision, source identity/settings and current sheet. Obsolete
-work drains before replacement and cannot publish after cancellation.
+## One live saved schedule
 
-Both preview and PDF consume one composed `SheetPage`, with independent clipping,
-one page frame/title block and two source titles/scales. Pending PDF confirmation
-is invalidated by a changed sheet, document or checked page. Combined sheets
-reject schedule placement atomically with an explanation. Remove an existing
-schedule before adding a Section. No schedule is silently omitted or overlapped.
+Choose a saved door/window or Room Finish schedule and **Add saved schedule to
+sheet**. The new table starts at (18,178)–(402,238) mm without rearranging any
+viewport. Move/resize its frame or edit its left/top/right/bottom bounds. **Remove
+placement** removes the selected viewport or table from the draft; Apply commits
+all placement changes together. At least one drawing viewport is required.
 
-Automated evidence: `sheet_tests::combined` exercises both display profiles,
-independent layout, history, source navigation, live wall edits, save/reopen and
-prepared PDF equality; `sheet_sources::tests` controls worker cancellation and
-checks revision/session rejection; `sheet::tests::two_drawings_have_independent_scales_clips_and_one_page_frame`
-checks exact 1:50/1:100 mapping, clipping and overlap/stale rejection. Independent
-native-window and external PDF-viewer/physical-print qualification remain open.
+Rows, columns, order and heading resolve from the current saved definition at
+each page build. Opening edits refresh the plan, linked elevations/section and
+table together after their checked drawings regenerate. Room Finish rows retain
+the existing live area, catalog-name/finish-code and unresolved-enclosure behavior;
+material renames reach both preview and PDF.
 
-## Saved schedule table (bounded slice)
+All rows and cells must fit. Height, column/heading width, unsupported WinAnsi
+text and output budgets fail explicitly; nothing is truncated or paginated.
+Text uses fixed 2.5 mm typography and conservative 1.05-em character advances.
+Reduce columns or shorten names in the schedule editor when necessary.
+Only one table is supported by this UI; legends and split tables remain open.
 
-In paper preview, choose a saved schedule and **Add saved schedule to sheet**.
-The visible layout description explains the combined layout before applying:
-viewport 384 × 124 mm centered at (210,80), table 384 × 84 mm with top-left at
-(18,154). One `UpdateSheet` changes layout and placement; Undo restores both.
-**Remove schedule table** removes the placement and retains the smaller viewport.
-Rows, columns, order and heading resolve from the current saved definition on
-each page build. Preview and vector PDF share the resulting searchable paper marks.
+## Checked graphics and export
 
-Saved Room Finish schedules use this same placement and output path. Their rows
-carry room identity and optional floor/wall/ceiling finish codes. Area derives
-from current room topology whenever the page is built, so moving a partition
-updates both plan area and table output. Unresolved enclosures keep identity and
-finish codes, leave Area blank, and show the Enclosure Status diagnostic when
-that column is included. No resolved areas or table rows are stored in the model.
-The existing eight-column, width, height and text limits also apply to room
-schedules; reducing selected columns remains available in the schedule editor.
+The paper preview and PDF consume the same composed SheetPage vectors, with an
+independent mapping, crop and clip for every viewport, source titles/scales and
+one page frame/title block. Geometry comes from current checked PlanDrawing
+snapshots. Sheets with three or more viewports reserve the bottom 7 mm of each
+frame for its clipped title/scale caption; model graphics clip above that footer,
+without changing the scale or model center. Captions that cannot fit the frame
+width fail explicitly. One/two-view title placement remains unchanged. Multi-view
+sheet names/numbers must also fit their reserved title-block cells.
+Geometry includes provider-owned plan graphics. Sources deduplicate by view
+and context, not placement count. The auxiliary cache uses one native derivation
+lane and one sequential bounded provider lane, not one worker per viewport;
+active model-view lanes remain separate. Obsolete workers drain before replacement
+and cannot publish. Missing/incomplete provider output blocks export, including
+for a Plan that is not the active model view; no native-only substitute is used.
 
-`room_finish_sheet_live_area_preview_pdf_and_explicit_overflow_at_both_dpis`
-in `crates/os-ui/src/plan_workspace/sheet_tests.rs` exercises placement, live
-partition edits, preview/vector-PDF text, unresolved blank/status output,
-save/reopen and overflow rejection at 1280×800/100% and 1000×650/150%.
+**Export vector PDF** is enabled only for a checked, applied layout. Choose a
+path and confirm export; existing destinations require explicit replacement.
+Pending confirmation is invalidated if the sheet/document/provider context or
+checked vectors change, or if a draft is edited. A synced same-directory temporary
+file is atomically persisted. Export does not save the project or alter its dirty
+state. Mark, point, text and PDF-byte budgets remain enforced.
 
-All rows/cells must fit. Height, column/heading width, unsupported WinAnsi text,
-page and output budgets fail explicitly; composition errors disable export.
-Text uses fixed 2.5 mm typography and a conservative 1.05-em advance per character;
-some text which could fit with exact font metrics may be rejected. Reduce saved
-columns or shorten names in the schedule editor. There is no automatic truncation.
-Prepared PDF confirmation is cancelled if the document session/revision changes.
+## Automated evidence and limits
 
-This slice has no numeric table layout editor, cancelable placement draft, free
-table movement, multiple-table UI, pagination or split tables. Add/Remove are
-immediate undoable actions. Headless egui tests cover the visible controls at
-both display profiles and exercise the same transactional placement path;
-independent native visual, viewer and physical print checks remain open.
+`sheet_layout::tests` exercises a plan, two differently scaled elevations,
+section and opening schedule at 1280×800/100% and 1000×650/150% through real egui
+frames: visible Add/Apply/source controls, frame move/resize, draft immutability,
+exact layout values, no automatic rearrangement, one-step history, save/reopen,
+live door-width refresh in every source and table, and identical prepared PDF
+bytes. It also covers Escape, stale drafts, bad scales/sources, overlap/border/
+table-fit rejection and draft export rejection. Exact numeric values are supplied
+to the draft in the harness; independent keyboard-entry usability qualification
+is still outstanding.
 
-This is an early workflow, not a complete sheet/print system. Current limits:
+`sheet_sources::tests` covers duplicate-source caching, obsolete-worker drainage,
+session/revision rejection and inactive-plan provider failure. Existing
+`sheet_tests` retain single/combined sheet, live schedule/filter, room finish,
+atomic writing and navigation regression coverage. Render tests verify exact
+mixed-scale mappings, clipping, deterministic multi-view output and bounds.
 
-- One fixed A3 landscape size and one PDF page, with one Plan, one Section, or
-  one of each. Other multi-viewport configurations fail explicitly.
-- No viewport rotation, independent viewport crop, custom title blocks, sheet
-  sets, revision/issue workflow, batch export, or native printing.
-- PDF uses vector paths and searchable standard Helvetica/WinAnsi text. Fonts are
-  not embedded; text outside WinAnsi is rejected. There is no independent PDF
-  viewer or physical plot-scale qualification yet.
-- Line weights and simple fills are emitted, but office styles, transparency,
-  hyperlinks, bookmarks, mixed page boxes, and production font substitution are
-  not supported.
+This is not a full production sheet/print system:
 
-The persisted sheet and viewport entities were introduced by schema 13→14; the
-schedule placement field is added by schema 16→17, both documented in [the
-native file format](file-format.md). Focused UI
-evidence is in `crates/os-ui/src/plan_workspace/sheet_tests.rs`; it covers
-1280×800 at 100%, 1000×650 at 150%, exact scale mapping, undo/redo, save/reopen,
-PDF page dimensions, output-state preservation, and no-clobber writing.
+- One fixed A3 landscape page; no rotation, independent crop editor, alignment
+  snapping/guide grids, custom title blocks, sheet sets, revisions or batch export.
+- Elevations still derive from one straight wall, not whole-building occlusion.
+- One schedule; no pagination, multiple-table UI, legends or automatic arrangement.
+- Standard Helvetica/WinAnsi searchable vector text; fonts are not embedded.
+  No independent native-window, external PDF-viewer or physical plot-scale
+  qualification is claimed.
+
+No model schema, storage format or plugin API change is required. Existing
+SheetParams and placement UUIDs are reused. Historical schema 13→14 sheets and
+16→17 schedule placements remain documented in [file format](file-format.md).
 
 ```powershell
-cargo test -p os-render sheet::tests
-cargo test -p os-ui --all-features sheet_tests
+cargo test -p os-render --lib sheet::tests
+cargo test -p os-ui --lib --all-features sheet_
 ```

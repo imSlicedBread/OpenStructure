@@ -23,6 +23,8 @@ pub(super) struct OpeningTypeDraft {
     pub(super) bindings: os_model::OpeningTypeLengthBindings,
     selected_vertex: usize,
     editing_cut: bool,
+    editing_extrusions: bool,
+    selected_extrusion: usize,
     editing_materials: bool,
     editing_lengths: bool,
     editing: bool,
@@ -46,10 +48,11 @@ impl OpeningTypeDraft {
         let window_operation = dimensions
             .as_ref()
             .map_or(os_model::WindowOperation::Fixed, |p| p.window_operation);
-        let family = dimensions
+        let mut family = dimensions
             .as_ref()
             .map(|p| p.family.clone())
             .unwrap_or_default();
+        family.remap_extrusion_ids();
         let (width, height, sill, name) = dimensions.map_or_else(
             || {
                 (
@@ -85,6 +88,8 @@ impl OpeningTypeDraft {
             bindings: Default::default(),
             selected_vertex: 0,
             editing_cut: false,
+            editing_extrusions: false,
+            selected_extrusion: 0,
             editing_materials: false,
             editing_lengths: false,
             editing: false,
@@ -121,6 +126,8 @@ impl OpeningTypeDraft {
                 .unwrap_or_default(),
             selected_vertex: 0,
             editing_cut: false,
+            editing_extrusions: false,
+            selected_extrusion: 0,
             editing_materials: false,
             editing_lengths: false,
             editing: true,
@@ -282,6 +289,7 @@ impl OpeningTypeDraft {
             return;
         }
         self.id = Id::new();
+        self.family.remap_extrusion_ids();
         self.editing = false;
         self.duplicate = true;
         self.source_opening = None;
@@ -293,6 +301,10 @@ impl OpeningTypeDraft {
 
 #[path = "opening_family_editor.rs"]
 mod family_editor;
+
+#[cfg(test)]
+#[path = "opening_extrusion_tests.rs"]
+mod extrusion_tests;
 
 #[cfg(test)]
 #[path = "opening_profile_tests.rs"]
@@ -451,7 +463,9 @@ impl DesktopApp {
                 })
                 .max_height((ctx.content_rect().height()-170.0).max(150.0))
                 .show(ui, |ui| {
-            if draft.editing_materials {
+            if draft.editing_extrusions {
+                draft.extrusion_editor(ui, &self.editor, self.plans.active);
+            } else if draft.editing_materials {
                 draft.material_editor(ui, &self.editor);
             } else if draft.editing_lengths {
                 ui.heading("Shared Length bindings");
@@ -559,10 +573,11 @@ impl DesktopApp {
             }
             ui.separator();
             ui.horizontal(|ui| {
-                if draft.editing_materials || draft.editing_lengths {
+                if draft.editing_materials || draft.editing_lengths || draft.editing_extrusions {
                     if ui.button("Back to profile").clicked() {
                         draft.editing_materials = false;
                         draft.editing_lengths = false;
+                        draft.editing_extrusions = false;
                     }
                 } else if ui.button("Materials…").clicked() {
                     draft.editing_materials = true;
@@ -570,6 +585,14 @@ impl DesktopApp {
                 if ui.button("Lengths…").clicked() {
                     draft.editing_lengths = true;
                     draft.editing_materials = false;
+                    draft.editing_extrusions = false;
+                }
+                if ui.button("Solids…").clicked() {
+                    draft.editing_extrusions = true;
+                    draft.editing_cut = false;
+                    draft.selected_vertex = 0;
+                    draft.editing_materials = false;
+                    draft.editing_lengths = false;
                 }
                 if ui.button("Cancel type").clicked() {
                     close = true;

@@ -177,6 +177,8 @@ fn mixed_plan_and_section_viewports_round_trip_with_independent_scales() {
     let section = View::new(
         "core.view",
         ViewParams {
+            facade: None,
+            elevation: None,
             name: "Building section".into(),
             kind: ViewKind::Section,
             level: Some(level),

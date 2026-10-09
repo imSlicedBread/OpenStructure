@@ -315,6 +315,8 @@ fn editor_section_snapshot_captures_same_building_curtains_only() {
             level: Some(level),
             settings_revision: 0,
             plan: None,
+            facade: None,
+            elevation: None,
             section: Some(SectionViewSettings::new(
                 Point2::new(1., -2.),
                 Point2::new(1., 2.),

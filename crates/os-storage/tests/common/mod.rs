@@ -19,6 +19,7 @@ pub fn remove_curtains(value: &mut Value) {
 
 #[allow(dead_code)]
 pub fn remove_railings(value: &mut Value) {
+    remove_extrusions(value);
     for key in ["railings", "railing_types"] {
         if let Some(removed) = value.as_object_mut().unwrap().remove(key) {
             assert_eq!(
@@ -30,6 +31,24 @@ pub fn remove_railings(value: &mut Value) {
     }
     remove_ramps(value);
     remove_casework(value);
+}
+
+#[allow(dead_code)]
+pub fn remove_extrusions(value: &mut Value) {
+    if let Some(types) = value
+        .get_mut("opening_types")
+        .and_then(Value::as_object_mut)
+    {
+        for ty in types.values_mut() {
+            let family = &mut ty["parameters"]["family"];
+            if let Some(extrusions) = family.as_object_mut().unwrap().remove("extrusions") {
+                assert_eq!(extrusions, serde_json::json!([]));
+            }
+            if family["version"] == 7 {
+                family["version"] = 6.into();
+            }
+        }
+    }
 }
 
 #[allow(dead_code)]
@@ -125,7 +144,8 @@ pub fn apply_wall_paths(value: &mut Value) {
         .and_then(Value::as_object_mut)
     {
         for ty in types.values_mut() {
-            ty["parameters"]["family"]["version"] = 6.into();
+            ty["parameters"]["family"]["version"] = 7.into();
+            ty["parameters"]["family"]["extrusions"] = serde_json::json!([]);
             ty["parameters"]["family"]["door_leaves"] = "Single".into();
         }
     }
@@ -357,6 +377,9 @@ pub fn reverse_schema_38_migration(model: &mut Value, original: &Value) {
             }
         }
     }
+    if original.get("opening_types").is_none() {
+        model.as_object_mut().unwrap().remove("opening_types");
+    }
 }
 
 #[allow(dead_code)]
@@ -434,7 +457,8 @@ pub fn apply_opening_visibility(value: &mut Value) {
         .and_then(Value::as_object_mut)
     {
         for ty in types.values_mut() {
-            ty["parameters"]["family"]["version"] = 6.into();
+            ty["parameters"]["family"]["version"] = 7.into();
+            ty["parameters"]["family"]["extrusions"] = serde_json::json!([]);
             ty["parameters"]["family"]["door_leaves"] = "Single".into();
             ty["parameters"]["family"]["side_lite"] = Value::Null;
         }

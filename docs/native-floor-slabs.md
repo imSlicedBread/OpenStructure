@@ -13,6 +13,15 @@ normal 3D view use the same committed floor identity. Undo/redo and save/reopen
 preserve it. Floors can also be created, updated, and removed through native
 document commands.
 
+Select a resolved room and choose **Floor from room** in the plan toolbar to
+copy its visible boundary and assigned floor material into the editable floor
+draft. Review the copied name, thickness, and top offset, then finish through
+the ordinary one-step floor commit. An
+unresolved, hidden, or wrong-level room is rejected without creating a floor.
+The slab stores an independent boundary snapshot: later room or wall edits do
+not move the slab automatically. Use
+floor vertex/property editing when the slab itself needs adjustment.
+
 Select a visible slab in plan to expose 6 px vertex handles. Drag a handle to
 reshape one boundary vertex; the selected floor is excluded from its own snap
 queries. The candidate boundary and fill are preview-only while dragging, and
@@ -82,6 +91,9 @@ Evidence:
 - `crates/os-ui/src/plan_workspace/floor_tests.rs`: egui interaction at
   1280×800 / 100% and 1000×650 / 150%, snap use, preview-only state, commit,
   split-scene mesh, undo/redo, Escape, stale context and invalid-boundary checks.
+  Room-seeded floors copy the resolved outline and room floor material into a
+  draft, commit once, remain independent of later source-room changes, and
+  reject unresolved room boundaries without mutation.
   Vertex-edit tests cover logical-pixel acquisition, crop clipping, unchanged
   model/history/3D state during preview, metadata and identity preservation,
   one-step update/undo/redo, invalid release, stale revision, handle-over-pan

@@ -1,5 +1,73 @@
 # Native wall dimensions
 
+## Linked elevation dimensions (schema 65)
+
+Horizontal/vertical dimensions now belong to linked straight-wall elevations.
+Pick two visible nominal wall/opening extents then the offset; properties edit
+the offset, replace either reference, or delete with one-step history. References
+are explicit elevation variants, independent of legacy Plan XY anchors. Derived
+values use current host station and absolute project elevation, including typed
+opening sizes and overrides. Preview does not mutate the model or 3D scene.
+Missing references preserve intent and metadata. Viewport, sheet and PDF consume
+the same dimension graphics. See [elevation workflow and limits](native-elevations.md).
+No elevation chains, angular dimensions, driving constraints, arbitrary profile
+references or external-provider gestures are introduced.
+
+## Full circular-wall axis arc length (schema 63)
+
+Choose **Arc length** in the dimension tools, click a displayed native circular
+wall, then click to place a concentric offset arc. Acquisition uses the actual
+clipped on-level wall body with a 12 logical-pixel tolerance. Distance then wall
+UUID resolves overlapping circular candidates; foreground drafting/other
+geometry blocks acquisition. Hidden walls, other levels and cropped-away
+geometry cannot be acquired. Backspace clears the wall choice; Escape or pointer
+loss cancels. Document session/revision, active view/settings, provider activation
+and drawing identity changes cancel drafts. A claimed press stays consumed
+through release so a cancelled gesture cannot pan or select underlying geometry.
+
+`DimensionLayout::ArcLength` stores Start then End of the **same** wall, empty
+`additional`, canonical `baseline_spacing_m = 0.25`, and a signed outward radial
+`offset_m`. Its analytic axis length is `radius * abs(signed_sweep)`. Offset,
+crop, view basis and display tessellation cannot change that measurement. Neither
+the measurement nor samples are persisted. `resolve_arc_length` returns the
+center, axis radius, display radius, start/signed sweep and metric length;
+`resolve` also reports this full-axis length, never its chord. Creation and live
+offset editing reject a display radius at or below 1 micrometre.
+
+Preview changes no model, history or 3D geometry. Placement uses one
+`AddDimension`; Properties offers **Outward offset (m)** and **Replace curve**.
+Repair acquires another visible circular wall and replaces both references in
+one `UpdateDimension`, retaining the dimension UUID, offset, hint and other
+values. Each action is one undo/redo step. Host edits refresh the derived
+measurement after commit. Missing/releveled hosts and conversion to a straight
+path preserve orphan intent and render a diagnostic marker; restoring the host
+restores resolution. Wall split does not remap one endpoint of this paired
+reference to another child: intent follows the surviving wall UUID.
+
+`PlanArcLengthDimension` supports clockwise/counterclockwise minor and major
+arcs, with a bounded 256-chord display and two witnesses from axis endpoints to
+display endpoints. Viewport painting and picking share crop-clipped strokes and
+metric label bounds. Sheet/PDF consumes the same derived graphic and metric
+label, with its paper viewport clip. Existing annotation and host-exclusion
+visibility policy applies. Viewport text remains a logical-pixel label; general
+paper-scale annotation styling is still outside this increment.
+
+Schema 62→63 advances native headers and the model version without rewriting
+legacy parameters, IDs or opaque metadata. That increment introduced native API
+44/schema 63; current full-model plugins use API 46/schema 65. ZIP container 2
+and generic plugin API 2 stay unchanged.
+Frozen migration evidence: `os-storage/tests/fixtures/schema-62-arc-dimensions.json`.
+Focused suites: `os-model/tests/dimension_arc_length.rs`,
+`os-document/tests/dimensions.rs`, `os-storage/tests/arc_dimensions.rs`,
+`os-render/tests/arc_length_dimensions.rs`, and
+`os-ui/src/plan_workspace/arc_dimension_tests.rs`. The UI suite uses real egui
+frames at 1280×800/100% and 1000×650/150%, plus a rotated large-coordinate
+sheet/PDF case. Native-window visual inspection and physical print acceptance
+are not implied by these automated tests.
+
+Radial/diameter dimensions, partial-arc stations, curved faces/layers, plugin
+curves and driving constraints are not supported by this layout.
+
 ## Associative outer wall faces (schema 53)
 
 Wall-face station anchors remain straight-wall-only. Circular walls retain
@@ -73,7 +141,9 @@ enum DimensionReference {
 DimensionEndpoint::{Start, End}
 DimensionJamb::{Start, End}
 DimensionWallSide::{Left, Right}
-DimensionLayout::{Aligned, Chain, Baseline, Angular}
+DimensionLayout::{Aligned, Chain, Baseline, Angular, ArcLength,
+                  ElevationHorizontal, ElevationVertical}
+DimensionReference::{ElevationWall, ElevationOpening} // station/project elevation
 // Dimension = Entity<DimensionParams>; Model.dimensions is keyed by stable UUID.
 ```
 

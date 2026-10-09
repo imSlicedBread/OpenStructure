@@ -1,9 +1,72 @@
-# Native .osb format, container 2 / model schema 62
+# Native .osb format, container 2 / model schema 67
+
+Schema 66→67 advances native headers and migrates each opening family from version
+6 to 7, adding a required empty `extrusions` list. Legacy families already carrying
+that field, including null, are rejected atomically. IDs, opaque metadata and
+existing geometric parameters remain intact. Family 7 stores up to 16 additive
+profile extrusions, each with a stable type-local UUID, name, simple normalized
+profile, metric position, exact depth/normal offset, explicit attachment frame
+and nullable material reference. Derived meshes and drawing contours are not
+stored. Model validation checks every effective instance, including dimension
+overrides. Native API 48/schema 67 is required; generic API 2 and container 2 are
+unchanged. `.osot` independently advances from package 5 to 6. Frozen migration,
+ambiguity and populated round-trip evidence: `tests/opening_extrusions.rs`.
+
+Schema 65→66 adds distinct `ViewKind::Facade` and optional `ViewParams.facade`.
+Strict version-1 settings persist world `origin`, horizontal unit `axis`, viewer
+`side`, `marker_length`, station/elevation crop and ordered finite `near_depth` /
+`far_depth`. The required associated level identifies the building and plan
+marker level; no mesh, hidden-line result or separate marker entity is stored.
+The view UUID identifies its derived marker. Existing wall-local Elevation
+settings and dimensions retain their semantics. Header-only migration rejects
+legacy Facade kinds or facade fields (including null) before mutation, preserving
+IDs and opaque metadata. Tests: `os-storage/tests/facades.rs`. This introduced
+native API 47/schema 66; current providers require API 48/schema 67.
+
+Schema 64→65 adds `DimensionLayout::ElevationHorizontal/ElevationVertical` and
+explicit `DimensionReference::ElevationWall/ElevationOpening` variants. Each
+reference stores its entity UUID and `Start/End/Bottom/Top` nominal feature.
+Horizontal dimensions require Start/End; vertical dimensions require Bottom/Top.
+The existing dimension entity stores two references, a signed offset and orphan
+hint in station/absolute-project-elevation coordinates. Measurements remain
+derived; existing Plan references retain world-XY semantics. Header-only
+migration rejects these new layouts/references in legacy payloads, including
+additional anchors, without touching opaque properties/extensions. The frozen
+schema-64 fixture and live/orphan round trips are in storage elevation tests.
+This increment introduced native Model API 46; current providers require API 48.
+Generic API 2 and container 2 are unchanged.
+
+Schema 63→64 introduces linked native straight-wall `Elevation` views and optional
+`ViewParams.elevation`. The strict migration changes only root/native-header
+versions, rejecting any legacy elevation field (including null) or Elevation
+kind while preserving opaque properties/extensions. Settings version 1 persists
+`host`, `side` (`Left`/`Right`), `min_station`, `max_station`, `bottom_elevation`
+and `top_elevation`. Both sides use the current wall start-to-end station axis;
+vertical coordinates are absolute project elevations. Crops must be finite,
+strictly ordered and within +/- 1000000 metres. The stable host UUID follows
+moves, rotations and endpoint reversal; side means current directed-wall side.
+Reversing start/end flips the physical viewed face for a stored Left or Right
+side. Station zero moves to the new start; existing crop offsets keep their
+numeric values relative to the current start. No world-facing direction is stored.
+Missing/deleted or subsequently curved hosts remain persisted orphans, including
+sheet placements. Creating/editing views and deriving geometry require a current
+native straight-wall host. Elevation views may have no associated level.
+Container 2 and generic API 2 remain unchanged. Migration and save/reopen coverage
+is in `crates/os-storage/tests/elevations.rs`.
+
+Schema 62→63 introduces `DimensionLayout::ArcLength`. The migration changes only
+model/native-header versions. Existing parameters, IDs, relationships and opaque
+properties/extensions remain intact. Legacy files containing the new layout or
+inconsistent native headers are rejected atomically. The frozen schema-62 fixture
+and live/orphan save/reopen tests are in `os-storage/tests/arc_dimensions.rs`.
+The layout stores paired Start/End anchors of one wall and a signed radial
+offset; analytic measurements and display samples remain derived. Native API
+44/schema 63 is required; ZIP container 2 and generic API 2 are unchanged.
 
 Schema 61→62 adds the required `casework_types` and `casework` root
 collections. Migration rejects either pre-existing key, inserts both empty,
 advances native headers, and validates before adoption. Native full-model
-plugins now require API 43/schema 62; container 2 and generic plugin API 2 are
+plugins now require API 48/schema 67; container 2 and generic plugin API 2 are
 unchanged. See [native casework](native-casework.md) for current scope and
 limitations.
 
@@ -11,14 +74,14 @@ Schema 60→61 adds the required `ramps` root collection for native straight-run
 ramps. Migration rejects a pre-existing key, inserts an empty map, advances
 native headers, and validates before adoption. Ramp rise and slope remain derived
 from the referenced levels; container 2 and generic plugin API 2 are unchanged.
-Native full-model plugins now require API 43/schema 62.
+Native full-model plugins now require API 48/schema 67.
 
 Schema 59→60 adds the required `railings` and `railing_types` root collections.
 The strict migration requires both keys to be absent, inserts empty maps,
 advances native entity headers and validates before adoption. Stair-hosted
 railing instances persist a stair reference, shared-type reference and side;
 member positions are derived. Native full-model plugins now require API
-43/schema 62. Container 2 and generic plugin API 2 are unchanged.
+44/schema 63. Container 2 and generic plugin API 2 are unchanged.
 
 Schema 58→59 adds required root collections for curtain systems, curtain panel
 types and mullion types. The strict migration requires all three collections to
@@ -26,7 +89,7 @@ be absent, inserts them empty, advances native entity headers and validates the
 migrated model before adoption. Curtain assemblies persist level ownership,
 baseline dimensions, grid identities, panel assignments and mullion spans;
 their components are derived from that topology. Native full-model plugins now
-require API 43/schema 62. Container 2 and generic plugin API 2 are unchanged.
+require API 46/schema 65. Container 2 and generic plugin API 2 are unchanged.
 Current geometry support and remaining curtain-system limitations are recorded
 in [native curtain systems](native-curtain-systems.md).
 
@@ -58,7 +121,7 @@ door sill bindings are forbidden. The authoritative type resolver validates
 effective dimensions, including unplaced types. Instance pins take precedence.
 Migration requires both new maps to be absent, adds empty maps and advances
 native entity headers; existing dimensions remain literals. That milestone
-introduced API 37/schema 56; current native plugins use API 43/schema 62.
+introduced API 37/schema 56; current native plugins use API 46/schema 65.
 Container 2 and generic API 2 remain unchanged.
 See `os-storage/tests/opening_lengths.rs` for persistence and legacy migration.
 
@@ -80,7 +143,7 @@ are not persisted. Migration wraps every schema-53 straight wall, advances all
 native entity headers, and rejects pre-existing path data or malformed legacy
 endpoints atomically. Frozen schema-53 migration and straight/arc save-reopen
 evidence is in `crates/os-storage/tests/wall_arcs.rs`. At schema 54 the native
-model API was 35; current compatibility is API 43/schema 62. Generic API 2 and
+model API was 35; current compatibility is API 46/schema 65. Generic API 2 and
 container 2 are unchanged.
 
 Schema 52→53 adds `DimensionReference::WallFace { wall, side, station_m }` for
@@ -92,7 +155,7 @@ schema-52 headers, rejects face variants in any older-schema dimension, and
 validates a copy before adoption. Missing or shortened hosts remain repairable
 orphans. Frozen migration, ambiguity and save/reopen evidence:
 `os-storage/tests/dimension_faces.rs`. At that milestone native model API was
-34/schema 53; current API is 43/schema 62. Generic API 2,
+34/schema 53; current API is 44/schema 63. Generic API 2,
 container 2 and opening-type package 3 are unchanged.
 
 Schema 51→52 adds required type-level `OpeningTypeParams.window_operation`
@@ -100,7 +163,7 @@ Schema 51→52 adds required type-level `OpeningTypeParams.window_operation`
 windows also resolve as Fixed. This metadata selects a 2D plan symbol only and
 does not animate or change generated 3D window geometry. The migration advances
 all native headers, rejects ambiguous preexisting values, and validates a copy
-before adoption. Current native full-model plugins use API 43/schema 62;
+before adoption. Current native full-model plugins use API 46/schema 65;
 generic API 2 and container 2 are unchanged. Opening-type packages are version
 3; v1/v2 imports default the field to Fixed.
 
@@ -109,7 +172,7 @@ inherits a typed two-bay family's default Start/End lite; a value pins the
 instance side, including when it matches the type default. Migration adds null
 to every opening and advances all native headers, rejecting ambiguous fields
 and validating the migrated copy before adoption. At schema 51, native full-model
-plugins used API 32/schema 51; current plugins use API 43/schema 62. Generic API
+plugins used API 32/schema 51; current plugins use API 46/schema 65. Generic API
 2 and container 2 are unchanged.
 
 Schema 49→50 advances each opening family from version 4 to 5 and adds the
@@ -149,7 +212,7 @@ schedule and advances all native headers. At most two distinct ordered opening
 group keys are supported; RoomFinish requires an empty list. Preexisting grouping,
 malformed collections/headers and missing current-schema fields reject atomically.
 See `crates/os-storage/tests/schedule_grouping.rs` for the frozen migration and
-save/reopen tests. Current native full-model transport is API 43/schema 62;
+save/reopen tests. Current native full-model transport is API 46/schema 65;
 generic API 2 and container 2 remain unchanged.
 
 Schema 45→46 adds required `pane_position_override` to every opening. Explicit
@@ -169,7 +232,7 @@ phase and `ShowAll`, preserving all other settings and advancing native headers.
 Both fields are required in version 3. Partial/ambiguous legacy fields, invalid
 references and unknown filters reject atomically. A pinned phase is a view
 reference and cannot be removed while that reference remains. Native full-model
-transport currently requires API 43/schema 62; generic API 2 and container 2 are unchanged.
+transport currently requires API 46/schema 65; generic API 2 and container 2 are unchanged.
 
 Schema 44 adds ordered project phases and element lifecycles. New documents
 contain `Existing` and `New Construction`; native walls, openings, floors,
@@ -179,7 +242,7 @@ phaseable elements to Existing and advances native headers. Generated phase IDs
 are deterministic per project. Ambiguous preexisting phase fields are rejected.
 Migration validates a copy before adoption; the
 container remains version 2. See [native phase coverage](native-phases.md).
-Current native full-model plugins use API 43/schema 62; generic API 2 is
+Current native full-model plugins use API 46/schema 65; generic API 2 is
 unchanged.
 
 Schema 43 adds tagged associative dimension references for native wall endpoints
@@ -188,7 +251,7 @@ objects, advances native headers, and rejects ambiguous reference shapes
 atomically. The frozen `schema-42-dimension-anchors.json` fixture verifies
 preservation; `dimension_anchors.rs` covers `.osb` save/reopen. Container 2 is
 unchanged. At that historical schema, native full-model plugins used API 24;
-current compatibility is API 43/schema 62. Generic API 2 remains unchanged.
+current compatibility is API 46/schema 65. Generic API 2 remains unchanged.
 
 Schema 42 adds required `ScheduleParams.filters`, empty for new definitions.
 Rules have an explicit `kind` tag (`text` or `numeric`), snake_case field and
@@ -209,7 +272,7 @@ Schema 41 adds the required opening-tag `label_preset` enum. The explicit
 40→41 migration assigns `Full` to existing tags and advances native headers;
 an ambiguous preexisting preset is rejected atomically. At that milestone,
 native full-model plugins used API 24/schema 43; API 39/schema 58 was a later
-compatibility level. Current compatibility is API 43/schema 62. Generic API 2
+compatibility level. Current compatibility is API 46/schema 65. Generic API 2
 and container 2 are unchanged.
 
 Schema 38 adds the required `roofs` map of native single-plane roof entities.
@@ -328,7 +391,7 @@ The explicit 28→29 migration inserts `null` into every opening and advances
 all native headers and the root version. A pre-existing override is ambiguous
 and rejected atomically. IDs, type references, legacy sills, geometry and opaque
 extension payloads are preserved. Current-schema missing fields are errors.
-Container version 2 and generic plugin API 2 are unchanged; current native API is 43/schema 62.
+Container version 2 and generic plugin API 2 are unchanged; current native API is 46/schema 65.
 
 Schema 25 adds optional frame width/depth fields to reusable opening families
 and advances their family payload to version 2. The 24→25 migration defaults

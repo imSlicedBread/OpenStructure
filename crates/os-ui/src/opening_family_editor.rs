@@ -4,6 +4,106 @@ use os_geometry::{Mesh, Vec3};
 use os_render::plan::{PlanContext, PlanLine};
 
 impl OpeningTypeDraft {
+    pub(super) fn extrusion_editor(
+        &mut self,
+        ui: &mut egui::Ui,
+        editor: &Editor,
+        view: Option<Id>,
+    ) {
+        use os_model::{OpeningAttachment, OpeningExtrusion, OpeningFamily};
+        ui.heading("Authored additive solids");
+        ui.small("Closed profile extrusions; opening-fixed or attached to the primary panel. Single rectangular doors / Fixed windows on straight hosts only.");
+        ui.horizontal_wrapped(|ui| {
+            if ui
+                .add_enabled(
+                    self.family.extrusions.len() < OpeningFamily::MAX_EXTRUSIONS,
+                    egui::Button::new("Add extrusion"),
+                )
+                .clicked()
+            {
+                self.family.extrusions.push(OpeningExtrusion::new(format!(
+                    "Solid {}",
+                    self.family.extrusions.len() + 1
+                )));
+                self.selected_extrusion = self.family.extrusions.len() - 1;
+                self.selected_vertex = 0;
+            }
+            if !self.family.extrusions.is_empty() {
+                self.selected_extrusion = self
+                    .selected_extrusion
+                    .min(self.family.extrusions.len() - 1);
+                if ui
+                    .add_enabled(
+                        self.family.extrusions.len() < OpeningFamily::MAX_EXTRUSIONS,
+                        egui::Button::new("Duplicate extrusion"),
+                    )
+                    .clicked()
+                {
+                    let mut solid = self.family.extrusions[self.selected_extrusion].clone();
+                    solid.id = Id::new();
+                    solid.name.push_str(" Copy");
+                    self.family.extrusions.push(solid);
+                    self.selected_extrusion = self.family.extrusions.len() - 1;
+                }
+                if ui.button("Delete extrusion").clicked() {
+                    self.family.extrusions.remove(self.selected_extrusion);
+                }
+            }
+        });
+        if self.family.extrusions.is_empty() {
+            ui.label("No authored solids. Add one to begin.");
+            return;
+        }
+        self.selected_extrusion = self
+            .selected_extrusion
+            .min(self.family.extrusions.len() - 1);
+        egui::ComboBox::from_id_salt("authored_solid_picker")
+            .selected_text(&self.family.extrusions[self.selected_extrusion].name)
+            .show_ui(ui, |ui| {
+                for (i, s) in self.family.extrusions.iter().enumerate() {
+                    if ui
+                        .selectable_value(&mut self.selected_extrusion, i, &s.name)
+                        .changed()
+                    {
+                        self.selected_vertex = 0;
+                    }
+                }
+            });
+        let solid = &mut self.family.extrusions[self.selected_extrusion];
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Solid name");
+            ui.text_edit_singleline(&mut solid.name);
+            ui.selectable_value(
+                &mut solid.attachment,
+                OpeningAttachment::OpeningFixed,
+                "Opening fixed",
+            );
+            ui.selectable_value(
+                &mut solid.attachment,
+                OpeningAttachment::PrimaryPanel,
+                "Primary panel",
+            );
+        });
+        ui.horizontal_wrapped(|ui| {
+            for (label, value) in [
+                ("Position X (m)", &mut solid.position.x),
+                ("Position Z (m)", &mut solid.position.y),
+                ("Exact depth (m)", &mut solid.depth),
+                ("Normal offset (m)", &mut solid.normal_offset),
+            ] {
+                ui.label(label);
+                ui.add(egui::DragValue::new(value).speed(0.001));
+            }
+            material_selector(
+                ui,
+                editor.document.model(),
+                "Solid material",
+                &mut solid.material,
+            );
+        });
+        ui.small("Profile fractions use the selected attachment frame. Position is metric; positive normal follows its left side. Nothing changes until Apply type.");
+        self.profile_editor(ui, editor, view);
+    }
     pub(super) fn material_editor(&mut self, ui: &mut egui::Ui, editor: &Editor) {
         ui.heading("Materials and appearance");
         ui.small("Assign project materials independently to the door leaf/window pane and generated frame rails.");
@@ -22,7 +122,9 @@ impl OpeningTypeDraft {
             );
         });
         ui.small("Swatches use shared project material colors.");
-        if let Some(lite) = &mut self.family.side_lite {
+        if !self.editing_extrusions
+            && let Some(lite) = &mut self.family.side_lite
+        {
             material_selector(
                 ui,
                 editor.document.model(),
@@ -173,7 +275,9 @@ impl OpeningTypeDraft {
 
     pub(super) fn profile_editor(&mut self, ui: &mut egui::Ui, editor: &Editor, view: Option<Id>) {
         ui.separator();
-        if let Some(lite) = &mut self.family.side_lite {
+        if !self.editing_extrusions
+            && let Some(lite) = &mut self.family.side_lite
+        {
             ui.horizontal_wrapped(|ui| {
                 ui.label("Lite at");
                 ui.selectable_value(&mut lite.side, os_model::LiteSide::Start, "Start");
@@ -193,36 +297,42 @@ impl OpeningTypeDraft {
             });
             ui.small("Rectangles only. Clear lite width scales with total width; each bay needs at least 1 mm after reserving the frame and mullion.");
         }
-        ui.horizontal(|ui| {
-            if ui
-                .selectable_label(!self.editing_cut, "Component profile")
-                .clicked()
-            {
-                self.editing_cut = false;
-                self.selected_vertex = 0;
-            }
-            if ui
-                .selectable_label(self.editing_cut, "Host cut profile")
-                .clicked()
-            {
-                self.editing_cut = true;
-                self.selected_vertex = 0;
-            }
-            let mut enabled = self.family.side_lite.is_some();
-            if ui
-                .checkbox(&mut enabled, "Fixed side lite / two bays")
-                .changed()
-            {
-                self.family.side_lite = enabled.then_some(os_model::SideLite {
-                    side: os_model::LiteSide::End,
-                    width_fraction: 0.25,
-                    mullion_width: 0.05,
-                    material: None,
-                });
-                self.error = None;
-            }
-        });
-        let mut profile = if self.editing_cut {
+        if !self.editing_extrusions {
+            ui.horizontal(|ui| {
+                if ui
+                    .selectable_label(!self.editing_cut, "Component profile")
+                    .clicked()
+                {
+                    self.editing_cut = false;
+                    self.selected_vertex = 0;
+                }
+                if ui
+                    .selectable_label(self.editing_cut, "Host cut profile")
+                    .clicked()
+                {
+                    self.editing_cut = true;
+                    self.selected_vertex = 0;
+                }
+                let mut enabled = self.family.side_lite.is_some();
+                if ui
+                    .checkbox(&mut enabled, "Fixed side lite / two bays")
+                    .changed()
+                {
+                    self.family.side_lite = enabled.then_some(os_model::SideLite {
+                        side: os_model::LiteSide::End,
+                        width_fraction: 0.25,
+                        mullion_width: 0.05,
+                        material: None,
+                    });
+                    self.error = None;
+                }
+            });
+        }
+        let mut profile = if self.editing_extrusions {
+            self.family.extrusions[self.selected_extrusion]
+                .profile
+                .clone()
+        } else if self.editing_cut {
             self.family.cut_profile.clone()
         } else {
             self.family.profile.clone()
@@ -283,7 +393,9 @@ impl OpeningTypeDraft {
                 }
             }
             let mut candidate = self.family.clone();
-            if self.editing_cut {
+            if self.editing_extrusions {
+                candidate.extrusions[self.selected_extrusion].profile = profile.clone();
+            } else if self.editing_cut {
                 candidate.cut_profile = profile.clone();
                 candidate.host_cut = os_model::OpeningHostCut::Profile;
             } else {
@@ -359,65 +471,69 @@ impl OpeningTypeDraft {
                     profile = os_model::OpeningFamily::default().profile;
                     self.selected_vertex = 0;
                 }
-                if self.family.frame_width == 0.0 {
-                    if ui.button("Add frame").clicked() {
-                        self.error = None;
-                        self.family.frame_width = 0.05;
-                    }
-                } else {
-                    if ui.button("Remove frame").clicked() {
-                        self.error = None;
-                        self.family.frame_width = 0.0;
-                    }
-                    ui.horizontal(|ui| {
-                        ui.label("Frame width (m)");
-                        if ui
-                            .add(
-                                egui::DragValue::new(&mut self.family.frame_width)
-                                    .speed(0.001)
-                                    .range(0.001..=0.3),
-                            )
-                            .changed()
-                        {
+                if !self.editing_extrusions {
+                    if self.family.frame_width == 0.0 {
+                        if ui.button("Add frame").clicked() {
                             self.error = None;
+                            self.family.frame_width = 0.05;
                         }
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("Frame depth (m)");
-                        if ui
-                            .add(
-                                egui::DragValue::new(&mut self.family.frame_depth)
-                                    .speed(0.001)
-                                    .range(0.001..=0.5),
-                            )
-                            .changed()
-                        {
-                            self.error = None;
-                        }
-                    });
-                    ui.small(if self.kind == OpeningKind::Door {
-                        "Door frame: two jambs and a head; no threshold."
                     } else {
-                        "Window frame: jambs, head and sill around the inset pane."
-                    });
-                }
-                ui.horizontal(|ui| {
-                    ui.label("Depth cap (m)");
-                    if ui
-                        .add(
-                            egui::DragValue::new(&mut self.family.depth)
-                                .speed(0.001)
-                                .range(0.001..=0.2),
-                        )
-                        .changed()
-                    {
-                        self.error = None;
+                        if ui.button("Remove frame").clicked() {
+                            self.error = None;
+                            self.family.frame_width = 0.0;
+                        }
+                        ui.horizontal(|ui| {
+                            ui.label("Frame width (m)");
+                            if ui
+                                .add(
+                                    egui::DragValue::new(&mut self.family.frame_width)
+                                        .speed(0.001)
+                                        .range(0.001..=0.3),
+                                )
+                                .changed()
+                            {
+                                self.error = None;
+                            }
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Frame depth (m)");
+                            if ui
+                                .add(
+                                    egui::DragValue::new(&mut self.family.frame_depth)
+                                        .speed(0.001)
+                                        .range(0.001..=0.5),
+                                )
+                                .changed()
+                            {
+                                self.error = None;
+                            }
+                        });
+                        ui.small(if self.kind == OpeningKind::Door {
+                            "Door frame: two jambs and a head; no threshold."
+                        } else {
+                            "Window frame: jambs, head and sill around the inset pane."
+                        });
                     }
-                });
-                ui.small("Depth is also capped at 20% of host thickness and opening width.");
+                    ui.horizontal(|ui| {
+                        ui.label("Depth cap (m)");
+                        if ui
+                            .add(
+                                egui::DragValue::new(&mut self.family.depth)
+                                    .speed(0.001)
+                                    .range(0.001..=0.2),
+                            )
+                            .changed()
+                        {
+                            self.error = None;
+                        }
+                    });
+                    ui.small("Depth is also capped at 20% of host thickness and opening width.");
+                }
             });
         });
-        if self.editing_cut {
+        if self.editing_extrusions {
+            self.family.extrusions[self.selected_extrusion].profile = profile;
+        } else if self.editing_cut {
             self.family.cut_profile = profile;
             self.family.host_cut = if self.family.rectangular_cut() {
                 os_model::OpeningHostCut::Rectangular

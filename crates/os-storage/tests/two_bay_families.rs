@@ -33,7 +33,8 @@ fn two_bay_frozen_49_only_adds_default_and_advances_versions() {
         .values_mut()
     {
         ty["parameters"]["window_operation"] = "Fixed".into();
-        ty["parameters"]["family"]["version"] = 6.into();
+        ty["parameters"]["family"]["version"] = 7.into();
+        ty["parameters"]["family"]["extrusions"] = json!([]);
         ty["parameters"]["family"]["side_lite"] = Value::Null;
     }
     assert_eq!(value, expected);

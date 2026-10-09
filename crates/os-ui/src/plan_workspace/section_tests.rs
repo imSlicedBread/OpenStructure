@@ -282,3 +282,120 @@ fn section_elevation_bounds_use_building_wall_and_floor_extents() {
             .is_ok()
     );
 }
+
+#[test]
+fn section_fills_desktop_mesh_precedes_contours_at_two_scales() {
+    for (size, scale) in [(SIZE, 1.0), (egui::vec2(1000., 650.), 1.5)] {
+        let mut h = Harness::new();
+        let host = h
+            .app
+            .editor
+            .document
+            .model()
+            .walls
+            .values()
+            .find(|w| w.parameters.name == "Section fixture")
+            .unwrap()
+            .id();
+        let material = os_model::Material::new(
+            "core.material",
+            os_model::MaterialParams {
+                name: "Section fill color".into(),
+                density_kg_m3: 800.,
+                color: [37, 83, 129],
+            },
+        );
+        let material_id = material.id();
+        let mut wall = h.app.editor.document.model().walls[&host]
+            .parameters
+            .clone();
+        wall.material = Some(material_id);
+        h.app
+            .editor
+            .commands(
+                "Section material",
+                vec![
+                    Command::AddMaterial(material),
+                    Command::UpdateWall {
+                        id: host,
+                        parameters: wall,
+                    },
+                ],
+            )
+            .unwrap();
+        let section = h
+            .app
+            .editor
+            .create_section_view(
+                "Filled section",
+                h.app.active_level,
+                SectionViewSettings::new(Point2::new(18., 20.), Point2::new(22., 20.), -1., 5.),
+            )
+            .unwrap();
+        h.app.focus_plan(Some(section));
+        h.settle();
+        h.ctx.set_pixels_per_point(scale);
+        for selected in [false, true] {
+            h.app.selected = selected.then_some(host);
+            h.app.selected_ids.clear();
+            if selected {
+                h.app.selected_ids.insert(host);
+            }
+            let mut output = None;
+            for _ in 0..2 {
+                h.time += 1. / 60.;
+                output = Some(h.ctx.run(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                        time: Some(h.time),
+                        ..Default::default()
+                    },
+                    |ctx| h.app.show(ctx),
+                ));
+            }
+            let output = output.unwrap();
+            let drawing = h.app.plans.drawing.as_ref().unwrap();
+            let context = h.app.editor.native_section_context(section).unwrap();
+            let rect = h.app.plans.canvas_rect.unwrap();
+            let camera = h.app.plans.cameras[&section];
+            let expected = section_fills::mesh(drawing, context, camera, rect).unwrap();
+            assert!(!expected.is_empty());
+            assert!(
+                expected
+                    .vertices
+                    .iter()
+                    .all(|v| v.color == egui::Color32::from_rgb(37, 83, 129))
+            );
+            let index = output
+                .shapes
+                .iter()
+                .position(|s| {
+                    matches!(&s.shape,
+                egui::Shape::Mesh(mesh) if **mesh==expected)
+                })
+                .expect("canvas consumed checked fill mesh");
+            let screen = |p: Point2| {
+                let p = camera
+                    .project(p, [rect.width() as f64, rect.height() as f64])
+                    .unwrap();
+                rect.min + egui::vec2(p.x as f32, p.y as f32)
+            };
+            for line in drawing
+                .provider_lines(context)
+                .unwrap()
+                .iter()
+                .filter(|l| l.entity == host)
+            {
+                let points = [screen(line.start), screen(line.end)];
+                assert!(
+                    output.shapes[index + 1..].iter().any(|s| matches!(&s.shape,
+                    egui::Shape::LineSegment {points:actual,..} if *actual==points)),
+                    "section contours must be drawn after the opaque fill"
+                );
+            }
+            let mut stale = context;
+            stale.model_revision += 1;
+            assert!(section_fills::mesh(drawing, stale, camera, rect).is_err());
+        }
+    }
+}

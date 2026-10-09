@@ -17,6 +17,10 @@ use crate::Mesh;
 use os_core::{Point2, Result, ensure};
 use std::collections::{BTreeMap, BTreeSet};
 
+#[path = "section_fill.rs"]
+mod fill;
+pub use fill::{MAX_SECTION_FILL_TRIANGLES, tessellate_contours};
+
 /// Absolute plane and contour comparison tolerance in metres.
 pub const SECTION_TOLERANCE: f64 = 1e-8;
 /// Bounds apply before topology allocation/validation, including for missed cuts.

@@ -748,6 +748,12 @@ fn build_import_plan(
         sill: package.length_bindings.sill.map(|id| length_remaps[&id]),
     };
     let mut parameters = package.parameters.clone();
+    parameters.family.remap_extrusion_ids();
+    for solid in &mut parameters.family.extrusions {
+        if let Some(id) = solid.material {
+            solid.material = Some(remapped[&id]);
+        }
+    }
     parameters.name = name.trim().to_owned();
     if let Some(id) = parameters.family.panel_material {
         parameters.family.panel_material = remapped.get(&id).copied();
@@ -889,4 +895,82 @@ fn take_utf8_bytes(value: &str, limit: usize) -> String {
         .last()
         .unwrap_or(0);
     value[..end].to_owned()
+}
+
+#[cfg(test)]
+#[test]
+fn authored_extrusions_package_import_remaps_solid_ids_and_material_only_dependencies_on_collision()
+{
+    use os_model::{
+        OpeningExtrusion, OpeningFamily, OpeningKind, OpeningTypeParams, WindowOperation,
+        WindowPanePosition,
+    };
+    let mut source = Editor::new().unwrap();
+    let material = Material::new(
+        "core.material",
+        os_model::MaterialParams {
+            name: "Only solid material".into(),
+            color: [180, 20, 70],
+            density_kg_m3: 5000.,
+        },
+    );
+    let mid = material.id();
+    source
+        .command("Material", Command::AddMaterial(material))
+        .unwrap();
+    let mut family = OpeningFamily::default();
+    let mut s = OpeningExtrusion::new("Handle");
+    s.material = Some(mid);
+    let sid = s.id;
+    family.extrusions.push(s);
+    let ty = OpeningType::new(
+        "core.opening_type",
+        OpeningTypeParams {
+            name: "Portable solid".into(),
+            kind: OpeningKind::Door,
+            width: 1.,
+            height: 2.,
+            sill: 0.,
+            pane_position: WindowPanePosition::Center,
+            window_operation: WindowOperation::Fixed,
+            family,
+        },
+    );
+    let tid = ty.id();
+    source.command("Type", Command::AddOpeningType(ty)).unwrap();
+    let package = os_storage::parse_opening_type_package(
+        &os_storage::export_opening_type_package(source.document.model(), tid).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(package.materials.len(), 1);
+    let mut dest = Editor::new().unwrap();
+    let mut collision = source.document.model().materials[&mid].clone();
+    collision.parameters.color = [1, 2, 3];
+    dest.command("Collision", Command::AddMaterial(collision))
+        .unwrap();
+    let before = dest.document.model().clone();
+    let id = Id::new();
+    let plan = build_import_plan(&dest, &package, id, "Imported", false, None, false).unwrap();
+    assert_eq!(dest.document.model(), &before);
+    apply_import_plan(&mut dest, plan).unwrap();
+    let solid = &dest.document.model().opening_types[&id]
+        .parameters
+        .family
+        .extrusions[0];
+    assert_ne!(solid.id, sid);
+    assert_ne!(solid.material, Some(mid));
+    let imported = &dest.document.model().materials[&solid.material.unwrap()].parameters;
+    assert_eq!(imported.color, package.materials[0].parameters.color);
+    assert_eq!(
+        imported.density_kg_m3,
+        package.materials[0].parameters.density_kg_m3
+    );
+    assert_eq!(imported.name, "Only solid material (Imported)");
+    assert_eq!(
+        dest.document.model().materials[&mid],
+        before.materials[&mid]
+    );
+    dest.undo().unwrap();
+    assert_eq!(dest.document.model(), &before);
+    dest.redo().unwrap();
 }

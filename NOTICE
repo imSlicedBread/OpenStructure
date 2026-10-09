@@ -1,6 +1,8 @@
 OpenStructure is independently authored software. It is not affiliated with
 Autodesk, Revit, or any other BIM vendor. No proprietary code, assets, or native
-proprietary file schemas are included. OpenStructure itself is proprietary;
-the plugin API and examples carry the limited permission in LICENSE.
+proprietary file schemas are included. OpenStructure is licensed under the
+Apache License, Version 2.0; see LICENSE. This notice does not grant permission
+to use OpenStructure trademarks or product names.
+
 Third-party dependencies retain their own licenses; Cargo.lock records the
-resolved versions. See LICENSE.
+resolved versions. Their notices and license terms apply to those components.

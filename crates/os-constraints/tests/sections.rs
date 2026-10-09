@@ -31,6 +31,8 @@ fn model_geometry_changes_invalidate_configured_section_views() {
             level: Some(level),
             settings_revision: 0,
             plan: None,
+            facade: None,
+            elevation: None,
             section: Some(SectionViewSettings::new(
                 Point2::new(0.0, 0.0),
                 Point2::new(6.0, 0.0),

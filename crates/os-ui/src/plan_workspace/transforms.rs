@@ -82,6 +82,11 @@ impl Draft {
             mode == Mode::Split
                 || (!model.dimensions.values().any(|d| {
                     d.parameters.references().any(|r| match r {
+                        DimensionReference::ElevationWall { wall, .. } => wall == id,
+                        DimensionReference::ElevationOpening { opening, .. } => model
+                            .openings
+                            .get(&opening)
+                            .is_some_and(|o| o.parameters.host == id),
                         os_model::DimensionReference::WallEndpoint { wall, .. }
                         | os_model::DimensionReference::WallFace { wall, .. } => wall == id,
                         os_model::DimensionReference::OpeningJamb { opening, .. } => model

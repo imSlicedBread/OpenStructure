@@ -310,6 +310,12 @@ impl DesktopApp {
             );
             for (index, reference) in parameters.references().enumerate() {
                 let target = match reference {
+                    os_model::DimensionReference::ElevationWall { feature, .. } => {
+                        format!("Wall {feature:?} (elevation)")
+                    }
+                    os_model::DimensionReference::ElevationOpening { feature, .. } => {
+                        format!("Opening {feature:?} (nominal extent)")
+                    }
                     os_model::DimensionReference::WallFace {
                         side, station_m, ..
                     } => {
@@ -323,7 +329,18 @@ impl DesktopApp {
                     }
                 };
                 ui.add(egui::Label::new(format!("{}: {target}", index + 1)).wrap());
-                if ui
+                if parameters.layout == os_model::DimensionLayout::ArcLength {
+                    if index == 0
+                        && ui
+                            .add_enabled(
+                                self.plans.active == Some(parameters.view),
+                                egui::Button::new("Replace curve"),
+                            )
+                            .clicked()
+                    {
+                        self.begin_dimension_repair(0);
+                    }
+                } else if ui
                     .add_enabled(
                         self.plans.active == Some(parameters.view),
                         egui::Button::new(format!("Replace anchor {}", index + 1)),
@@ -333,7 +350,25 @@ impl DesktopApp {
                     self.begin_dimension_repair(index);
                 }
             }
-            if parameters.layout == os_model::DimensionLayout::Angular {
+            if parameters.layout == os_model::DimensionLayout::ArcLength {
+                match parameters.resolve_arc_length(self.editor.document.model()) {
+                    Ok(arc) => {
+                        ui.label(format!("Full wall axis: {:.3} m", arc.length_metres));
+                    }
+                    Err(reason) => {
+                        ui.colored_label(theme::ERROR, format!("Broken reference: {reason:?}"));
+                    }
+                }
+            } else if parameters.layout.is_elevation() {
+                match parameters.resolve_elevation(self.editor.document.model()) {
+                    Ok(r) => {
+                        ui.label(format!("{:.3} m", r.length_metres));
+                    }
+                    Err(reason) => {
+                        ui.colored_label(theme::ERROR, format!("Broken reference: {reason:?}"));
+                    }
+                }
+            } else if parameters.layout == os_model::DimensionLayout::Angular {
                 match parameters.resolve_angular(self.editor.document.model()) {
                     Ok(angle) => {
                         ui.label(format!("{:.2}°", angle.degrees()));
@@ -373,11 +408,15 @@ impl DesktopApp {
                 }
             }
             ui.horizontal(|ui| {
-                ui.label(if parameters.layout == os_model::DimensionLayout::Angular {
-                    "Arc radius (m)"
-                } else {
-                    "Offset (m)"
-                });
+                ui.label(
+                    if parameters.layout == os_model::DimensionLayout::ArcLength {
+                        "Outward offset (m)"
+                    } else if parameters.layout == os_model::DimensionLayout::Angular {
+                        "Arc radius (m)"
+                    } else {
+                        "Offset (m)"
+                    },
+                );
                 ui.add(
                     egui::DragValue::new(&mut self.dimension_offset_draft)
                         .speed(0.01)
@@ -1147,7 +1186,9 @@ impl DesktopApp {
                     .show(ui, |ui| {
                         for (id, dimension) in &model.dimensions {
                             let anchor_label = |reference: os_model::DimensionReference| {
-                                match reference {
+                                    match reference {
+                                        os_model::DimensionReference::ElevationWall { feature, .. } => format!("Wall {feature:?} (elevation)"),
+                                        os_model::DimensionReference::ElevationOpening { feature, .. } => format!("Opening {feature:?} (nominal extent)"),
                                     os_model::DimensionReference::WallFace { wall, side, station_m } =>
                                         format!("{} {side:?} face at {station_m:.3} m", model.walls.get(&wall).map_or("Missing wall", |w| w.parameters.name.as_str())),
                                     os_model::DimensionReference::WallEndpoint { wall, endpoint } =>

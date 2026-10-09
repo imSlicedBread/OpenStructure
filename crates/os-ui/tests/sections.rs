@@ -93,6 +93,8 @@ fn linked_section_draws_native_wall_openings_floor_and_plan_marker() {
         },
     );
     let floor_id = floor.id();
+    let window_id = window.id();
+    let door_id = door.id();
     editor
         .document
         .execute(
@@ -115,6 +117,8 @@ fn linked_section_draws_native_wall_openings_floor_and_plan_marker() {
     let cut_lines = drawing.provider_lines(context).unwrap();
     assert!(cut_lines.iter().any(|line| line.entity == wall_id));
     assert!(cut_lines.iter().any(|line| line.entity == floor_id));
+    assert!(cut_lines.iter().any(|line| line.entity == window_id));
+    assert!(cut_lines.iter().any(|line| line.entity == door_id));
     assert!(
         cut_lines
             .iter()
@@ -196,4 +200,45 @@ fn linked_section_draws_native_wall_openings_floor_and_plan_marker() {
         .collect();
     assert_eq!(marker.len(), 3);
     assert!(editor.document.model().views[&section].parameters.kind == ViewKind::Section);
+
+    // Transverse through the clear window aperture, away from the slab hole's
+    // boundary. Section X is world Y + 1; the wall is 200 mm, pane 25 mm thick.
+    let transverse = editor
+        .create_section_view(
+            "Window cut",
+            level,
+            SectionViewSettings::new(Point2::new(4.6, -1.), Point2::new(4.6, 1.), -0.5, 4.),
+        )
+        .unwrap();
+    let context = editor.native_section_context(transverse).unwrap();
+    let drawing = editor.native_drawing(transverse).unwrap();
+    let lines = drawing.provider_lines(context).unwrap();
+    let pane: Vec<_> = lines.iter().filter(|l| l.entity == window_id).collect();
+    assert_eq!(pane.len(), 4);
+    let expected = [
+        Point2::new(0.9875, 1.),
+        Point2::new(1.0125, 1.),
+        Point2::new(1.0125, 2.2),
+        Point2::new(0.9875, 2.2),
+    ];
+    for i in 0..4 {
+        let (a, b) = (expected[i], expected[(i + 1) % 4]);
+        assert!(
+            pane.iter()
+                .any(|l| (l.start.distance(a) < 1e-8 && l.end.distance(b) < 1e-8)
+                    || (l.start.distance(b) < 1e-8 && l.end.distance(a) < 1e-8))
+        );
+    }
+    let host: Vec<_> = lines.iter().filter(|l| l.entity == wall_id).collect();
+    for elevation in [1., 2.2] {
+        assert!(host.iter().any(|l| (l.start.y - elevation).abs() < 1e-8
+            && (l.end.y - elevation).abs() < 1e-8
+            && (l.start.x.min(l.end.x) - 0.9).abs() < 1e-8
+            && (l.start.x.max(l.end.x) - 1.1).abs() < 1e-8));
+    }
+    assert!(
+        host.iter()
+            .all(|l| l.start.y.max(l.end.y) <= 1. + 1e-8 || l.start.y.min(l.end.y) >= 2.2 - 1e-8),
+        "wall must remain absent through the filling"
+    );
 }

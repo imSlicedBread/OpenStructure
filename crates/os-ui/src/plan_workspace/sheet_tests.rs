@@ -361,7 +361,7 @@ fn saved_schedule_sheet_live_preview_pdf_history_overflow_and_stale_export() {
     }
 }
 
-fn app_with_plan() -> (DesktopApp, Id) {
+pub(super) fn app_with_plan() -> (DesktopApp, Id) {
     let mut app = DesktopApp::new().unwrap();
     let view = app
         .editor
@@ -384,7 +384,7 @@ fn app_with_plan() -> (DesktopApp, Id) {
     (app, view)
 }
 
-fn app_with_section() -> (DesktopApp, Id) {
+pub(super) fn app_with_section() -> (DesktopApp, Id) {
     let mut app = DesktopApp::new().unwrap();
     let level = app.active_level;
     let wall = os_model::Wall::new(
@@ -435,7 +435,12 @@ fn app_with_section() -> (DesktopApp, Id) {
     (app, section)
 }
 
-fn raw_input(size: egui::Vec2, scale: f32, time: f64, events: Vec<egui::Event>) -> egui::RawInput {
+pub(super) fn raw_input(
+    size: egui::Vec2,
+    scale: f32,
+    time: f64,
+    events: Vec<egui::Event>,
+) -> egui::RawInput {
     let mut input = egui::RawInput {
         screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
         time: Some(time),
@@ -698,18 +703,25 @@ fn section_sheets_export_linked_cut_lines_and_reopen_in_source_view_space() {
     multiple.viewports.push(duplicate);
     app.editor
         .command(
-            "Add unsupported second viewport",
+            "Add overlapping second viewport",
             Command::UpdateSheet {
                 id: sheet_id,
                 parameters: multiple,
             },
         )
         .unwrap();
+    app.plans.poll(&app.editor);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !app.plans.ready() {
+        assert!(Instant::now() < deadline);
+        app.plans.poll(&app.editor);
+        std::thread::yield_now();
+    }
     assert!(
         app.sheet_page()
             .unwrap_err()
             .to_string()
-            .contains("combined sheet requires one Plan and one Section")
+            .contains("overlap")
     );
 }
 

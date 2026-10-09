@@ -3,7 +3,7 @@ use os_core::{Id, Point2, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub const SCHEMA_VERSION: u32 = 62;
+pub const SCHEMA_VERSION: u32 = 67;
 mod railings;
 pub use railings::*;
 mod curtain_systems;
@@ -36,6 +36,10 @@ mod sheets;
 pub use sheets::*;
 mod sections;
 pub use sections::*;
+mod elevations;
+mod facades;
+pub use elevations::*;
+pub use facades::*;
 mod floors;
 pub use floors::*;
 mod stairs;
@@ -48,6 +52,7 @@ mod roofs;
 pub use roofs::*;
 mod dimensions;
 pub use dimensions::*;
+mod elevation_dimensions;
 mod room_separation_lines;
 pub use room_separation_lines::*;
 mod rooms;
@@ -148,6 +153,11 @@ pub struct ViewParams {
     /// Persisted section plane and vertical range for native Section views.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub section: Option<SectionViewSettings>,
+    /// Linked native straight-wall elevation; absent for other view kinds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub elevation: Option<ElevationViewSettings>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub facade: Option<FacadeViewSettings>,
 }
 impl ViewParams {
     pub fn reflected_ceiling_plan(name: impl Into<String>, level: Id) -> Self {
@@ -165,9 +175,43 @@ impl ViewParams {
             settings_revision: 0,
             plan: Some(PlanSettings::default()),
             section: None,
+            facade: None,
+            elevation: None,
         }
     }
     pub fn validate(&self) -> Result<()> {
+        if self.kind == ViewKind::Facade {
+            ensure(
+                self.plan.is_none()
+                    && self.section.is_none()
+                    && self.elevation.is_none()
+                    && self.level.is_some(),
+                "facade requires a marker level and no other view settings",
+            )?;
+            return self
+                .facade
+                .ok_or_else(|| os_core::Error::Invalid("facade settings missing".into()))?
+                .validate();
+        }
+        ensure(
+            self.facade.is_none(),
+            "facade settings require a Facade view",
+        )?;
+        if self.kind == ViewKind::Elevation {
+            ensure(
+                self.plan.is_none() && self.section.is_none(),
+                "plan/section settings cannot be attached to an Elevation view",
+            )?;
+            return self
+                .elevation
+                .as_ref()
+                .ok_or_else(|| os_core::Error::Invalid("elevation settings missing".into()))?
+                .validate();
+        }
+        ensure(
+            self.elevation.is_none(),
+            "elevation settings require an Elevation view",
+        )?;
         match (self.kind, self.plan, self.section) {
             (ViewKind::Plan, Some(plan), None) => plan.validate(),
             (ViewKind::Plan, None, _) => Err(os_core::Error::Invalid(
@@ -185,6 +229,7 @@ impl ViewParams {
                 "plan settings cannot be attached to a Section view".into(),
             )),
             (ViewKind::Perspective, None, None) => Ok(()),
+            (ViewKind::Elevation | ViewKind::Facade, _, _) => unreachable!(),
             (ViewKind::Perspective, _, _) => Err(os_core::Error::Invalid(
                 "model-view settings cannot be attached to a Perspective view".into(),
             )),
@@ -215,6 +260,8 @@ pub enum ViewKind {
     Perspective,
     Plan,
     Section,
+    Elevation,
+    Facade,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -364,6 +411,8 @@ impl Model {
         let view = View::new(
             "core.view",
             ViewParams {
+                facade: None,
+                elevation: None,
                 name: "3D".into(),
                 kind: ViewKind::Perspective,
                 level: None,

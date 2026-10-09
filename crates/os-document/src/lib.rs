@@ -376,6 +376,7 @@ impl Document {
         let mut candidate = self.model.clone();
         let original_phaseable = phaseable_ids(&self.model);
         let mut changed = BTreeSet::new();
+        let mut edited_views = BTreeSet::new();
         for command in commands {
             let id = match command {
                 Command::AddPhase(phase) => {
@@ -979,6 +980,56 @@ impl Document {
                     id
                 }
                 Command::UpdateDimension { id, parameters } => {
+                    if parameters.layout.is_elevation() {
+                        let old = &candidate
+                            .dimensions
+                            .get(&id)
+                            .ok_or_else(|| Error::Invalid("dimension missing".into()))?
+                            .parameters;
+                        if old.view != parameters.view || old.layout != parameters.layout {
+                            parameters.validate_creation(&candidate)?;
+                        } else if old.first != parameters.first || old.second != parameters.second {
+                            parameters.validate()?;
+                            let host = candidate
+                                .views
+                                .get(&parameters.view)
+                                .and_then(|v| v.parameters.elevation)
+                                .ok_or_else(|| Error::Invalid("elevation view missing".into()))?
+                                .host;
+                            for (before, after) in [
+                                (old.first, parameters.first),
+                                (old.second, parameters.second),
+                            ] {
+                                if before != after {
+                                    after.resolve_elevation(&candidate, host).map_err(|e| {
+                                        Error::Invalid(format!(
+                                            "replacement reference cannot resolve: {e:?}"
+                                        ))
+                                    })?;
+                                }
+                            }
+                            ensure(
+                                parameters.resolve_elevation(&candidate)
+                                    != Err(os_model::DimensionDiagnostic::CoincidentAnchors),
+                                "coincident elevation references",
+                            )?;
+                        }
+                    }
+                    if parameters.layout == os_model::DimensionLayout::ArcLength
+                        && candidate
+                            .walls
+                            .get(&parameters.first.entity())
+                            .is_some_and(|wall| {
+                                !wall.parameters.path.is_straight()
+                                    && candidate
+                                        .views
+                                        .get(&parameters.view)
+                                        .and_then(|v| v.parameters.level)
+                                        == Some(wall.parameters.level)
+                            })
+                    {
+                        parameters.validate_creation(&candidate)?;
+                    }
                     candidate
                         .dimensions
                         .get_mut(&id)
@@ -1146,6 +1197,7 @@ impl Document {
                 }
                 Command::AddView(view) => {
                     view.parameters.validate_edit()?;
+                    edited_views.insert(view.id());
                     ensure(
                         view.parameters.settings_revision == 0,
                         "new view revision must be zero",
@@ -1157,6 +1209,7 @@ impl Document {
                 }
                 Command::UpdateView { id, mut parameters } => {
                     parameters.validate_edit()?;
+                    edited_views.insert(id);
                     let view = candidate
                         .views
                         .get_mut(&id)
@@ -1324,6 +1377,17 @@ impl Document {
             !candidate.views.is_empty() || self.model.views.is_empty(),
             "cannot remove the last view",
         )?;
+        // Authored elevations must resolve against the final transaction graph.
+        // Unedited orphans remain preservable after host deletion/path changes.
+        for id in edited_views {
+            if let Some(settings) = candidate
+                .views
+                .get(&id)
+                .and_then(|view| view.parameters.elevation)
+            {
+                settings.resolve_host(&candidate)?;
+            }
+        }
         changed.extend(candidate.settle_opening_clearances(&self.model)?);
         os_constraints::validate(&candidate)?;
         // Embedded viewport UUIDs participate in change events as well as identity

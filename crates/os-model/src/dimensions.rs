@@ -14,6 +14,24 @@ pub enum DimensionLayout {
     Chain,
     Baseline,
     Angular,
+    ArcLength,
+    ElevationHorizontal,
+    ElevationVertical,
+}
+
+impl DimensionLayout {
+    pub fn is_elevation(self) -> bool {
+        matches!(self, Self::ElevationHorizontal | Self::ElevationVertical)
+    }
+}
+
+/// Nominal wall/opening extents in station and absolute project elevation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ElevationDimensionFeature {
+    Start,
+    End,
+    Bottom,
+    Top,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -25,6 +43,14 @@ pub enum DimensionEndpoint {
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum DimensionReference {
+    ElevationWall {
+        wall: Id,
+        feature: ElevationDimensionFeature,
+    },
+    ElevationOpening {
+        opening: Id,
+        feature: ElevationDimensionFeature,
+    },
     WallEndpoint {
         wall: Id,
         endpoint: DimensionEndpoint,
@@ -57,15 +83,17 @@ pub enum DimensionJamb {
 impl DimensionReference {
     pub fn entity(self) -> Id {
         match self {
-            Self::WallEndpoint { wall, .. } | Self::WallFace { wall, .. } => wall,
-            Self::OpeningJamb { opening, .. } => opening,
+            Self::WallEndpoint { wall, .. }
+            | Self::WallFace { wall, .. }
+            | Self::ElevationWall { wall, .. } => wall,
+            Self::OpeningJamb { opening, .. } | Self::ElevationOpening { opening, .. } => opening,
         }
     }
 
     pub fn wall_endpoint(self) -> Option<(Id, DimensionEndpoint)> {
         match self {
             Self::WallEndpoint { wall, endpoint } => Some((wall, endpoint)),
-            Self::OpeningJamb { .. } | Self::WallFace { .. } => None,
+            _ => None,
         }
     }
 
@@ -80,6 +108,9 @@ impl DimensionReference {
         mut opening: impl FnMut(Id) -> std::result::Result<(Id, f64, f64), DimensionDiagnostic>,
     ) -> std::result::Result<Point2, DimensionDiagnostic> {
         let (host, station) = match self {
+            Self::ElevationWall { .. } | Self::ElevationOpening { .. } => {
+                return Err(DimensionDiagnostic::InvalidGeometry);
+            }
             Self::WallEndpoint { wall, .. } => (wall, None),
             Self::WallFace {
                 wall, station_m, ..
@@ -102,6 +133,7 @@ impl DimensionReference {
         let (host_level, path, thickness) = wall(host).ok_or(match self {
             Self::WallEndpoint { .. } | Self::WallFace { .. } => DimensionDiagnostic::MissingWall,
             Self::OpeningJamb { .. } => DimensionDiagnostic::MissingOpeningHost,
+            _ => DimensionDiagnostic::InvalidGeometry,
         })?;
         if host_level != level {
             return Err(DimensionDiagnostic::WrongLevel);
@@ -194,7 +226,7 @@ pub struct DimensionParams {
     pub view: Id,
     pub first: DimensionReference,
     pub second: DimensionReference,
-    /// Metres along the left normal of the directed first-to-second segment.
+    /// Signed outward radial offset for ArcLength; left-normal offset for linear layouts.
     pub offset_m: f64,
     /// Clicked model-space position; only a placement/orphan marker hint.
     pub orphan_hint: Point2,
@@ -203,6 +235,8 @@ pub type Dimension = Entity<DimensionParams>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DimensionDiagnostic {
+    MissingElevationView,
+    WrongHost,
     MissingPlanView,
     MissingWall,
     MissingOpening,
@@ -224,6 +258,27 @@ pub struct ResolvedDimension {
     pub first: Point2,
     pub second: Point2,
     pub length_metres: f64,
+}
+
+/// Analytic full wall-axis measurement; display offset never changes the value.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ResolvedArcLengthDimension {
+    pub center: Point2,
+    pub axis_radius: f64,
+    pub radius: f64,
+    pub start_radians: f64,
+    pub sweep_radians: f64,
+    pub length_metres: f64,
+}
+
+impl ResolvedArcLengthDimension {
+    pub fn point(self, fraction: f64) -> Point2 {
+        let a = self.start_radians + self.sweep_radians * fraction;
+        Point2::new(
+            self.center.x + self.radius * a.cos(),
+            self.center.y + self.radius * a.sin(),
+        )
+    }
 }
 
 /// Live infinite wall-axis intersection and the smaller directed sector.
@@ -258,6 +313,87 @@ impl ResolvedAngularDimension {
 }
 
 impl DimensionParams {
+    pub fn resolve_arc_length_with(
+        &self,
+        mut wall: impl FnMut(Id) -> std::result::Result<WallPath, DimensionDiagnostic>,
+    ) -> std::result::Result<ResolvedArcLengthDimension, DimensionDiagnostic> {
+        if self.layout != DimensionLayout::ArcLength || self.validate().is_err() {
+            return Err(DimensionDiagnostic::InvalidGeometry);
+        }
+        let path = wall(self.first.entity())?;
+        let WallPath::CircularArc {
+            center,
+            radius,
+            start_angle_rad,
+            signed_sweep_rad,
+        } = path
+        else {
+            return Err(DimensionDiagnostic::InvalidGeometry);
+        };
+        let display_radius = radius + self.offset_m;
+        // Analytic validation must not depend on a display tessellator's budget.
+        if !center.is_finite()
+            || !radius.is_finite()
+            || radius <= 1e-6
+            || !start_angle_rad.is_finite()
+            || start_angle_rad.abs() > std::f64::consts::TAU
+            || !signed_sweep_rad.is_finite()
+            || signed_sweep_rad.abs() <= 1e-6
+            || signed_sweep_rad.abs() >= std::f64::consts::TAU - 1e-6
+            || !path.length().is_finite()
+            || path.length() <= 1e-6
+            || !display_radius.is_finite()
+            || display_radius <= 1e-6
+            || center.x.abs() + display_radius > MAX_DIMENSION_METRES
+            || center.y.abs() + display_radius > MAX_DIMENSION_METRES
+        {
+            return Err(DimensionDiagnostic::InvalidGeometry);
+        }
+        Ok(ResolvedArcLengthDimension {
+            center,
+            axis_radius: radius,
+            radius: display_radius,
+            start_radians: start_angle_rad,
+            sweep_radians: signed_sweep_rad,
+            length_metres: path.length(),
+        })
+    }
+
+    pub fn resolve_arc_length(
+        &self,
+        model: &Model,
+    ) -> std::result::Result<ResolvedArcLengthDimension, DimensionDiagnostic> {
+        let level = model
+            .views
+            .get(&self.view)
+            .filter(|v| v.parameters.kind == ViewKind::Plan)
+            .and_then(|v| v.parameters.level)
+            .ok_or(DimensionDiagnostic::MissingPlanView)?;
+        self.resolve_arc_length_with(|id| {
+            let wall = model
+                .walls
+                .get(&id)
+                .ok_or(DimensionDiagnostic::MissingWall)?;
+            if wall.parameters.level != level {
+                return Err(DimensionDiagnostic::WrongLevel);
+            }
+            Ok(wall.parameters.path)
+        })
+    }
+
+    pub fn place_arc_length(&mut self, model: &Model, placement: Point2) -> Result<()> {
+        let mut candidate = self.clone();
+        candidate.offset_m = 0.0;
+        let arc = candidate.resolve_arc_length(model).map_err(|reason| {
+            os_core::Error::Invalid(format!("arc reference cannot resolve: {reason:?}"))
+        })?;
+        candidate.offset_m = arc.center.distance(placement) - arc.axis_radius;
+        candidate.orphan_hint = placement;
+        candidate.validate_creation(model)?;
+        *self = candidate;
+        Ok(())
+    }
+
     pub fn resolve_angular_with(
         &self,
         mut wall: impl FnMut(Id) -> std::result::Result<(Point2, Point2), DimensionDiagnostic>,
@@ -386,7 +522,12 @@ impl DimensionParams {
         &self,
         mut endpoint: impl FnMut(DimensionReference) -> std::result::Result<Point2, DimensionDiagnostic>,
     ) -> std::result::Result<Vec<Point2>, DimensionDiagnostic> {
-        if self.layout == DimensionLayout::Angular || self.validate().is_err() {
+        if matches!(
+            self.layout,
+            DimensionLayout::Angular | DimensionLayout::ArcLength
+        ) || self.layout.is_elevation()
+            || self.validate().is_err()
+        {
             return Err(DimensionDiagnostic::InvalidGeometry);
         }
         let points = self
@@ -451,7 +592,11 @@ impl DimensionParams {
         )?;
         ensure(
             match self.layout {
-                DimensionLayout::Aligned | DimensionLayout::Angular => self.additional.is_empty(),
+                DimensionLayout::Aligned
+                | DimensionLayout::ElevationHorizontal
+                | DimensionLayout::ElevationVertical
+                | DimensionLayout::Angular
+                | DimensionLayout::ArcLength => self.additional.is_empty(),
                 DimensionLayout::Chain | DimensionLayout::Baseline => !self.additional.is_empty(),
             },
             "invalid dimension anchor count for layout",
@@ -468,6 +613,14 @@ impl DimensionParams {
                 "invalid angular radius or spacing",
             )?;
         }
+        if self.layout == DimensionLayout::ArcLength {
+            ensure(
+                matches!((self.first.wall_endpoint(), self.second.wall_endpoint()),
+                    (Some((a, DimensionEndpoint::Start)), Some((b, DimensionEndpoint::End))) if a == b)
+                    && self.baseline_spacing_m == 0.25,
+                "arc length requires Start then End of one wall and canonical spacing",
+            )?;
+        }
         ensure(
             self.baseline_spacing_m.is_finite()
                 && self.baseline_spacing_m > 0.0
@@ -476,6 +629,25 @@ impl DimensionParams {
         )?;
         let references: Vec<_> = self.references().collect();
         for (i, reference) in references.iter().enumerate() {
+            let feature = match reference {
+                DimensionReference::ElevationWall { feature, .. }
+                | DimensionReference::ElevationOpening { feature, .. } => Some(feature),
+                _ => None,
+            };
+            ensure(
+                self.layout.is_elevation() == feature.is_some(),
+                "dimension reference coordinate system does not match layout",
+            )?;
+            if let Some(feature) = feature {
+                ensure(
+                    (self.layout == DimensionLayout::ElevationHorizontal)
+                        == matches!(
+                            feature,
+                            ElevationDimensionFeature::Start | ElevationDimensionFeature::End
+                        ),
+                    "dimension reference is on the wrong elevation axis",
+                )?;
+            }
             if let DimensionReference::WallFace { station_m, .. } = reference {
                 ensure(
                     station_m.is_finite()
@@ -511,6 +683,18 @@ impl DimensionParams {
         &self,
         model: &Model,
     ) -> std::result::Result<ResolvedDimension, DimensionDiagnostic> {
+        if self.layout.is_elevation() {
+            return self.resolve_elevation(model);
+        }
+        if self.layout == DimensionLayout::ArcLength {
+            let arc = self.resolve_arc_length(model)?;
+            let path = model.walls[&self.first.entity()].parameters.path;
+            return Ok(ResolvedDimension {
+                first: path.start(),
+                second: path.end(),
+                length_metres: arc.length_metres,
+            });
+        }
         let points = self.resolve_points(model)?;
         Ok(ResolvedDimension {
             first: points[0],
@@ -537,6 +721,14 @@ impl DimensionParams {
 
     pub fn validate_creation(&self, model: &Model) -> Result<()> {
         self.validate()?;
+        if self.layout == DimensionLayout::ArcLength {
+            return self
+                .resolve_arc_length(model)
+                .map(|_| ())
+                .map_err(|reason| {
+                    os_core::Error::Invalid(format!("arc reference cannot resolve: {reason:?}"))
+                });
+        }
         if self.layout == DimensionLayout::Angular {
             return self.resolve_angular(model).map(|_| ()).map_err(|reason| {
                 os_core::Error::Invalid(format!("angular references cannot resolve: {reason:?}"))
@@ -556,8 +748,15 @@ pub(crate) fn validate(model: &Model) -> Result<()> {
             model
                 .views
                 .get(&dimension.parameters.view)
-                .is_some_and(|view| view.parameters.kind == ViewKind::Plan),
-            "dimension requires an existing floor-plan view",
+                .is_some_and(|view| {
+                    view.parameters.kind
+                        == if dimension.parameters.layout.is_elevation() {
+                            ViewKind::Elevation
+                        } else {
+                            ViewKind::Plan
+                        }
+                }),
+            "dimension requires a matching existing drawing view",
         )?;
     }
     Ok(())

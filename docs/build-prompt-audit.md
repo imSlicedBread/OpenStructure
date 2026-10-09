@@ -88,7 +88,7 @@ deferred with the permitted adapter task; they must never be reported as passing
 
 | Requirement | Evidence |
 | --- | --- |
-| All named paths/artifacts | Cargo.toml, README.md, LICENSE.pending, NOTICE; docs/architecture.md, file-format.md, plugin-api.md, decisions/; all named crates, plugins/walls, fixtures, tests, tools |
+| All named paths/artifacts | Cargo.toml, README.md, the then-current LICENSE.pending (since superseded by LICENSE), NOTICE; docs/architecture.md, file-format.md, plugin-api.md, decisions/; all named crates, plugins/walls, fixtures, tests, tools |
 | Tests for identity/units/walls/geometry/transactions/save/migration/manifests/permissions | Workspace crate tests plus `os-ui/tests/vertical_slice.rs` and desktop input test; final command results in verification.md |
 | CI format, Clippy, unit/doc tests, dependency audit, license metadata | `.github/workflows/ci.yml`; local equivalent checks, no claim that hosted CI was executed |
 | Independent implementation and identity | Original authored code and layouts, OpenStructure app title, NOTICE; no native `.rvt` implementation or proprietary schemas/assets imported |
@@ -97,9 +97,9 @@ deferred with the permitted adapter task; they must never be reported as passing
 | Developer docs and example plugin | README commands/workflow/limits, architecture/format/protocol docs, working `plugins/walls` and smoke example |
 | Final feature/limit/command/decision/next-task report | verification.md and user-facing completion report |
 
-License selection remains pending as in the initial repository. LICENSE.pending
-and non-publishable packages make that status explicit. Dependency metadata is
-checked; a legal review is not claimed.
+At the time of this historical audit, license selection was pending. The project
+subsequently adopted Apache License 2.0; dependency metadata is checked, while
+third-party redistribution terms still require review before release.
 
 ## Current audit status
 

@@ -20,9 +20,7 @@
 
 <!-- Limitations, follow-up work, screenshots, or migration notes. -->
 
-## Contribution rights
+## Contribution terms
 
-- [ ] I have read `CONTRIBUTING.md` and can authorize the material I submitted.
-
-Before merge, maintainers and the contributor must agree in writing on rights
-to use the contribution in OpenStructure.
+- [ ] I have read `CONTRIBUTING.md` and am submitting my contribution under
+  Apache License 2.0.

@@ -14,7 +14,7 @@ use std::{
 };
 
 pub const OPENING_TYPE_PACKAGE_FORMAT: &str = "OpenStructure.OpeningTypePackage";
-pub const OPENING_TYPE_PACKAGE_VERSION: u32 = 5;
+pub const OPENING_TYPE_PACKAGE_VERSION: u32 = 6;
 pub const MAX_OPENING_TYPE_PACKAGE_BYTES: usize = 1024 * 1024;
 
 /// Source identities are references for import remapping, not destination identities.
@@ -125,7 +125,7 @@ impl OpeningTypePackage {
             "nil opening material reference",
         )?;
         ensure(
-            self.materials.len() <= 3,
+            self.materials.len() <= 3 + os_model::OpeningFamily::MAX_EXTRUSIONS,
             "too many opening material snapshots",
         )?;
         let mut supplied = BTreeSet::new();
@@ -155,18 +155,7 @@ impl OpeningTypePackage {
 }
 
 fn material_references(params: &OpeningTypeParams) -> BTreeSet<Id> {
-    [
-        params.family.panel_material,
-        params.family.frame_material,
-        params
-            .family
-            .side_lite
-            .as_ref()
-            .and_then(|lite| lite.material),
-    ]
-    .into_iter()
-    .flatten()
-    .collect()
+    params.family.material_references()
 }
 
 /// Snapshot one native type and only its referenced materials, deduplicated and
@@ -307,6 +296,19 @@ pub fn parse_opening_type_package(bytes: &[u8]) -> Result<OpeningTypePackage> {
         family.insert("version".into(), 6.into());
         family.insert("door_leaves".into(), "Single".into());
         value["version"] = 5.into();
+    }
+    if value["version"] == 5 {
+        let family = value["parameters"]["family"]
+            .as_object_mut()
+            .ok_or_else(|| storage("invalid v5 family"))?;
+        ensure(
+            family.get("version") == Some(&serde_json::json!(6))
+                && !family.contains_key("extrusions"),
+            "ambiguous legacy package extrusions",
+        )?;
+        family.insert("version".into(), 7.into());
+        family.insert("extrusions".into(), serde_json::json!([]));
+        value["version"] = 6.into();
     }
     let wire: WirePackage = serde_json::from_value(value).map_err(storage)?;
     ensure(

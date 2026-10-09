@@ -176,7 +176,16 @@ impl WallGesture {
             self.installed && self.current(editor, active),
             "Installed Wall gesture is stale or belongs to another provider",
         )?;
-        self.installed_parameters(editor, active, self.parameters(point)?)
+        let parameters = self.parameters(point)?;
+        if let Some((source, WallEdit::ResizeStart | WallEdit::ResizeEnd)) = self.edit {
+            crate::opening_tools::endpoint_resize_preview(
+                editor.document.model(),
+                source,
+                &parameters,
+                self.context,
+            )?;
+        }
+        self.installed_parameters(editor, active, parameters)
     }
     /// Reuse the bounded Wall adapter for an already validated rigid transform.
     #[cfg(feature = "external-plugins")]
@@ -631,6 +640,14 @@ impl WallGesture {
             let independent = &editor.document.model().walls[&source].parameters;
             parameters.thickness = independent.thickness;
             parameters.material = independent.material;
+        }
+        if let Some((source, WallEdit::ResizeStart | WallEdit::ResizeEnd)) = self.edit {
+            crate::opening_tools::endpoint_resize_preview(
+                editor.document.model(),
+                source,
+                &parameters,
+                self.context,
+            )?;
         }
         if let Some((source, mode @ (WallEdit::TrimStart | WallEdit::TrimEnd))) = self.edit {
             let model = editor.document.model();

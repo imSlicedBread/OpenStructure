@@ -12,6 +12,9 @@ use os_model::{
 };
 use std::collections::BTreeSet;
 
+#[path = "wall_level_copy_tests.rs"]
+mod wall_level_copy_tests;
+
 struct Bay {
     walls: BTreeSet<Id>,
     openings: [Id; 2],

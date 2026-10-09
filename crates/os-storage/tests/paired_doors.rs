@@ -128,6 +128,10 @@ fn paired_doors_package_v5_v4_upgrade_and_save_reopen() {
     old["parameters"]["family"]
         .as_object_mut()
         .unwrap()
+        .remove("extrusions");
+    old["parameters"]["family"]
+        .as_object_mut()
+        .unwrap()
         .remove("door_leaves");
     assert_eq!(
         parse_opening_type_package(&serde_json::to_vec(&old).unwrap()).unwrap(),

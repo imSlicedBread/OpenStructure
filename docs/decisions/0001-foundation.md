@@ -31,5 +31,5 @@ IFC remains an explicit unavailable adapter. Export never writes placeholder IFC
 files. IFC conformance and external-viewer round trips are deferred until an
 adapter exists. No native proprietary format is supported.
 
-The repository's pending license decision is preserved in LICENSE.pending and
-package metadata rather than selecting a software license without owner review.
+At the time of this decision, the license selection was pending. The project
+subsequently adopted Apache License 2.0; see the current [LICENSE](../../LICENSE).

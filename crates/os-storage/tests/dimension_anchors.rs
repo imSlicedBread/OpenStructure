@@ -22,7 +22,8 @@ fn schema_42_dimension_anchors_frozen_migration_and_roundtrip() {
         .values_mut()
     {
         ty["parameters"]["window_operation"] = json!("Fixed");
-        ty["parameters"]["family"]["version"] = 6.into();
+        ty["parameters"]["family"]["version"] = 7.into();
+        ty["parameters"]["family"]["extrusions"] = json!([]);
         ty["parameters"]["family"]["side_lite"] = Value::Null;
     }
     for schedule in expected["schedules"].as_object_mut().unwrap().values_mut() {

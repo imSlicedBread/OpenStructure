@@ -11,6 +11,9 @@ use os_render::plan::{PlanContext, PlanLine};
 pub(super) mod spacing;
 
 #[cfg(test)]
+#[path = "opening_elevation_tests.rs"]
+mod elevation_tests;
+#[cfg(test)]
 #[path = "opening_sill_tests.rs"]
 mod sill_tests;
 
@@ -26,6 +29,79 @@ pub(super) fn panel_mesh(model: &Model, id: Id) -> Result<os_geometry::Mesh> {
     let p = model.resolve_opening(&model.openings[&id].parameters)?;
     let host = &model.resolve_wall(p.host)?.parameters;
     os_geometry::openings::component_mesh(&p, host, model.levels[&host.level].parameters.elevation)
+}
+
+/// Validate and derive a disposable endpoint-resize candidate for every hosted
+/// opening. Stored offsets remain relative to the wall Start; the complete
+/// opening set must still fit and satisfy its constraints after the host edit.
+pub(super) fn endpoint_resize_preview(
+    model: &Model,
+    wall_id: Id,
+    parameters: &os_model::WallParams,
+    context: PlanContext,
+) -> Result<Vec<PlanLine>> {
+    if !has_openings(model, wall_id) {
+        return Ok(Vec::new());
+    }
+    let mut candidate = model.clone();
+    let assigned_type = candidate.wall_type_assignments.contains_key(&wall_id);
+    let wall = candidate
+        .walls
+        .get_mut(&wall_id)
+        .ok_or_else(|| Error::Invalid("Endpoint resize host is missing".into()))?;
+    let mut parameters = parameters.clone();
+    if assigned_type {
+        parameters.thickness = wall.parameters.thickness;
+        parameters.material = wall.parameters.material;
+    }
+    wall.parameters = parameters;
+    candidate.validate()?;
+    let settings = candidate
+        .views
+        .get(&context.view_id)
+        .and_then(|view| view.parameters.plan)
+        .ok_or_else(|| Error::Invalid("Endpoint resize plan settings are missing".into()))?;
+    let target_phase = settings
+        .target_phase
+        .or_else(|| candidate.latest_phase())
+        .ok_or_else(|| Error::Invalid("Endpoint resize plan phase is missing".into()))?;
+
+    // A valid model is not sufficient: preflight the host cut and every panel
+    // mesh so commit and the transient symbols agree about geometric support.
+    host_mesh(&candidate, wall_id)?;
+    let resolved_wall = candidate.resolve_wall(wall_id)?;
+    let elevation = candidate.levels[&resolved_wall.parameters.level]
+        .parameters
+        .elevation;
+    let wall_phase_visible = settings
+        .phase_filter
+        .includes(candidate.phase_status(wall_id, target_phase)?);
+    let opening_ids: Vec<_> = candidate
+        .openings
+        .values()
+        .filter(|opening| opening.parameters.host == wall_id)
+        .map(|opening| opening.id())
+        .collect();
+    let mut lines = Vec::new();
+    for id in opening_ids {
+        panel_mesh(&candidate, id)?;
+        let opening = candidate.resolve_opening(&candidate.openings[&id].parameters)?;
+        if !settings.visibility.shows_opening(opening.kind)
+            || !wall_phase_visible
+            || !settings
+                .phase_filter
+                .includes(candidate.phase_status(id, target_phase)?)
+        {
+            continue;
+        }
+        let symbol = plan_symbol(id, &opening, &resolved_wall.parameters, elevation, context)?;
+        ensure(
+            lines.len().saturating_add(symbol.len()) <= os_render::plan::MAX_PLAN_ELEMENTS,
+            "hosted opening preview exceeds the plan line limit",
+        )?;
+        lines.extend(symbol);
+    }
+    Ok(lines)
 }
 
 const SWING_SEGMENTS: usize = 16;
@@ -1564,6 +1640,26 @@ pub(super) fn plan_symbol(
             }
         }
     }
+    // A fully closed door has zero-length swing-arc chords. They are not
+    // drawable edges and must not reach the checked PlanDrawing adapter.
+    lines.retain(|line| line.start.distance(line.end) > 1e-9);
+    for (index, (a, b, role, _)) in
+        os_geometry::opening_extrusions::plan_edges(p, wall, elevation, context.range)?
+            .into_iter()
+            .enumerate()
+    {
+        let a = context.basis.world_to_plane(a)?;
+        let b = context.basis.world_to_plane(b)?;
+        if let Some((start, end)) = crate::plan_workspace::clip_plan_segment(a, b, context.crop) {
+            lines.push(PlanLine {
+                entity: id,
+                feature: 1_000_000 + index as u32,
+                start,
+                end,
+                role,
+            });
+        }
+    }
     Ok(lines)
 }
 
@@ -1600,7 +1696,7 @@ pub(super) struct OpeningDraft {
     error: Option<String>,
 }
 impl OpeningDraft {
-    fn begin(
+    pub(crate) fn begin(
         editor: &Editor,
         view: Option<Id>,
         selection: Option<Id>,
@@ -1608,7 +1704,7 @@ impl OpeningDraft {
         preferred_type: Option<Id>,
     ) -> Result<Self> {
         let view = view.ok_or_else(|| Error::Invalid("Open a floor plan first".into()))?;
-        let context = editor.native_plan_context(view)?;
+        let context = editor.native_view_context(view)?;
         let selection = selection
             .ok_or_else(|| Error::Invalid("Select a native wall or opening first".into()))?;
         let model = editor.document.model();
@@ -1618,19 +1714,24 @@ impl OpeningDraft {
             .walls
             .get(&host)
             .ok_or_else(|| Error::Invalid("Select a native wall".into()))?;
+        let elevation = model.views[&view].parameters.elevation;
         ensure(
-            model.views[&view].parameters.level == Some(wall.parameters.level),
+            elevation.is_some_and(|s| s.host == host)
+                || (elevation.is_none()
+                    && model.views[&view].parameters.level == Some(wall.parameters.level)),
             "Use a floor plan on the host wall level",
         )?;
-        let drawing = editor.native_wall_plan(view)?;
-        ensure(
-            context.show_walls
-                && drawing
-                    .items(context)?
-                    .iter()
-                    .any(|item| item.entity == host),
-            "Host wall is hidden in this plan",
-        )?;
+        if elevation.is_none() {
+            let drawing = editor.native_wall_plan(view)?;
+            ensure(
+                context.show_walls
+                    && drawing
+                        .items(context)?
+                        .iter()
+                        .any(|item| item.entity == host),
+                "Host wall is hidden in this plan",
+            )?;
+        }
         let editing = kind.is_none();
         let (id, params, resolved) = if editing {
             let opening = selected_opening
@@ -1697,15 +1798,14 @@ impl OpeningDraft {
             (Id::new(), parameters, resolved)
         };
         ensure(
-            model.views[&view]
-                .parameters
-                .plan
-                .unwrap()
-                .visibility
-                .shows_opening(resolved.kind),
+            elevation.is_some()
+                || model.views[&view]
+                    .parameters
+                    .plan
+                    .is_some_and(|p| p.visibility.shows_opening(resolved.kind)),
             "This opening category is hidden in the plan",
         )?;
-        if editing {
+        if editing && elevation.is_none() {
             ensure(
                 editor.native_drawing(view)?.is_native_line(id),
                 "Opening is hidden in this plan",
@@ -1775,13 +1875,13 @@ impl OpeningDraft {
             error: None,
         })
     }
-    fn current(&self, editor: &Editor, view: Option<Id>, selected: Option<Id>) -> bool {
+    pub(crate) fn current(&self, editor: &Editor, view: Option<Id>, selected: Option<Id>) -> bool {
         self.session == editor.document.session_id()
             && self.revision == editor.document.revision()
             && view == Some(self.view)
             && selected == Some(self.selection)
             && self.activation == editor.host.activation_id(os_walls::PLUGIN_ID)
-            && editor.native_plan_context(self.view).ok() == Some(self.context)
+            && editor.native_view_context(self.view).ok() == Some(self.context)
             && crate::plan_workspace::plan_provider_signature(editor) == self.providers
     }
 
@@ -1875,7 +1975,7 @@ impl OpeningDraft {
     }
 
     /// Validate a disposable candidate. Preview never changes model or history.
-    fn preview(
+    pub(crate) fn preview(
         &self,
         editor: &Editor,
         view: Option<Id>,
@@ -1909,6 +2009,11 @@ impl OpeningDraft {
             .filter(|o| o.parameters.host == resolved.host)
         {
             panel_mesh(&model, opening.id())?;
+        }
+        if model.views[&self.view].parameters.elevation.is_some() {
+            return Ok(crate::plan::elevations::preview(&model, self.context)?
+                .provider_lines(self.context)?
+                .to_vec());
         }
         let wall = &model.walls[&resolved.host].parameters;
         let context = editor.native_plan_context(self.view)?;
@@ -1984,6 +2089,22 @@ impl OpeningDraft {
             editor.regenerate()?;
         }
         Ok(if delete { self.params.host } else { self.id })
+    }
+}
+
+impl OpeningDraft {
+    /// Elevation x is host station; y is absolute project elevation. A click
+    /// positions the opening centre horizontally and a window's sill vertically.
+    pub(crate) fn elevation_point(&mut self, model: &Model, point: Point2) -> Result<()> {
+        let resolved = model.resolve_opening(&self.params)?;
+        let wall = model.resolve_wall(resolved.host)?.parameters;
+        let z = model.levels[&wall.level].parameters.elevation;
+        self.values[0] = (point.x - resolved.width * 0.5).to_string();
+        if self.kind == OpeningKind::Window {
+            self.override_sill = true;
+            self.values[3] = (point.y - z).to_string();
+        }
+        Ok(())
     }
 }
 

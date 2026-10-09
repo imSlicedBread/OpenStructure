@@ -49,6 +49,47 @@ impl Harness {
         harness
     }
 
+    fn with_room(size: egui::Vec2, scale: f32) -> (Self, Id, Id, Id) {
+        let (mut app, room, _, view, partition) = crate::opening_schedule::rooms::tests::fixture();
+        app.opening_schedule.open = false;
+        let material = crate::opening_schedule::rooms::tests::add_material(&mut app);
+        let mut parameters = app.editor.document.model().rooms[&room].parameters.clone();
+        parameters.floor_material = Some(material);
+        app.editor
+            .command(
+                "Assign room floor material",
+                Command::UpdateRoom {
+                    id: room,
+                    parameters,
+                },
+            )
+            .unwrap();
+        app.plans.poll(&app.editor);
+        app.focus_plan(Some(view));
+
+        let ctx = egui::Context::default();
+        theme::apply(&ctx);
+        let mut harness = Self {
+            app,
+            ctx,
+            size,
+            scale,
+            time: 0.0,
+            view,
+            output: egui::FullOutput::default(),
+        };
+        harness.settle();
+        let camera = harness.app.plans.cameras.get_mut(&view).unwrap();
+        camera.center = Point2::new(2.0, 1.5);
+        camera.pixels_per_metre = 40.0;
+        harness.app.plans.split = true;
+        harness.app.plans.snaps.enabled = false;
+        harness.frame(vec![]);
+        harness.app.select(Some(room));
+        harness.settle();
+        (harness, room, material, partition)
+    }
+
     fn frame(&mut self, events: Vec<egui::Event>) {
         self.time += 1.0 / 60.0;
         let mut input = egui::RawInput {
@@ -126,6 +167,148 @@ fn escape() -> egui::Event {
         pressed: true,
         repeat: false,
         modifiers: egui::Modifiers::NONE,
+    }
+}
+
+#[test]
+fn selected_room_seeds_one_editable_floor_snapshot_with_material_and_history() {
+    for (size, scale) in PROFILES {
+        let (mut h, room, material, partition) = Harness::with_room(size, scale);
+        let context = h.app.editor.native_plan_context(h.view).unwrap();
+        let expected_boundary = h
+            .app
+            .plans
+            .drawing
+            .as_ref()
+            .unwrap()
+            .rooms(context)
+            .unwrap()
+            .iter()
+            .find(|graphic| graphic.entity == room)
+            .unwrap()
+            .boundary
+            .iter()
+            .map(|point| context.basis.plane_to_world(*point).unwrap())
+            .collect::<Vec<_>>();
+        let before = h.app.editor.document.model().clone();
+        let before_scene = h.app.editor.scene.clone();
+        let revision = h.app.editor.document.revision();
+        let history = h.app.editor.document.history_stats();
+
+        let action = h
+            .output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.job.text == "Floor from room" => {
+                    Some(egui::Rect::from_min_size(text.pos, text.galley.size()).center())
+                }
+                _ => None,
+            })
+            .expect("room floor action is visible");
+        h.click(action);
+        let draft = h.app.plans.floor_sketch.as_ref().unwrap();
+        assert_eq!(draft.points, expected_boundary);
+        assert_eq!(draft.material, Some(material));
+        assert_eq!(
+            draft.name,
+            format!("Floor · {}", before.rooms[&room].parameters.name)
+        );
+        assert_eq!(h.app.editor.document.model(), &before);
+        assert_eq!(h.app.editor.document.revision(), revision);
+        assert_eq!(h.app.editor.document.history_stats(), history);
+        assert_eq!(h.app.editor.scene, before_scene);
+
+        h.app.finish_floor_sketch();
+        h.settle();
+        let floor_id = h.app.selected.expect("created floor selected");
+        let committed = h.app.editor.document.model().clone();
+        let floor = &committed.floors[&floor_id];
+        assert_eq!(floor.parameters.boundary, expected_boundary);
+        assert_eq!(floor.parameters.level, h.app.active_level);
+        assert_eq!(floor.parameters.material, Some(material));
+        assert_eq!(floor.parameters.thickness, 0.2);
+        assert_eq!(floor.parameters.top_offset, 0.0);
+        assert_eq!(
+            floor.parameters.name,
+            format!("Floor · {}", before.rooms[&room].parameters.name)
+        );
+        assert_eq!(
+            h.app.editor.document.history_stats().undo_entries,
+            history.undo_entries + 1
+        );
+        assert!(h.app.editor.scene.contains_key(&floor_id));
+        let committed_context = h.app.editor.native_plan_context(h.view).unwrap();
+        assert_eq!(
+            h.app
+                .plans
+                .drawing
+                .as_ref()
+                .unwrap()
+                .floors(committed_context)
+                .unwrap()
+                .iter()
+                .filter(|graphic| graphic.entity == floor_id)
+                .count(),
+            1
+        );
+
+        h.app.history(false);
+        h.settle();
+        assert_eq!(h.app.editor.document.model(), &before);
+        assert_eq!(h.app.editor.scene, before_scene);
+        h.app.history(true);
+        h.settle();
+        assert_eq!(h.app.editor.document.model(), &committed);
+
+        let mut moved = h.app.editor.document.model().room_separation_lines[&partition]
+            .parameters
+            .clone();
+        moved.start.x += 0.5;
+        moved.end.x += 0.5;
+        h.app
+            .editor
+            .command(
+                "Change source room boundary",
+                Command::UpdateRoomSeparationLine {
+                    id: partition,
+                    parameters: moved,
+                },
+            )
+            .unwrap();
+        h.settle();
+        assert_eq!(
+            h.app.editor.document.model().floors[&floor_id]
+                .parameters
+                .boundary,
+            expected_boundary,
+            "room-derived slab is an editable snapshot, not a live room link"
+        );
+    }
+}
+
+#[test]
+fn floor_from_room_rejects_unresolved_boundary_without_mutation() {
+    for (size, scale) in PROFILES {
+        let (mut h, room, _, partition) = Harness::with_room(size, scale);
+        h.app
+            .editor
+            .command(
+                "Remove room boundary",
+                Command::RemoveRoomSeparationLine(partition),
+            )
+            .unwrap();
+        h.settle();
+        h.app.select(Some(room));
+        let before = h.app.editor.document.model().clone();
+        let history = h.app.editor.document.history_stats();
+
+        h.app.begin_floor_from_selected_room(h.view);
+        assert!(h.app.plans.floor_sketch.is_none());
+        assert!(h.app.status_error);
+        assert_eq!(h.app.editor.document.model(), &before);
+        assert_eq!(h.app.editor.document.history_stats(), history);
+        assert!(h.app.editor.document.model().floors.is_empty());
     }
 }
 

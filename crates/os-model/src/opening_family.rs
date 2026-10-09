@@ -48,6 +48,100 @@ pub enum DoorLeaves {
     },
 }
 
+/// Additive solids are owned by the type; picking resolves to the opening instance.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum OpeningAttachment {
+    OpeningFixed,
+    PrimaryPanel,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OpeningExtrusion {
+    pub id: Id,
+    pub name: String,
+    /// Fractions of the attachment frame's width and height, implicit closure.
+    #[serde(deserialize_with = "strict_profile")]
+    pub profile: Vec<Point2>,
+    /// Exact translation in attachment-frame metres (width, height).
+    #[serde(deserialize_with = "strict_point")]
+    pub position: Point2,
+    /// Exact thickness, never silently capped to the host.
+    pub depth: f64,
+    /// Extrusion centre relative to the attachment plane, in metres.
+    pub normal_offset: f64,
+    pub attachment: OpeningAttachment,
+    #[serde(deserialize_with = "required_material")]
+    pub material: Option<Id>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StrictPoint {
+    x: f64,
+    y: f64,
+}
+fn strict_profile<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> std::result::Result<Vec<Point2>, D::Error> {
+    Ok(Vec::<StrictPoint>::deserialize(d)?
+        .into_iter()
+        .map(|p| Point2::new(p.x, p.y))
+        .collect())
+}
+fn strict_point<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Point2, D::Error> {
+    let p = StrictPoint::deserialize(d)?;
+    Ok(Point2::new(p.x, p.y))
+}
+
+impl OpeningExtrusion {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            id: Id::new(),
+            name: name.into(),
+            profile: vec![
+                Point2::new(0.75, 0.45),
+                Point2::new(0.9, 0.45),
+                Point2::new(0.9, 0.48),
+                Point2::new(0.75, 0.48),
+            ],
+            position: Point2::new(0., 0.),
+            depth: 0.02,
+            normal_offset: 0.03,
+            attachment: OpeningAttachment::PrimaryPanel,
+            material: None,
+        }
+    }
+    pub fn validate(&self) -> Result<()> {
+        ensure(!self.id.0.is_nil(), "nil extrusion identity")?;
+        ensure(
+            !self.name.trim().is_empty()
+                && self.name.len() <= 128
+                && !self.name.chars().any(char::is_control),
+            "extrusion name must be 1-128 bytes",
+        )?;
+        OpeningFamily::validate_ring(&self.profile)?;
+        ensure(
+            self.position.is_finite()
+                && self.position.x.abs() <= 10.
+                && self.position.y.abs() <= 10.,
+            "extrusion position must be finite within 10 m",
+        )?;
+        ensure(
+            self.depth.is_finite() && (0.001..=0.5).contains(&self.depth),
+            "extrusion depth must be 1-500 mm",
+        )?;
+        ensure(
+            self.normal_offset.is_finite() && self.normal_offset.abs() <= 0.5,
+            "extrusion normal offset must be within 500 mm",
+        )?;
+        ensure(
+            self.material.is_none_or(|id| !id.0.is_nil()),
+            "nil extrusion material",
+        )
+    }
+}
+
 fn required_side_lite<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> std::result::Result<Option<SideLite>, D::Error> {
@@ -58,6 +152,7 @@ fn required_side_lite<'de, D: serde::Deserializer<'de>>(
 #[serde(deny_unknown_fields)]
 pub struct OpeningFamily {
     pub version: u32,
+    pub extrusions: Vec<OpeningExtrusion>,
     pub door_leaves: DoorLeaves,
     pub host_cut: OpeningHostCut,
     pub operation: OpeningComponentOperation,
@@ -90,7 +185,8 @@ fn required_material<'de, D: serde::Deserializer<'de>>(
 impl Default for OpeningFamily {
     fn default() -> Self {
         Self {
-            version: 6,
+            version: 7,
+            extrusions: Vec::new(),
             door_leaves: DoorLeaves::Single,
             host_cut: OpeningHostCut::Rectangular,
             operation: OpeningComponentOperation::ProfileExtrusion,
@@ -117,6 +213,25 @@ fn cross(a: Point2, b: Point2, c: Point2) -> f64 {
 
 impl OpeningFamily {
     pub const MAX_VERTICES: usize = 32;
+    pub const MAX_EXTRUSIONS: usize = 16;
+
+    pub fn material_references(&self) -> std::collections::BTreeSet<Id> {
+        [
+            self.panel_material,
+            self.frame_material,
+            self.side_lite.as_ref().and_then(|s| s.material),
+        ]
+        .into_iter()
+        .flatten()
+        .chain(self.extrusions.iter().filter_map(|s| s.material))
+        .collect()
+    }
+
+    pub fn remap_extrusion_ids(&mut self) {
+        for solid in &mut self.extrusions {
+            solid.id = Id::new();
+        }
+    }
 
     pub fn rectangle() -> Vec<Point2> {
         vec![
@@ -139,7 +254,28 @@ impl OpeningFamily {
     }
 
     pub fn validate(&self) -> Result<()> {
-        ensure(self.version == 6, "unsupported opening family version")?;
+        ensure(self.version == 7, "unsupported opening family version")?;
+        ensure(
+            self.extrusions.len() <= Self::MAX_EXTRUSIONS,
+            "too many authored opening extrusions",
+        )?;
+        let mut ids = std::collections::BTreeSet::new();
+        for solid in &self.extrusions {
+            solid.validate()?;
+            ensure(ids.insert(solid.id), "duplicate extrusion identity")?;
+        }
+        if !self.extrusions.is_empty() {
+            ensure(
+                self.door_leaves == DoorLeaves::Single
+                    && self.rectangular_cut()
+                    && self
+                        .profile
+                        .iter()
+                        .all(|p| p.x == 0. || p.x == 1. || p.y == 0. || p.y == 1.)
+                    && Self::rectangle().iter().all(|p| self.profile.contains(p)),
+                "authored extrusions require a single rectangular primary panel and rectangular cut",
+            )?;
+        }
         if let DoorLeaves::Paired { active_fraction } = self.door_leaves {
             ensure(
                 active_fraction.is_finite() && active_fraction > 0. && active_fraction < 1.,
@@ -306,6 +442,42 @@ impl OpeningFamily {
             ensure(
                 horizontal >= 0.001 && vertical >= 0.001,
                 "frame leaves less than 1 mm for the opening component",
+            )?;
+        }
+        for solid in &self.extrusions {
+            let (w, h) = if solid.attachment == OpeningAttachment::PrimaryPanel {
+                let (a, b) = self.primary_interval(width)?;
+                (
+                    b - a,
+                    height
+                        - self.frame_width
+                            * if kind == crate::OpeningKind::Window {
+                                2.
+                            } else {
+                                1.
+                            },
+                )
+            } else {
+                (width, height)
+            };
+            let points: Vec<_> = solid
+                .profile
+                .iter()
+                .map(|p| Point2::new(p.x * w + solid.position.x, p.y * h + solid.position.y))
+                .collect();
+            ensure(
+                points
+                    .iter()
+                    .all(|p| p.x >= 0. && p.x <= w && p.y >= 0. && p.y <= h),
+                "extrusion profile/position exceeds attachment frame",
+            )?;
+            ensure(
+                points
+                    .iter()
+                    .zip(points.iter().cycle().skip(1))
+                    .take(points.len())
+                    .all(|(a, b)| a.distance(*b) >= 0.001),
+                "extrusion edges need at least 1 mm at every instance",
             )?;
         }
         Ok(())
@@ -668,9 +840,9 @@ mod tests {
         let mut future = serde_json::to_value(&family).unwrap();
         future["operation"] = serde_json::json!("Sweep");
         assert!(serde_json::from_value::<OpeningFamily>(future).is_err());
-        family.version = 7;
+        family.version = 8;
         assert!(family.validate().is_err());
-        family.version = 6;
+        family.version = 7;
         family.frame_width = 0.3;
         assert!(
             family

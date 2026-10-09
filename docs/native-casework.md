@@ -23,7 +23,7 @@ cancel placement without committing.
 Placed casework participates in plan cropping/range, plan drawing and picking,
 selection filters, 3D scene regeneration, undo/redo, and native save/reopen.
 Schema 61→62 adds the `casework_types` and `casework` collections; native
-full-model plugin compatibility is API 43/schema 62. Generic plugin API 2 and
+full-model plugin compatibility is API 44/schema 63. Generic plugin API 2 and
 container 2 are unchanged.
 
 IFC export explicitly refuses projects containing casework or casework types;

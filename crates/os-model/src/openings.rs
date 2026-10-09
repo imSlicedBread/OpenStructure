@@ -176,6 +176,10 @@ impl OpeningTypeParams {
             "doors require Center pane position",
         )?;
         validate_dimensions(self.kind, self.width, self.height, self.sill)?;
+        ensure(
+            self.family.extrusions.is_empty() || self.window_operation == WindowOperation::Fixed,
+            "authored extrusions support Fixed windows only",
+        )?;
         self.family.validate_for(self.width, self.height, self.kind)
     }
 }
@@ -381,6 +385,11 @@ impl ResolvedOpening {
         self.validate_open_state()?;
         host.validate()?;
         ensure(
+            self.family.extrusions.is_empty()
+                || (host.path.is_straight() && self.window_operation == WindowOperation::Fixed),
+            "authored extrusions require straight hosts and single doors or Fixed windows",
+        )?;
+        ensure(
             self.family.door_leaves == crate::DoorLeaves::Single || host.path.is_straight(),
             "paired doors require a straight host; choose a straight wall or a Single door type",
         )?;
@@ -442,18 +451,7 @@ impl ResolvedOpening {
 pub(crate) fn validate(model: &Model) -> Result<()> {
     for ty in model.opening_types.values() {
         model.resolve_opening_type(ty.id())?;
-        for material in [
-            ty.parameters.family.panel_material,
-            ty.parameters.family.frame_material,
-            ty.parameters
-                .family
-                .side_lite
-                .as_ref()
-                .and_then(|lite| lite.material),
-        ]
-        .into_iter()
-        .flatten()
-        {
+        for material in ty.parameters.family.material_references() {
             ensure(
                 model.materials.contains_key(&material),
                 "opening family material missing",

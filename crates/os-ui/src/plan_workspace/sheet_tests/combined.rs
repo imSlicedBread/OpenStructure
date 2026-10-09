@@ -95,13 +95,9 @@ fn combined_sheet_scales_history_navigation_live_edit_reopen_and_pdf() {
         let output = ctx.run(raw_input(size, scale, 1.0, vec![]), |ctx| {
             app.plan_workspace(ctx)
         });
-        for label in ["Edit source plan", "Edit source section"] {
-            assert!(
-                output.shapes.iter().any(
-                    |s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.job.text == label)
-                )
-            );
-        }
+        assert!(output.shapes.iter().any(
+            |s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.job.text == "Edit source plan")
+        ));
         let page = app.sheet_page().unwrap();
         app.plans.pdf_path = "combined-preview.pdf".into();
         app.prepare_sheet_pdf(&page);
@@ -110,6 +106,12 @@ fn combined_sheet_scales_history_navigation_live_edit_reopen_and_pdf() {
             page.to_pdf().unwrap()
         );
         // The source navigation action and picker preserve the persisted layout.
+        app.plans.sheet_draft.as_mut().unwrap().selected = Some(
+            app.editor.document.model().sheets[&sheet]
+                .parameters
+                .viewports[1]
+                .id,
+        );
         click(&mut app, &ctx, size, scale, "Edit source section");
         assert_eq!(app.plans.active, Some(section));
         let _ = ctx.run(
@@ -207,7 +209,30 @@ fn combined_add_and_both_source_actions_are_reachable() {
         );
         let ctx = egui::Context::default();
         theme::apply(&ctx);
-        click(&mut app, &ctx, size, scale, "Add linked Section");
+        let mut draft = sheet_layout::Draft::new(&app.editor, sheet);
+        draft.source = Some(section);
+        app.plans.sheet_draft = Some(draft);
+        click(&mut app, &ctx, size, scale, "Add linked view");
+        assert_eq!(
+            app.editor.document.model().sheets[&sheet]
+                .parameters
+                .viewports
+                .len(),
+            1,
+            "adding a view edits only the draft"
+        );
+        let draft = app.plans.sheet_draft.as_mut().unwrap();
+        for (v, x) in draft.parameters.viewports.iter_mut().zip([110.0, 310.0]) {
+            v.paper_center_mm = Point2::new(x, 128.0);
+            v.width_mm = 184.0;
+            v.height_mm = 220.0;
+        }
+        // Derive the newly requested source before Apply.
+        for _ in 0..20 {
+            app.plans.poll(&app.editor);
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        click(&mut app, &ctx, size, scale, "Apply layout");
         assert!(!app.status_error, "{}", app.status);
         assert_eq!(
             app.editor.document.model().sheets[&sheet]
@@ -217,11 +242,15 @@ fn combined_add_and_both_source_actions_are_reachable() {
             2
         );
         settle(&mut app);
+        app.plans.sheet_draft = Some(sheet_layout::Draft::new(&app.editor, sheet));
         click(&mut app, &ctx, size, scale, "Edit source plan");
         assert_eq!(app.plans.active, Some(plan));
         assert!(app.plans.active_sheet.is_none());
         app.open_sheet(sheet);
         settle(&mut app);
+        let mut draft = sheet_layout::Draft::new(&app.editor, sheet);
+        draft.selected = Some(draft.parameters.viewports[1].id);
+        app.plans.sheet_draft = Some(draft);
         click(&mut app, &ctx, size, scale, "Edit source section");
         assert_eq!(app.plans.active, Some(section));
         assert!(app.plans.active_sheet.is_none());

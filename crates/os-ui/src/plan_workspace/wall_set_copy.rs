@@ -21,6 +21,15 @@ pub(super) struct Identities {
 
 impl Identities {
     pub(super) fn new(model: &Model, ids: &BTreeSet<Id>, view: Id) -> Result<Self> {
+        Self::with_tags(model, ids, view, true)
+    }
+
+    pub(super) fn with_tags(
+        model: &Model,
+        ids: &BTreeSet<Id>,
+        view: Id,
+        copy_tags: bool,
+    ) -> Result<Self> {
         ensure(
             (1..=64).contains(&ids.len()),
             "Copy walls requires 1–64 native straight walls",
@@ -77,7 +86,9 @@ impl Identities {
         let tags: BTreeSet<_> = model
             .opening_tags
             .values()
-            .filter(|t| t.parameters.view == view && openings.contains(&t.parameters.opening))
+            .filter(|t| {
+                copy_tags && t.parameters.view == view && openings.contains(&t.parameters.opening)
+            })
             .take(MAX_DEPENDENTS + 1)
             .map(|t| t.id())
             .collect();
@@ -126,11 +137,45 @@ impl Identities {
     }
 
     pub(super) fn candidate(&self, original: &Model, delta: Point2) -> Result<Candidate> {
-        check_point(delta)?;
         ensure(
             delta.x != 0.0 || delta.y != 0.0,
             "Copy walls requires a nonzero displacement",
         )?;
+        self.build_candidate(original, delta, None)
+    }
+
+    pub(super) fn candidate_on_level(&self, original: &Model, level: Id) -> Result<Candidate> {
+        ensure(
+            self.tags.is_empty(),
+            "Cross-level copy cannot carry view-owned tags",
+        )?;
+        ensure(
+            original.levels.contains_key(&level),
+            "Copy destination level is missing",
+        )?;
+        self.build_candidate(original, Point2::default(), Some(level))
+    }
+
+    fn build_candidate(
+        &self,
+        original: &Model,
+        delta: Point2,
+        level: Option<Id>,
+    ) -> Result<Candidate> {
+        check_point(delta)?;
+        let remap_header = |header: &mut Header, id: Id| {
+            self.header(header, id);
+            if let Some(destination) = level {
+                let source = original.walls[self.walls.keys().next().unwrap()]
+                    .parameters
+                    .level;
+                for target in header.relationships.values_mut().flatten() {
+                    if *target == source {
+                        *target = destination;
+                    }
+                }
+            }
+        };
         let shift = |point: Point2| -> Result<Point2> {
             let point = Point2::new(point.x + delta.x, point.y + delta.y);
             check_point(point)?;
@@ -143,15 +188,18 @@ impl Identities {
                 .get(&source)
                 .ok_or_else(|| Error::Invalid("Copy source wall is missing".into()))?
                 .clone();
-            self.header(&mut wall.header, id);
+            remap_header(&mut wall.header, id);
             let start = shift(wall.parameters.start())?;
             let end = shift(wall.parameters.end())?;
             ensure(
-                start != wall.parameters.start() || end != wall.parameters.end(),
+                level.is_some() || start != wall.parameters.start() || end != wall.parameters.end(),
                 "Copy displacement is below coordinate precision",
             )?;
             *wall.parameters.path.straight_start_mut()? = start;
             *wall.parameters.path.straight_end_mut()? = end;
+            if let Some(level) = level {
+                wall.parameters.level = level;
+            }
             commands.push(Command::AddWall(wall));
             if let Some(assignment) = original.wall_type_assignments.get(&source) {
                 commands.push(Command::AssignWallType {
@@ -167,7 +215,7 @@ impl Identities {
                 .get(&source)
                 .ok_or_else(|| Error::Invalid("Copy source opening is missing".into()))?
                 .clone();
-            self.header(&mut opening.header, id);
+            remap_header(&mut opening.header, id);
             opening.parameters.host = copied_wall(&self.walls, opening.parameters.host)?;
             commands.push(Command::AddOpening(opening));
             copy_lifecycle(original, source, id, &mut commands);
@@ -186,7 +234,7 @@ impl Identities {
                 .get(&source)
                 .ok_or_else(|| Error::Invalid("Copy source join is missing".into()))?
                 .clone();
-            self.header(&mut join.header, id);
+            remap_header(&mut join.header, id);
             match &mut join.parameters {
                 WallJoinParams::Butt { a, b } => {
                     a.wall = copied_wall(&self.walls, a.wall)?;

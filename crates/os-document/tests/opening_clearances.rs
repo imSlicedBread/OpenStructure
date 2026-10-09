@@ -142,6 +142,30 @@ fn clearance_lock_analytic_resize_type_width_batch_and_history() {
 }
 
 #[test]
+fn clearance_lock_unrelated_copy_preserves_accepted_source_offset_exactly() {
+    let (doc, host, _, ids) = fixture(0.);
+    let mut model = doc.model().clone();
+    // A loaded, valid offset need not have the exact bits produced by solving
+    // the constraint again. It must survive unrelated transactions verbatim.
+    model.openings.get_mut(&ids[1]).unwrap().parameters.offset = 7.0 + 1e-10;
+    let mut doc = Document::from_model(model.clone()).unwrap();
+    let mut copy = model.walls[&host].clone();
+    copy.header.id = Id::new();
+    let copied = copy.id();
+    let commands = vec![Command::AddWall(copy)];
+    let preview = doc.preview_commands(commands.clone()).unwrap();
+    assert_eq!(preview.openings, model.openings);
+    assert_eq!(doc.model(), &model);
+    doc.execute("Unrelated copy", commands).unwrap();
+    assert_eq!(doc.model().openings, model.openings);
+    assert!(doc.model().walls.contains_key(&copied));
+    assert!(doc.undo());
+    assert_eq!(doc.model(), &model);
+    assert!(doc.redo());
+    assert_eq!(doc.model().openings, model.openings);
+}
+
+#[test]
 fn clearance_lock_rejects_explicit_move_even_with_simultaneous_host_resize() {
     for resize in [false, true] {
         let (mut doc, host, _, ids) = fixture(0.);

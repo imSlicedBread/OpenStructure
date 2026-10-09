@@ -9,6 +9,13 @@ use os_render::plan::{
 };
 use std::collections::BTreeMap;
 
+mod opening_sections;
+mod section_fills;
+use opening_sections::SectionOpening;
+use section_fills::{SectionFills, material_surface};
+pub(crate) mod elevations;
+mod facades;
+
 /// Shared by frozen drawing snapshots and placement previews. Never persisted.
 pub(crate) fn opening_tag_graphic(
     model: &os_model::Model,
@@ -52,12 +59,16 @@ pub struct PreparedProviderPlan {
 pub(crate) enum NativeViewSnapshot {
     Plan(Box<PlanSnapshot>),
     Section(Box<PreparedSectionSnapshot>),
+    Elevation(Box<elevations::Snapshot>),
+    Facade(Box<facades::Snapshot>),
 }
 impl NativeViewSnapshot {
     pub(crate) fn derive(self) -> Result<PlanDrawing> {
         match self {
             Self::Plan(snapshot) => (*snapshot).derive(),
             Self::Section(snapshot) => (*snapshot).derive(),
+            Self::Elevation(snapshot) => (*snapshot).derive(),
+            Self::Facade(snapshot) => (*snapshot).derive(),
         }
     }
 }
@@ -138,6 +149,8 @@ impl Editor {
                 settings_revision: 0,
                 plan: None,
                 section: Some(settings),
+                facade: None,
+                elevation: None,
             },
         );
         let id = view.id();
@@ -233,6 +246,8 @@ impl Editor {
         match parameters.kind {
             ViewKind::Plan => self.native_plan_context(view),
             ViewKind::Section => self.native_section_context(view),
+            ViewKind::Elevation => self.native_elevation_context(view),
+            ViewKind::Facade => self.native_facade_context(view),
             ViewKind::Perspective => Err(os_core::Error::Invalid(
                 "perspective view has no 2D drawing context".into(),
             )),
@@ -304,6 +319,14 @@ impl Editor {
                 .section_snapshot(view)
                 .map(Box::new)
                 .map(NativeViewSnapshot::Section),
+            ViewKind::Elevation => self
+                .elevation_snapshot(view)
+                .map(Box::new)
+                .map(NativeViewSnapshot::Elevation),
+            ViewKind::Facade => self
+                .facade_snapshot(view)
+                .map(Box::new)
+                .map(NativeViewSnapshot::Facade),
             ViewKind::Perspective => Err(os_core::Error::Invalid(
                 "perspective view has no 2D drawing".into(),
             )),
@@ -343,6 +366,7 @@ impl Editor {
             .filter(|wall| model.levels[&wall.parameters.level].parameters.building == building)
             .map(|wall| os_geometry::walls::NativeWall::from_model(model, wall.id()))
             .collect::<Result<Vec<_>>>()?;
+        let openings = SectionOpening::capture(model, building)?;
         let floors = model
             .floors
             .values()
@@ -353,6 +377,7 @@ impl Editor {
                 ensure(top.is_finite(), "section floor elevation overflow")?;
                 Ok(SectionFloor {
                     entity: floor.id(),
+                    material: floor.parameters.material,
                     boundary: floor.parameters.boundary.clone(),
                     holes: floor.parameters.holes.clone(),
                     top,
@@ -462,6 +487,12 @@ impl Editor {
         }
         Ok(PreparedSectionSnapshot {
             railing_members,
+            openings,
+            material_colors: model
+                .materials
+                .iter()
+                .map(|(id, m)| (*id, m.parameters.color))
+                .collect(),
             source: SectionSnapshot {
                 roofs: model
                     .roofs
@@ -726,6 +757,12 @@ impl Editor {
                 )
             })
             .collect();
+        let facade_markers = model
+            .views
+            .values()
+            .filter(|v| v.parameters.level == Some(plan_level))
+            .filter_map(|v| v.parameters.facade.map(|s| (v.id(), s)))
+            .collect();
         let mut ceiling_resolver = os_geometry::ceilings::CeilingResolver::default();
         // Category visibility affects symbols and references, not the physical
         // apertures already resolved from the phase-filtered wall source above.
@@ -981,6 +1018,7 @@ impl Editor {
                 })
                 .collect(),
             section_markers,
+            facade_markers,
             roofs: model
                 .roofs
                 .values()
@@ -1242,6 +1280,7 @@ pub(crate) struct PlanSnapshot {
         f64,
     )>,
     section_markers: Vec<(Id, os_model::SectionViewSettings)>,
+    facade_markers: Vec<(Id, os_model::FacadeViewSettings)>,
     unavailable: Vec<Id>,
     grids: Vec<os_render::plan::PlanGrid>,
 }
@@ -1250,7 +1289,7 @@ impl PlanSnapshot {
         self.derive_with_provider_lines(BTreeMap::new())
     }
     fn derive_with_provider_lines(
-        self,
+        mut self,
         mut lines: BTreeMap<Id, Vec<os_render::plan::PlanLine>>,
     ) -> Result<PlanDrawing> {
         lines.retain(|id, _| !self.excluded.contains(id));
@@ -1263,6 +1302,25 @@ impl PlanSnapshot {
             &self.openings,
             &self.dimensions,
         )?;
+        let arc_length_items = self
+            .dimensions
+            .iter()
+            .filter(|(_, p)| p.layout == os_model::DimensionLayout::ArcLength)
+            .map(|(id, p)| {
+                let resolved = p.resolve_arc_length_with(|wall| {
+                    let (_, level, path, _) = self
+                        .dimension_walls
+                        .iter()
+                        .find(|(id, _, _, _)| *id == wall)
+                        .ok_or(os_model::DimensionDiagnostic::MissingWall)?;
+                    if *level != self.plan_level {
+                        return Err(os_model::DimensionDiagnostic::WrongLevel);
+                    }
+                    Ok(*path)
+                });
+                arc_length_graphic(self.context, *id, p.orphan_hint, resolved)
+            })
+            .collect::<Result<Vec<_>>>()?;
         let angular_items = self
             .dimensions
             .iter()
@@ -1483,6 +1541,18 @@ impl PlanSnapshot {
             }
             solids.insert(id, cells);
             for (opening_id, opening) in self.openings.iter().filter(|(_, p)| p.host == id) {
+                for (i, (_, _, _, surface)) in os_geometry::opening_extrusions::plan_edges(
+                    opening,
+                    parameters,
+                    elevation,
+                    self.context.range,
+                )?
+                .into_iter()
+                .enumerate()
+                {
+                    self.railing_surfaces
+                        .insert((*opening_id, 1_000_000 + i as u32), surface);
+                }
                 native_lines.insert(
                     *opening_id,
                     crate::opening_tools::plan_symbol(
@@ -1524,6 +1594,32 @@ impl PlanSnapshot {
             );
         }
         let mut unavailable = self.unavailable;
+        for (entity, s) in self.facade_markers {
+            let a = s.origin;
+            let b = s.marker_end();
+            let mid = s.world_point(s.marker_length * 0.5, 0.);
+            let tip = s.world_point(s.marker_length * 0.5, 0.6);
+            let segments = [
+                (a, b),
+                (mid, tip),
+                (tip, s.world_point(s.marker_length * 0.5 - 0.15, 0.35)),
+                (tip, s.world_point(s.marker_length * 0.5 + 0.15, 0.35)),
+            ];
+            let lines = segments
+                .into_iter()
+                .enumerate()
+                .map(|(i, (a, b))| {
+                    Ok(os_render::plan::PlanLine {
+                        entity,
+                        feature: i as u32,
+                        start: self.context.basis.world_to_plane(a)?,
+                        end: self.context.basis.world_to_plane(b)?,
+                        role: PlanRole::Projected,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            native_lines.insert(entity, lines);
+        }
         unavailable.extend(native_lines.keys().copied());
         let drawing = PlanDrawing::from_layered_footprints(self.context, &solids, unavailable)?
             .without_wall_seams(&seams)?;
@@ -1578,6 +1674,7 @@ impl PlanSnapshot {
             .with_columns(&column_items)?
             .with_casework(&casework_items)?
             .with_angular_dimensions(angular_items)?
+            .with_arc_length_dimensions(arc_length_items)?
             .with_room_tags(self.room_tags)?
             .with_opening_tags(self.opening_tags)?
             .with_room_boundary_diagnostic(room_diagnostic)?
@@ -1756,6 +1853,7 @@ fn section_marker_lines(
 
 struct SectionFloor {
     entity: Id,
+    material: Option<Id>,
     boundary: Vec<Point2>,
     holes: Vec<Vec<Point2>>,
     top: f64,
@@ -1767,6 +1865,8 @@ struct SectionFloor {
 pub(crate) struct PreparedSectionSnapshot {
     source: SectionSnapshot,
     railing_members: BTreeMap<Id, Vec<os_geometry::Mesh>>,
+    openings: Vec<SectionOpening>,
+    material_colors: BTreeMap<Id, [u8; 3]>,
 }
 
 impl std::ops::Deref for PreparedSectionSnapshot {
@@ -1778,7 +1878,9 @@ impl std::ops::Deref for PreparedSectionSnapshot {
 
 impl PreparedSectionSnapshot {
     pub(crate) fn derive(self) -> Result<PlanDrawing> {
-        self.source.derive_with_railings(self.railing_members)
+        self.source
+            .derive_with_components(self.railing_members, self.openings)
+            .map(|drawing| drawing.with_material_colors(self.material_colors))
     }
 }
 
@@ -1801,18 +1903,28 @@ impl SectionSnapshot {
         self.derive_with_railings(BTreeMap::new())
     }
 
+    #[cfg(test)]
     fn derive_with_railings(
         self,
         railing_members: BTreeMap<Id, Vec<os_geometry::Mesh>>,
     ) -> Result<PlanDrawing> {
+        self.derive_with_components(railing_members, Vec::new())
+    }
+
+    fn derive_with_components(
+        self,
+        railing_members: BTreeMap<Id, Vec<os_geometry::Mesh>>,
+        openings: Vec<SectionOpening>,
+    ) -> Result<PlanDrawing> {
+        use os_geometry::plan::PlanRole;
         use os_geometry::section::SECTION_TOLERANCE;
-        use os_geometry::{plan::PlanRole, section::vertical_section};
         use os_render::plan::PlanLine;
 
         let mut segments: BTreeMap<Id, Vec<(Point2, Point2)>> = BTreeMap::new();
         let mut layer_lines: BTreeMap<Id, Vec<PlanLine>> = BTreeMap::new();
         let mut line_surfaces = BTreeMap::new();
         let mut raw_segment_count = 0usize;
+        let mut fills = SectionFills::default();
         for wall in self.walls {
             if wall.layers.iter().any(|layer| layer.id.is_some()) {
                 segments.entry(wall.entity).or_default();
@@ -1826,7 +1938,16 @@ impl SectionSnapshot {
                     for cell in cells {
                         add_section_contours(
                             by_wall.entry(wall.entity).or_default(),
-                            vertical_section(&cell, self.plane)?,
+                            fills.capture(
+                                0,
+                                wall.entity,
+                                os_geometry::SurfaceIdentity {
+                                    layer: layer.id,
+                                    material: layer.material,
+                                },
+                                &cell,
+                                self.plane,
+                            )?,
                             &mut raw_segment_count,
                         )?;
                     }
@@ -1862,11 +1983,20 @@ impl SectionSnapshot {
                 }
                 continue;
             }
-            for (_, cells) in wall.layer_mesh_regions()? {
+            for (layer, cells) in wall.layer_mesh_regions()? {
                 for mesh in &cells {
                     add_section_contours(
                         segments.entry(wall.entity).or_default(),
-                        vertical_section(mesh, self.plane)?,
+                        fills.capture(
+                            0,
+                            wall.entity,
+                            os_geometry::SurfaceIdentity {
+                                layer: layer.id,
+                                material: layer.material,
+                            },
+                            mesh,
+                            self.plane,
+                        )?,
                         &mut raw_segment_count,
                     )?;
                 }
@@ -1881,7 +2011,13 @@ impl SectionSnapshot {
             )?;
             add_section_contours(
                 segments.entry(floor.entity).or_default(),
-                vertical_section(&mesh, self.plane)?,
+                fills.capture(
+                    0,
+                    floor.entity,
+                    material_surface(floor.material),
+                    &mesh,
+                    self.plane,
+                )?,
                 &mut raw_segment_count,
             )?;
         }
@@ -1889,7 +2025,13 @@ impl SectionSnapshot {
             let mesh = os_geometry::ceilings::ceiling_mesh(&parameters, elevation)?;
             add_section_contours(
                 segments.entry(entity).or_default(),
-                vertical_section(&mesh, self.plane)?,
+                fills.capture(
+                    0,
+                    entity,
+                    material_surface(parameters.material),
+                    &mesh,
+                    self.plane,
+                )?,
                 &mut raw_segment_count,
             )?;
         }
@@ -1897,7 +2039,13 @@ impl SectionSnapshot {
             let mesh = os_geometry::roofs::roof_mesh(parameters, *elevation)?;
             add_section_contours(
                 segments.entry(*entity).or_default(),
-                vertical_section(&mesh, self.plane)?,
+                fills.capture(
+                    0,
+                    *entity,
+                    material_surface(parameters.material),
+                    &mesh,
+                    self.plane,
+                )?,
                 &mut raw_segment_count,
             )?;
         }
@@ -1915,7 +2063,13 @@ impl SectionSnapshot {
             let mesh = os_geometry::stairs::stair_mesh(&parameters, lower, upper)?;
             add_section_contours(
                 segments.entry(entity).or_default(),
-                vertical_section(&mesh, self.plane)?,
+                fills.capture(
+                    0,
+                    entity,
+                    material_surface(parameters.material),
+                    &mesh,
+                    self.plane,
+                )?,
                 &mut raw_segment_count,
             )?;
         }
@@ -1923,7 +2077,13 @@ impl SectionSnapshot {
             let mesh = os_geometry::ramps::ramp_mesh(&parameters, lower, upper)?;
             add_section_contours(
                 segments.entry(entity).or_default(),
-                vertical_section(&mesh, self.plane)?,
+                fills.capture(
+                    0,
+                    entity,
+                    material_surface(parameters.material),
+                    &mesh,
+                    self.plane,
+                )?,
                 &mut raw_segment_count,
             )?;
         }
@@ -1936,7 +2096,13 @@ impl SectionSnapshot {
                 if !section_plane_crosses_component(&component.mesh, self.plane)? {
                     continue;
                 }
-                let contours = vertical_section(&component.mesh, self.plane)?;
+                let contours = fills.capture(
+                    1,
+                    assembly,
+                    material_surface(component.component.material),
+                    &component.mesh,
+                    self.plane,
+                )?;
                 let mut component_edges = Vec::new();
                 add_section_contours(&mut component_edges, contours, &mut raw_segment_count)?;
                 let retained = reduce_section_edges(component_edges)?;
@@ -1984,6 +2150,15 @@ impl SectionSnapshot {
             }
         }
 
+        opening_sections::append_contours(
+            openings,
+            self.plane,
+            &mut curtain_lines,
+            &mut line_surfaces,
+            &mut raw_segment_count,
+            &mut fills,
+        )?;
+
         for (entity, members) in railing_members {
             ensure(
                 members.len() <= os_model::MAX_STAIR_RAILING_POSTS as usize + 1,
@@ -1998,7 +2173,13 @@ impl SectionSnapshot {
                 let mut edges = Vec::new();
                 add_section_contours(
                     &mut edges,
-                    vertical_section(&member, self.plane)?,
+                    fills.capture(
+                        3,
+                        entity,
+                        member.surfaces.first().copied().unwrap_or_default(),
+                        &member,
+                        self.plane,
+                    )?,
                     &mut raw_segment_count,
                 )?;
                 let retained = reduce_section_edges(edges)?;
@@ -2109,6 +2290,7 @@ impl SectionSnapshot {
             .and_then(|drawing| drawing.with_stairs(stair_lines))
             .and_then(|drawing| drawing.with_ramps(ramp_lines))
             .map(|drawing| drawing.with_line_surfaces(line_surfaces))
+            .and_then(|drawing| drawing.with_section_fills(fills.finish()))
     }
 }
 
@@ -2564,7 +2746,10 @@ fn derive_dimension_graphics(
     let mut output = Vec::new();
     let mut count = 0usize;
     for (entity, parameters) in dimensions {
-        if parameters.layout == os_model::DimensionLayout::Angular {
+        if matches!(
+            parameters.layout,
+            os_model::DimensionLayout::Angular | os_model::DimensionLayout::ArcLength
+        ) {
             continue;
         }
         let orphan_hint = context.basis.world_to_plane(parameters.orphan_hint)?;
@@ -2648,6 +2833,44 @@ fn derive_dimension_graphics(
         output.push(item);
     }
     Ok(output)
+}
+
+pub(super) fn arc_length_graphic(
+    context: PlanContext,
+    entity: Id,
+    hint: Point2,
+    resolved: std::result::Result<
+        os_model::ResolvedArcLengthDimension,
+        os_model::DimensionDiagnostic,
+    >,
+) -> Result<os_render::plan::PlanArcLengthDimension> {
+    let hint = context.basis.world_to_plane(hint)?;
+    let mut graphic = os_render::plan::PlanArcLengthDimension {
+        entity,
+        center: hint,
+        axis_radius: 1.0,
+        radius: 1.0,
+        start_radians: 0.0,
+        sweep_radians: 1.0,
+        value_m: 1.0,
+        orphan_hint: hint,
+        diagnostic: None,
+    };
+    match resolved {
+        Err(reason) => graphic.diagnostic = Some(format!("{reason:?}")),
+        Ok(arc) => {
+            graphic.center = context.basis.world_to_plane(arc.center)?;
+            let start = context.basis.world_to_plane(arc.point(0.0))?;
+            graphic.start_radians = (start.y - graphic.center.y).atan2(start.x - graphic.center.x);
+            // HorizontalBasis is right-handed; rotating a basis preserves the signed sweep.
+            graphic.sweep_radians = arc.sweep_radians;
+            graphic.axis_radius = arc.axis_radius;
+            graphic.radius = arc.radius;
+            graphic.value_m = arc.length_metres;
+        }
+    }
+    graphic.validate()?;
+    Ok(graphic)
 }
 
 pub(super) fn angular_graphic(

@@ -400,14 +400,14 @@ pub fn compose_view_sheet(
     compose_sheet_views(paper, &[(viewport_title, viewport, context, drawing)])
 }
 
-/// Compose one or two checked drawings, with independent mappings and clips.
+/// Compose up to 64 checked drawings, with independent mappings and clips.
 pub fn compose_sheet_views(
     paper: PaperSheetInfo<'_>,
     views: &[(&str, PaperViewport, PlanContext, &PlanDrawing)],
 ) -> Result<SheetPage> {
     ensure(
-        (1..=2).contains(&views.len()),
-        "sheet requires one or two viewports",
+        (1..=64).contains(&views.len()),
+        "sheet requires one to 64 viewports",
     )?;
     let mut marks = Vec::new();
     for (index, (title, viewport, context, drawing)) in views.iter().enumerate() {
@@ -493,6 +493,26 @@ fn compose_view_marks(
     let clip = Some(viewport_rect);
     if let Some(bounds) = model_bounds {
         let viewport_color = PaperColor::BLACK;
+        for fill in drawing.section_fills(context)? {
+            let points = crate::plan::clip_section_polygon(&fill.points, Some(bounds))?;
+            if points.is_empty() {
+                continue;
+            }
+            ensure(marks.len() < MAX_SHEET_MARKS, "sheet mark budget exceeded")?;
+            let [red, green, blue] = drawing
+                .surface_color(fill.surface)
+                .unwrap_or([232, 232, 232]);
+            marks.push(path_mark(
+                points
+                    .into_iter()
+                    .map(|point| viewport.model_to_paper(point))
+                    .collect::<Result<Vec<_>>>()?,
+                true,
+                None,
+                Some(PaperColor { red, green, blue }),
+                clip,
+            ));
+        }
         for item in drawing
             .items(context)?
             .iter()
@@ -591,6 +611,9 @@ fn compose_view_marks(
         for dimension in drawing.angular_dimensions(context)? {
             append_angular_dimension(&mut marks, dimension, context, bounds, viewport, clip)?;
         }
+        for dimension in drawing.arc_length_dimensions(context)? {
+            append_arc_length_dimension(&mut marks, dimension, context, bounds, viewport, clip)?;
+        }
         for line in drawing.detail_lines(context)? {
             if let Some((start, end)) = clip_segment(line.start, line.end, bounds) {
                 push_line(
@@ -608,6 +631,34 @@ fn compose_view_marks(
             }
         }
     }
+    // Larger layouts own their captions inside each viewport, not in an
+    // unbounded horizontal row in the page title block. Reserve a 7 mm footer
+    // without changing the viewport's model mapping or persisted frame.
+    let caption = (count > 2).then_some(PaperRect {
+        min_mm: Point2::new(viewport_rect.min_mm.x, viewport_rect.max_mm.y - 7.0),
+        max_mm: viewport_rect.max_mm,
+    });
+    if let Some(caption) = caption {
+        let content = PaperRect {
+            max_mm: Point2::new(viewport_rect.max_mm.x, caption.min_mm.y),
+            ..viewport_rect
+        };
+        marks.retain_mut(|mark| {
+            let original = mark.clip.unwrap_or(viewport_rect);
+            let clip = PaperRect {
+                min_mm: Point2::new(
+                    original.min_mm.x.max(content.min_mm.x),
+                    original.min_mm.y.max(content.min_mm.y),
+                ),
+                max_mm: Point2::new(
+                    original.max_mm.x.min(content.max_mm.x),
+                    original.max_mm.y.min(content.max_mm.y),
+                ),
+            };
+            mark.clip = Some(clip);
+            clip.min_mm.x < clip.max_mm.x && clip.min_mm.y < clip.max_mm.y
+        });
+    }
     let geometry_count = marks.len();
     // The viewport frame and title block are paper annotations, not model geometry.
     let frame = PaperRect {
@@ -615,6 +666,16 @@ fn compose_view_marks(
         max_mm: Point2::new(paper.width_mm - 8.0, paper.height_mm - 8.0),
     };
     if index == 0 {
+        if count > 2 {
+            ensure(
+                paper.name.chars().count() as f64 * 4.0 * 1.05 <= paper.width_mm - 161.0,
+                "sheet name overflows title block; shorten the sheet name",
+            )?;
+            ensure(
+                paper.number.chars().count() as f64 * 4.0 * 1.05 <= 125.0,
+                "sheet number overflows title block; shorten the sheet number",
+            )?;
+        }
         marks.push(path_mark(
             vec![
                 frame.min_mm,
@@ -679,20 +740,27 @@ fn compose_view_marks(
     let title = format!("{viewport_title} - 1:{}", viewport.scale_denominator);
     if count > 1 {
         ensure(
-            title.chars().count() as f64 * 2.5 * 1.05 <= 190.0,
+            title.chars().count() as f64 * 2.5 * 1.05
+                <= caption.map_or(190.0, |r| r.max_mm.x - r.min_mm.x - 4.0),
             "viewport title overflow; shorten source name or title",
         )?;
     }
     push_page_text(
         &mut marks,
-        Point2::new(
-            frame.min_mm.x + 4.0 + index as f64 * 200.0,
-            paper.height_mm - 39.0,
+        caption.map_or(
+            Point2::new(
+                frame.min_mm.x + 4.0 + index as f64 * 200.0,
+                paper.height_mm - 39.0,
+            ),
+            |r| Point2::new(r.min_mm.x + 2.0, r.max_mm.y - 2.0),
         ),
         &title,
         2.5,
         PaperColor::BLACK,
     )?;
+    if let Some(caption) = caption {
+        marks.last_mut().expect("viewport caption").clip = Some(caption);
+    }
     let viewport_frame = [
         viewport_rect.min_mm,
         Point2::new(viewport_rect.max_mm.x, viewport_rect.min_mm.y),
@@ -1262,6 +1330,51 @@ fn append_dimension(
         if bounds_contains(bounds, anchor) {
             push_text(marks, anchor, &text, 2.2, viewport, clip, stroke.color)?;
         }
+    }
+    Ok(())
+}
+
+fn append_arc_length_dimension(
+    marks: &mut Vec<PaperMark>,
+    dimension: &crate::plan::PlanArcLengthDimension,
+    context: PlanContext,
+    bounds: PlanCrop,
+    viewport: PaperViewport,
+    clip: Option<PaperRect>,
+) -> Result<()> {
+    let stroke = PaperStroke {
+        color: if dimension.diagnostic.is_some() {
+            PaperColor {
+                red: 170,
+                green: 0,
+                blue: 0,
+            }
+        } else {
+            PaperColor::BLACK
+        },
+        width_mm: 0.15,
+        dashed: false,
+    };
+    for (start, end) in dimension.segments(context)? {
+        if let Some((a, b)) = clip_segment(start, end, bounds) {
+            push_line(marks, a, b, stroke, viewport, clip)?;
+        }
+    }
+    let anchor = if dimension.diagnostic.is_some() {
+        dimension.orphan_hint
+    } else {
+        dimension.point(0.5)
+    };
+    if bounds_contains(bounds, anchor) {
+        push_text(
+            marks,
+            anchor,
+            &dimension.label(),
+            2.2,
+            viewport,
+            clip,
+            stroke.color,
+        )?;
     }
     Ok(())
 }
@@ -1967,5 +2080,177 @@ mod tests {
             )
             .is_err()
         );
+        // Independent placements may reuse a source without losing clips or
+        // scales. The title block is emitted exactly once for any count.
+        let frames: Vec<_> = (0..4)
+            .map(|i| PaperViewport {
+                center_mm: Point2::new(
+                    if i % 2 == 0 { 110.0 } else { 310.0 },
+                    if i < 2 { 60.0 } else { 160.0 },
+                ),
+                width_mm: 180.0,
+                height_mm: 80.0,
+                scale_denominator: if i % 2 == 0 { 100.0 } else { 50.0 },
+                ..left
+            })
+            .collect();
+        let views: Vec<_> = frames
+            .iter()
+            .enumerate()
+            .map(|(i, frame)| {
+                (
+                    ["Plan", "Left elevation", "Right elevation", "Section"][i],
+                    *frame,
+                    context,
+                    &a,
+                )
+            })
+            .collect();
+        let multi = compose_sheet_views(paper, &views).unwrap();
+        assert_eq!(multi, compose_sheet_views(paper, &views).unwrap());
+        assert_eq!(
+            multi.to_pdf().unwrap(),
+            compose_sheet_views(paper, &views)
+                .unwrap()
+                .to_pdf()
+                .unwrap()
+        );
+        for frame in frames {
+            let mut content = frame.paper_rect().unwrap();
+            content.max_mm.y -= 7.0;
+            assert!(multi.marks().iter().any(|m| m.clip == Some(content)));
+            assert_eq!(
+                frame.model_to_paper(Point2::new(1.0, 0.0)).unwrap().x - frame.center_mm.x,
+                1000.0 / frame.scale_denominator
+            );
+        }
+        assert_eq!(
+            multi
+                .marks()
+                .iter()
+                .filter(|m| matches!(&m.kind, PaperMarkKind::Text { text, .. } if text == "A101"))
+                .count(),
+            1
+        );
+        assert!(compose_sheet_views(paper, &vec![("Too many", left, context, &a); 65]).is_err());
+    }
+
+    #[test]
+    fn multi_view_captions_and_estimated_text_extents_stay_in_allocated_bounds() {
+        let context = PlanContext {
+            session_id: Id::new(),
+            model_revision: 0,
+            view_id: Id::new(),
+            settings_revision: 0,
+            basis: HorizontalBasis::default(),
+            range: PlanRange::default(),
+            crop: None,
+            scale_denominator: 100.0,
+            show_walls: true,
+            show_extensions: false,
+        };
+        let drawing = PlanDrawing::from_prisms(context, &BTreeMap::new(), vec![]).unwrap();
+        let paper = PaperSheetInfo {
+            width_mm: 420.0,
+            height_mm: 297.0,
+            number: "A101",
+            name: "Coordinated",
+        };
+        for count in [4, 8, 64] {
+            let columns = if count == 64 { 8 } else { 4 };
+            let frames: Vec<_> = (0..count)
+                .map(|i| PaperViewport {
+                    center_mm: Point2::new(
+                        18.0 + (i % columns) as f64 * (384.0 / columns as f64) + 22.0,
+                        18.0 + (i / columns) as f64 * 28.0 + 13.0,
+                    ),
+                    width_mm: 44.0,
+                    height_mm: 26.0,
+                    model_center_m: Point2::default(),
+                    scale_denominator: if i % 2 == 0 { 50.0 } else { 100.0 },
+                })
+                .collect();
+            let views: Vec<_> = frames
+                .iter()
+                .map(|v| ("View", *v, context, &drawing))
+                .collect();
+            let page = compose_sheet_views(paper, &views).unwrap();
+            let mut captions = 0;
+            for mark in page.marks() {
+                if let PaperMarkKind::Text {
+                    baseline_mm,
+                    text,
+                    size_mm,
+                    ..
+                } = &mark.kind
+                {
+                    // Conservative width plus full em ascent and half em
+                    // descent: check extents, not merely the baseline point.
+                    let min = Point2::new(baseline_mm.x, baseline_mm.y - size_mm);
+                    let max = Point2::new(
+                        baseline_mm.x + text.chars().count() as f64 * size_mm * 1.05,
+                        baseline_mm.y + size_mm * 0.5,
+                    );
+                    assert!(
+                        min.x >= 8.0 && min.y >= 8.0 && max.x <= 412.0 && max.y <= 289.0,
+                        "{count}: {text} {min:?} {max:?}"
+                    );
+                    if text.starts_with("View - 1:") {
+                        let frame = frames[captions].paper_rect().unwrap();
+                        let caption = mark
+                            .clip
+                            .expect("caption is clipped to its allocated footer");
+                        assert_eq!(
+                            caption.min_mm,
+                            Point2::new(frame.min_mm.x, frame.max_mm.y - 7.0)
+                        );
+                        assert_eq!(caption.max_mm, frame.max_mm);
+                        assert!(caption.contains(min) && caption.contains(max));
+                        assert!(
+                            max.y <= 249.0,
+                            "viewport caption cannot enter reserved title block"
+                        );
+                        captions += 1;
+                    } else {
+                        assert!(
+                            min.y >= 249.0,
+                            "page titles stay in the reserved title block"
+                        );
+                        if text == paper.name {
+                            assert!(max.x <= 271.0);
+                        }
+                        if text == paper.number {
+                            assert!(min.x >= 283.0);
+                        }
+                    }
+                }
+            }
+            assert_eq!(captions, count);
+            assert_eq!(
+                page.to_pdf().unwrap(),
+                compose_sheet_views(paper, &views)
+                    .unwrap()
+                    .to_pdf()
+                    .unwrap()
+            );
+            let mut too_long = views.clone();
+            too_long[2].0 = "Caption too long for its allocated viewport";
+            assert!(
+                compose_sheet_views(paper, &too_long)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("title overflow")
+            );
+            assert!(
+                compose_sheet_views(
+                    PaperSheetInfo {
+                        name: &"N".repeat(100),
+                        ..paper
+                    },
+                    &views
+                )
+                .is_err()
+            );
+        }
     }
 }

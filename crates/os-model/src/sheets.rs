@@ -57,7 +57,7 @@ pub struct SheetViewport {
     pub id: Id,
     pub view: Id,
     /// Center in the source 2D view plane: plan-plane metres for Plans, or
-    /// section station/elevation metres for Sections. Independent of camera.
+    /// station/absolute-elevation metres for Sections and Elevations. Independent of camera.
     #[serde(deserialize_with = "strict_point")]
     pub model_center_m: Point2,
     /// Paper origin is top-left, +X right and +Y down, in millimetres.
@@ -141,9 +141,13 @@ impl SheetParams {
                         ViewKind::Section => {
                             view.parameters.level.is_some() && view.parameters.section.is_some()
                         }
+                        ViewKind::Elevation => view.parameters.elevation.is_some(),
+                        ViewKind::Facade => {
+                            view.parameters.facade.is_some() && view.parameters.level.is_some()
+                        }
                         ViewKind::Perspective => false,
                     }),
-                "sheet viewport requires an existing configured Plan or Section view",
+                "sheet viewport requires an existing configured Plan, Section or Elevation view",
             )?;
             let center = viewport.paper_center_mm;
             ensure(
@@ -443,6 +447,8 @@ mod tests {
         let section = View::new(
             "core.view",
             ViewParams {
+                facade: None,
+                elevation: None,
                 name: "Building section".into(),
                 kind: ViewKind::Section,
                 level: Some(level),
@@ -484,6 +490,8 @@ mod tests {
         let section = View::new(
             "core.view",
             ViewParams {
+                facade: None,
+                elevation: None,
                 name: "Building section".into(),
                 kind: ViewKind::Section,
                 level: Some(level),

@@ -601,8 +601,8 @@ Unresolved mandatory DWG translation or team editing is a blocker, not a hidden
 Fuzz project, drawing, font, image, CAD and plugin inputs as their parsers are added;
 enforce bounded decoding, path validation and runtime isolation. Audit dependencies,
 content/font provenance, redistributability and installation/update integrity.
-Follow the proprietary host license and limited plugin-development permission in
-`LICENSE`; review dependency redistribution terms before any production release.
+Follow the Apache 2.0 license in `LICENSE`; review dependency redistribution
+terms before any production release.
 Do not promise immunity from claims.
 
 Ship versioned installation/admin/SDK/user guides, tutorials and original example

@@ -210,6 +210,14 @@ pub fn export(m: &Model) -> Result<Exchange<Vec<u8>>> {
         ));
     }
     let mut type_operations = BTreeMap::new();
+    if m.opening_types
+        .values()
+        .any(|ty| !ty.parameters.family.extrusions.is_empty())
+    {
+        return Err(os_core::Error::Unsupported(
+            "IFC authored opening extrusions are unsupported; keep the native .osb document".into(),
+        ));
+    }
     if m.opening_types.values().any(|ty| {
         matches!(
             ty.parameters.family.door_leaves,

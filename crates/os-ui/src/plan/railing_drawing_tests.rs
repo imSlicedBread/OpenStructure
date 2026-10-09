@@ -117,6 +117,8 @@ fn section(editor: &mut Editor, start: Point2, end: Point2) -> Id {
             settings_revision: 0,
             plan: None,
             section: Some(SectionViewSettings::new(start, end, -1., 6.)),
+            facade: None,
+            elevation: None,
         },
     );
     let id = view.id();

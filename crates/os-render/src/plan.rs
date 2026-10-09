@@ -7,6 +7,7 @@ use os_geometry::{
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 mod angular;
+mod arc_length;
 mod casework;
 mod columns;
 pub use casework::PlanCaseworkItem;
@@ -28,9 +29,13 @@ pub use stairs::PlanStairItem;
 mod grids;
 mod overlap;
 mod provider_lines;
+mod section_fills;
 pub use angular::PlanAngularDimension;
+pub use arc_length::{ARC_LENGTH_SEGMENTS, PlanArcLengthDimension};
 pub use grids::PlanGrid;
 pub use provider_lines::PlanLine;
+pub(crate) use section_fills::clip_section_polygon;
+pub use section_fills::{PlanSectionFill, PlanSectionFillPolygon};
 
 pub const MAX_PLAN_ELEMENTS: usize = 10_000;
 /// Bound triangle-based fills so many maximally detailed floors cannot stall
@@ -352,6 +357,7 @@ pub struct PlanDrawing {
     grids: Vec<PlanGrid>,
     grid_segments: Vec<crate::snapping::SnapSegment>,
     lines: Vec<PlanLine>,
+    section_fills: Vec<PlanSectionFillPolygon>,
     rooms: Vec<PlanRoomItem>,
     room_tags: Vec<PlanRoomTag>,
     opening_tags: Vec<PlanOpeningTag>,
@@ -364,6 +370,7 @@ pub struct PlanDrawing {
     room_faces: Vec<PlanRoomFace>,
     dimensions: Vec<PlanDimensionItem>,
     angular_dimensions: Vec<PlanAngularDimension>,
+    arc_length_dimensions: Vec<PlanArcLengthDimension>,
     floors: Vec<PlanFloorItem>,
     ceilings: Vec<PlanCeilingItem>,
     stairs: Vec<PlanStairItem>,
@@ -539,6 +546,7 @@ impl PlanDrawing {
             grids: Vec::new(),
             grid_segments: Vec::new(),
             lines: Vec::new(),
+            section_fills: Vec::new(),
             rooms: Vec::new(),
             room_tags: Vec::new(),
             opening_tags: Vec::new(),
@@ -551,6 +559,7 @@ impl PlanDrawing {
             room_faces: Vec::new(),
             dimensions: Vec::new(),
             angular_dimensions: Vec::new(),
+            arc_length_dimensions: Vec::new(),
             identity: Id::new(),
             floors: Vec::new(),
             ceilings: Vec::new(),
@@ -1133,6 +1142,60 @@ impl PlanDrawing {
         Ok(&self.angular_dimensions)
     }
 
+    pub fn arc_length_dimensions(&self, current: PlanContext) -> Result<&[PlanArcLengthDimension]> {
+        self.items(current)?;
+        Ok(&self.arc_length_dimensions)
+    }
+
+    pub fn with_arc_length_dimensions(
+        mut self,
+        mut items: Vec<PlanArcLengthDimension>,
+    ) -> Result<Self> {
+        ensure(
+            items.len().saturating_mul(ARC_LENGTH_SEGMENTS + 3)
+                + self.angular_dimensions.len().saturating_mul(67)
+                + self
+                    .dimensions
+                    .iter()
+                    .map(PlanDimensionItem::graphic_count)
+                    .sum::<usize>()
+                + self.items.len()
+                + self.lines.len()
+                + self.detail_segment_count
+                + self.separator_segment_count
+                + self.grids.len()
+                + self.floors.len()
+                + self.ceilings.len()
+                + self.columns.len()
+                + self.casework.len()
+                + self.rooms.len()
+                <= MAX_PLAN_ELEMENTS,
+            "arc-length graphics exceed plan budget",
+        )?;
+        let mut ids = BTreeSet::new();
+        for item in &items {
+            item.validate()?;
+            ensure(
+                ids.insert(item.entity)
+                    && !self.source_ids.contains(&item.entity)
+                    && !self.dimensions.iter().any(|d| d.entity == item.entity)
+                    && !self
+                        .angular_dimensions
+                        .iter()
+                        .any(|d| d.entity == item.entity)
+                    && !self.rooms.iter().any(|d| d.entity == item.entity)
+                    && !self.grids.iter().any(|d| d.entity == item.entity)
+                    && !self.lines.iter().any(|d| d.entity == item.entity)
+                    && !self.floors.iter().any(|d| d.entity == item.entity)
+                    && !self.ceilings.iter().any(|d| d.entity == item.entity),
+                "duplicate arc-length dimension identity",
+            )?;
+        }
+        items.sort_by_key(|item| item.entity);
+        self.arc_length_dimensions = items;
+        Ok(self)
+    }
+
     pub fn with_angular_dimensions(mut self, mut items: Vec<PlanAngularDimension>) -> Result<Self> {
         let mut ids = BTreeSet::new();
         ensure(
@@ -1289,6 +1352,11 @@ impl PlanDrawing {
                 hits.push(dimension.entity);
             }
         }
+        for dimension in self.arc_length_dimensions.iter().rev() {
+            if dimension.hit(current, camera, viewport, pointer, radius_pixels)? {
+                hits.push(dimension.entity);
+            }
+        }
         for dimension in dimensions
             .iter()
             .rev()
@@ -1360,7 +1428,7 @@ fn point_in_crop(crop: PlanCrop, point: Point2) -> bool {
     point.x >= crop.min.x && point.x <= crop.max.x && point.y >= crop.min.y && point.y <= crop.max.y
 }
 
-fn crop_dimension_segment(
+pub fn crop_dimension_segment(
     context: PlanContext,
     start: Point2,
     end: Point2,

@@ -1,7 +1,7 @@
 # OpenStructure
 
-OpenStructure is an independent, proprietary BIM authoring platform built with
-Rust. Its public source supports inspection, proposed contributions, and
+OpenStructure is an independent, open-source BIM authoring platform built with
+Rust and licensed under the Apache License 2.0. It supports contributions and
 compatible third-party plugins.
 
 The project aims to provide a practical alternative for parametric building design, documentation, and openBIM interoperability. It is not affiliated with Autodesk or Revit and does not use proprietary Autodesk code, assets, formats, or branding.
@@ -11,7 +11,7 @@ The project aims to provide a practical alternative for parametric building desi
 OpenStructure has a 13-package Rust workspace with a native egui/eframe desktop,
 typed semantic model, atomic edits and bounded snapshot undo/redo, versioned
 `.osb` storage, restricted IFC4 exchange, and a depth-buffered 3D viewport with
-matching entity selection. The current native model is schema 62.
+matching entity selection. The current native model is schema 64.
 
 Native authoring now includes straight and circular walls, bounded straight-wall
 joins, hosted doors and windows, floors, ceilings, roofs, stairs, columns,
@@ -54,7 +54,7 @@ installs or automatically executes a plugin from that file.
 Typed opening properties independently inherit, pin or reset dimensions.
 Selected jamb handles resize with the opposite jamb fixed; the center grip
 still moves the whole opening. Drafts do not mutate the model or 3D scene.
-Native full-model plugins require API 43/schema 62; generic API 2/container 2
+Native full-model plugins require API 45/schema 64; generic API 2/container 2
 remain unchanged.
 Schema 35 adds independent floor/wall/ceiling project material assignments to rooms,
 live material-name-plus-code schedule cells, and subdued floor RGB fills in resolved
@@ -156,11 +156,11 @@ their original evidence; use the B/C audit and coverage ledger for current statu
 
 ## License and contributions
 
-The host code is proprietary. [LICENSE](LICENSE) permits local development and
-grants limited use of the plugin API and independent examples for compatible
-plugins; it does not permit redistribution of the host. Plugin authors retain
-ownership of their original code. Issues and pull requests are welcome under
-the review and rights process in [CONTRIBUTING.md](CONTRIBUTING.md).
+OpenStructure, including the host and bundled plugins, is licensed under the
+[Apache License 2.0](LICENSE). You may use, modify, and redistribute it under
+that license, including for commercial purposes. Independent plugin authors
+choose the terms for their original plugins. Contributions submitted for
+inclusion are offered under Apache 2.0; see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Build and run
 
@@ -248,9 +248,8 @@ replacement. A failed open preserves the current document.
   Fillings have no IFC Body.
   Native views/materials/extension data are not preserved; desktop exchange uses
   explicit loss and replacement confirmations. See [the IFC guide](docs/ifc-roadmap.md).
-- The host is proprietary, with limited permission for plugin development and
-  proposed contributions under [LICENSE](LICENSE). Cargo packages remain
-  non-publishable; dependency redistribution review remains open.
+- Workspace Cargo packages are marked non-publishable. Third-party dependency
+  licenses and redistribution terms remain subject to review before release.
 
 ## Foundation goals
 

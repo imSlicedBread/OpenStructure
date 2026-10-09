@@ -2,6 +2,120 @@ use os_core::{Id, Point2};
 use os_document::{Command, Document};
 use os_model::*;
 
+#[test]
+fn arc_length_transaction_repair_orphan_recovery_and_invalid_offset_are_atomic() {
+    let (doc, mut d, mut w) = setup();
+    let mut m = doc.model().clone();
+    w.parameters.path = WallPath::CircularArc {
+        center: Point2::new(0.0, 0.0),
+        radius: 2.0,
+        start_angle_rad: 0.0,
+        signed_sweep_rad: -4.0,
+    };
+    m.walls.insert(w.id(), w.clone());
+    d.parameters.layout = DimensionLayout::ArcLength;
+    let mut doc = Document::from_model(m.clone()).unwrap();
+    doc.execute("Arc length", vec![Command::AddDimension(d.clone())])
+        .unwrap();
+    assert_eq!(doc.history_stats().undo_entries, 1);
+    let placed = doc.model().clone();
+    assert_eq!(d.parameters.resolve(&placed).unwrap().length_metres, 8.0);
+    assert!(doc.undo());
+    assert_eq!(doc.model(), &m);
+    assert!(doc.redo());
+    assert_eq!(doc.model(), &placed);
+    let mut invalid = d.parameters.clone();
+    invalid.offset_m = -2.0;
+    assert!(
+        doc.execute(
+            "Invalid",
+            vec![Command::UpdateDimension {
+                id: d.id(),
+                parameters: invalid
+            }]
+        )
+        .is_err()
+    );
+    assert_eq!(doc.model(), &placed);
+    for path in [
+        WallPath::CircularArc {
+            center: Point2::new(0.0, 0.0),
+            radius: 3.0,
+            start_angle_rad: 0.0,
+            signed_sweep_rad: 4.0,
+        },
+        WallPath::Straight {
+            start: Point2::new(0.0, 0.0),
+            end: Point2::new(4.0, 0.0),
+        },
+    ] {
+        let mut p = w.parameters.clone();
+        p.path = path;
+        doc.execute(
+            "Host edit",
+            vec![Command::UpdateWall {
+                id: w.id(),
+                parameters: p,
+            }],
+        )
+        .unwrap();
+        assert_eq!(doc.model().dimensions[&d.id()], d);
+        assert_eq!(
+            d.parameters.resolve_arc_length(doc.model()).is_err(),
+            path.is_straight()
+        );
+        assert!(doc.undo());
+        assert_eq!(doc.model(), &placed);
+    }
+    doc.execute("Delete host", vec![Command::RemoveWall(w.id())])
+        .unwrap();
+    assert!(d.parameters.resolve_arc_length(doc.model()).is_err());
+    assert!(doc.undo());
+    assert_eq!(doc.model(), &placed);
+    let mut replacement = w.clone();
+    replacement.header.id = Id::new();
+    doc.execute("New host", vec![Command::AddWall(replacement.clone())])
+        .unwrap();
+    let before = doc.model().clone();
+    let history = doc.history_stats().undo_entries;
+    let mut repair = d.parameters.clone();
+    repair.first = DimensionReference::WallEndpoint {
+        wall: replacement.id(),
+        endpoint: DimensionEndpoint::Start,
+    };
+    // An unpaired change cannot enter history.
+    assert!(
+        doc.execute(
+            "Unpaired",
+            vec![Command::UpdateDimension {
+                id: d.id(),
+                parameters: repair.clone()
+            }]
+        )
+        .is_err()
+    );
+    repair.second = DimensionReference::WallEndpoint {
+        wall: replacement.id(),
+        endpoint: DimensionEndpoint::End,
+    };
+    doc.execute(
+        "Repair",
+        vec![Command::UpdateDimension {
+            id: d.id(),
+            parameters: repair.clone(),
+        }],
+    )
+    .unwrap();
+    assert_eq!(doc.history_stats().undo_entries, history + 1);
+    assert_eq!(doc.model().dimensions[&d.id()].header, d.header);
+    assert_eq!(doc.model().dimensions[&d.id()].parameters, repair);
+    let repaired = doc.model().clone();
+    assert!(doc.undo());
+    assert_eq!(doc.model(), &before);
+    assert!(doc.redo());
+    assert_eq!(doc.model(), &repaired);
+}
+
 fn setup() -> (Document, Dimension, Wall) {
     let mut model = Model::new("Dimensions");
     let level = *model.levels.keys().next().unwrap();

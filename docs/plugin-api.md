@@ -1,11 +1,41 @@
-# Plugin protocols: native Model API 43 and generic API 2
+# Plugin protocols: native Model API 48 and generic API 2
 
-Native API 43 requires model schema 62. Schema 61→62 adds native casework types
+Native API 48 requires model schema 67 / opening family 7, adding bounded authored
+profile-extrusion data to full-model transport. API 47 and older native guests
+must rebuild/reinstall. Generic API 2, container 2 and generic pointer protocols
+are unchanged. Native geometry consumers derive the same closed solids and
+preserve opening-owner/material attribution; IFC rejects unsupported additions.
+See [native hosted openings](native-hosted-openings.md) for attachment semantics,
+supported combinations and explicit limits.
+
+Native API 47 introduced model schema 66, adding distinct world-oriented Facade
+view settings to full-model transport. API 46 and older native guests must
+rebuild/reinstall. Bounded facade snapshots use the existing native worker lane;
+this adds no generic plugin pointer gestures or new worker protocol. Existing
+wall-local Elevation semantics are unchanged. Generic API 2 and container 2
+remain unchanged. See [native elevations](native-elevations.md) for supported
+geometry, depth/occlusion and explicit failure limits.
+
+Native API 46 introduced model schema 65, adding explicit horizontal/vertical
+elevation dimension references. Existing Plan coordinate semantics are unchanged.
+The previous API 45/schema 64 increment added linked straight-wall Elevation
+view settings. Native API 45 and older guests must rebuild/reinstall. The generic
+API 2 and container 2 versions remain unchanged; no plugin elevation gestures
+are introduced. See [native elevations](native-elevations.md).
+
+Native API 44 required model schema 63 and added the `ArcLength` dimension layout
+to full-model transport. Schema 62→63 preserves legacy parameters and IDs while
+advancing native headers. API 43 and older native guests must rebuild/reinstall;
+generic API 2 is unaffected. Arc-length dimensions resolve native circular wall
+axes only and add no generic plugin pointer-gesture protocol. See
+[native dimensions](native-dimensions.md) for the semantic pair and orphan rules.
+
+Schema 61→62 added native casework types
 and instances. Schema 60→61 adds the required native ramp collection; rise and slope are derived from two same-building levels, with
 one rectangular straight-run slab. The bounded IFC writer refuses ramps rather
 than dropping them. Schema 59→60 added stair railings and shared types; those
 members remain derived and IFC also refuses them. Container 2 and generic API 2
-are unchanged. API 42 and older native guests must rebuild and reinstall.
+are unchanged. API 43 and older native guests must rebuild and reinstall.
 
 Schema 58→59 added required curtain system, panel-type and mullion-type
 collections and persistent grid/panel/member UUID topology. Curtain systems are
@@ -39,7 +69,7 @@ current schema agreement in `os-plugin-api` and `os-plugin-host` tests.
 
 API 35/schema 54 added required Fixed/Sliding/Casement window-symbol metadata;
 older models migrate existing types to Fixed. Current native full-model
-transport uses API 43/schema 62. Native API 42 and older guests must rebuild and
+transport uses API 48/schema 67. Native API 47 and older guests must rebuild and
 reinstall. Generic API 2 and container 2 are unchanged.
 
 API 32 requires model schema 51. It retains required `ScheduleParams.group_by`
@@ -61,12 +91,13 @@ older native guests must rebuild.
 Generic API 2 and container 2 are unchanged. Native mirrors use atomic companion
 opening edits; installed Wall providers that cannot express them reject safely.
 
-The host remains proprietary. [LICENSE](../LICENSE) permits use of the plugin
-API and independent examples to develop and distribute compatible plugins.
-Plugin authors retain ownership of their independently authored code.
+The host, plugin API, and bundled examples are licensed under Apache 2.0; see
+[LICENSE](../LICENSE). Plugin authors retain ownership of their independently
+authored code and choose its license. Contributions submitted to this repository
+follow [CONTRIBUTING.md](../CONTRIBUTING.md).
 
 Current compatibility boundary: native Wall guests that receive the full model
-must use API 43 with model schema 62. API-42 and older native guests are rejected and must be
+must use API 46 with model schema 65. API-45 and older native guests are rejected and must be
 rebuilt/reinstalled; API 2 remains the independent generic DTO protocol. The
 [B/C baseline audit](bc-baseline-audit.md) verifies independently
 installed Wall/column commands, descriptor forms, checked geometry, workers,

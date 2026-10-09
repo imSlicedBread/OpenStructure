@@ -850,7 +850,7 @@ fn opening_family_invalid_profiles_are_atomic_in_preview_and_commands() {
                     .map(|(x, y)| Point2::new(x, y))
                     .to_vec()
             }
-            11 => draft.family.version = 7,
+            11 => draft.family.version = 8,
             12 => draft.family.depth = f64::NAN,
             13 => draft.family.frame_width = 0.0005,
             14 => draft.family.frame_depth = f64::NAN,

@@ -23,11 +23,29 @@ pub(super) struct Candidate {
 
 impl Draft {
     pub fn begin(app: &DesktopApp) -> Result<Self> {
-        Self::begin_mode(app, false)
+        Self::begin_mode(app, false, true)
     }
 
     pub fn begin_copy(app: &DesktopApp) -> Result<Self> {
-        Self::begin_mode(app, true)
+        Self::begin_mode(app, true, true)
+    }
+
+    pub(super) fn begin_level_copy(app: &DesktopApp) -> Result<Self> {
+        Self::begin_mode(app, true, false)
+    }
+
+    pub(super) fn candidate_on_level(&self, level: Id) -> Result<Candidate> {
+        self.copy
+            .as_ref()
+            .ok_or_else(|| Error::Invalid("No copy identities".into()))?
+            .candidate_on_level(&self.original, level)
+    }
+
+    pub(super) fn copied_ids(&self) -> BTreeSet<Id> {
+        self.copy
+            .as_ref()
+            .map(|ids| ids.walls.values().copied().collect())
+            .unwrap_or_default()
     }
 
     pub fn is_copy(&self) -> bool {
@@ -46,7 +64,7 @@ impl Draft {
         self.copy.as_ref().map(|ids| ids.summary())
     }
 
-    fn begin_mode(app: &DesktopApp, copy: bool) -> Result<Self> {
+    fn begin_mode(app: &DesktopApp, copy: bool, copy_tags: bool) -> Result<Self> {
         ensure(
             !copy || !app.editor.host.worker_supported(os_walls::PLUGIN_ID),
             "Copy wall assemblies requires the bundled native Wall provider",
@@ -134,11 +152,16 @@ impl Draft {
         );
         Ok(Self {
             copy: if copy {
-                Some(super::wall_set_copy::Identities::new(
-                    model,
-                    &app.selected_ids,
-                    view,
-                )?)
+                Some(if copy_tags {
+                    super::wall_set_copy::Identities::new(model, &app.selected_ids, view)?
+                } else {
+                    super::wall_set_copy::Identities::with_tags(
+                        model,
+                        &app.selected_ids,
+                        view,
+                        false,
+                    )?
+                })
             } else {
                 None
             },
@@ -464,38 +487,42 @@ impl DesktopApp {
             Draft::begin(self)
         } {
             Ok(draft) => {
-                self.cancel_plan_wall();
-                self.cancel_opening_placement();
-                self.cancel_aligned_dimension();
-                self.plans.area_selection.cancel();
-                self.plans.overlap_selection.cancel();
-                self.plans.crop.mode = None;
-                self.plans.floor_sketch = None;
-                self.plans.floor_hole_sketch = None;
-                self.plans.floor_vertex_drag = None;
-                self.plans.section_placement = None;
-                self.plans.room_placement_active = false;
-                self.plans.detail_line_draft = None;
-                self.plans.room_separation_line_draft = None;
-                self.plans.room_tag_draft = None;
-                self.plans.opening_tag_draft = None;
-                self.plans.opening_move = None;
-                self.plans.opening_flip = None;
-                self.plans.opening_rehost = None;
-                self.plans.opening_align = None;
-                self.plans.opening_spacing = None;
-                self.plans.opening_type_assignment = None;
-                self.plans.opening_batch_edit = None;
-                self.plans.column_edit = None;
-                self.plans.stair_edit = None;
-                self.plans.ceiling_draft = None;
-                self.opening_draft = None;
-                self.grid_draft = None;
-                self.plan_draft = None;
+                self.cancel_wall_set_interactions();
                 self.plans.wall_set_move = Some(draft);
             }
             Err(error) => self.report(Err(error), ""),
         }
+    }
+
+    pub(super) fn cancel_wall_set_interactions(&mut self) {
+        self.cancel_plan_wall();
+        self.cancel_opening_placement();
+        self.cancel_aligned_dimension();
+        self.plans.area_selection.cancel();
+        self.plans.overlap_selection.cancel();
+        self.plans.crop.mode = None;
+        self.plans.floor_sketch = None;
+        self.plans.floor_hole_sketch = None;
+        self.plans.floor_vertex_drag = None;
+        self.plans.section_placement = None;
+        self.plans.room_placement_active = false;
+        self.plans.detail_line_draft = None;
+        self.plans.room_separation_line_draft = None;
+        self.plans.room_tag_draft = None;
+        self.plans.opening_tag_draft = None;
+        self.plans.opening_move = None;
+        self.plans.opening_flip = None;
+        self.plans.opening_rehost = None;
+        self.plans.opening_align = None;
+        self.plans.opening_spacing = None;
+        self.plans.opening_type_assignment = None;
+        self.plans.opening_batch_edit = None;
+        self.plans.column_edit = None;
+        self.plans.stair_edit = None;
+        self.plans.ceiling_draft = None;
+        self.opening_draft = None;
+        self.grid_draft = None;
+        self.plan_draft = None;
     }
 
     pub(super) fn validate_wall_set_move(&mut self, ctx: &egui::Context) {

@@ -56,7 +56,7 @@ Euclidean radius, choosing the nearest endpoint and then start on a tie.
 
 A primary handle press starts the existing `begin_plan_wall_edit` route. Dragging
 shares `WallGesture` snapping, source exclusion, exact input, validation and stale
-checks. Only the accent preview changes during the drag. A moved, valid release
+checks. Only transient accent previews change during the drag. A moved, valid release
 inside the canvas calls `commit_plan_wall`; the opposite endpoint, identity and
 wall properties are preserved. Installed submission ends the local drag and the
 existing worker lifecycle owns completion/cancellation; handles never invoke the
@@ -99,6 +99,32 @@ as evidence. egui input/response/options APIs were
 checked against the pinned 0.33.3 local crate source. No endpoint-handle native
 manual inspection was performed. This bounded slice does not complete D or
 general graphical editing, and changes no schema or protocol.
+
+## Hosted door/window endpoint preview — 2026-10-06
+
+Start/end handle and toolbar resizes now build a disposable candidate when the
+host has doors or windows. Existing host-relative offsets and opening instance
+parameters remain unchanged, so openings follow the edited wall axis rather
+than being silently moved, resized, detached or rehosted. Candidate opening
+symbols are overlaid in the plan during drag. Before preview or commit, the
+whole candidate model, wall cut mesh and every hosted component mesh are
+validated, including openings hidden in the current plan. A host-fit,
+overlap, geometry or clearance-lock conflict marks the preview invalid and
+rejects the release atomically. The live model, history and 3D scene remain
+unchanged until commit; the shared regeneration path updates split 2D/3D after
+commit. Installed Wall edits still use the bounded worker and receive the same
+opening preflight; no provider is bypassed.
+
+`endpoint_resize_previews_and_commits_hosted_doors_and_windows` covers typed
+and legacy doors/windows, both endpoint modes and both DPI profiles, preview
+immutability, one-step history, and undo/redo scene restoration. Separate
+regressions verify that category- or phase-hidden symbols stay hidden while
+those openings still participate in fit validation.
+`endpoint_resize_rejects_fit_and_clearance_conflicts_for_hosted_openings`
+covers clearance locks and hidden opening fit failure without mutation.
+This remains native straight-wall endpoint editing: no automatic constraint
+settlement or annotation/join repair is added, and native-window visual
+qualification remains open.
 
 ## Native wall rotate/mirror — 2026-09-27 automated evidence
 

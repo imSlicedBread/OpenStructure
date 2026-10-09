@@ -53,14 +53,14 @@ the railing and its derived views.
 
 Model schema 37 adds a required `stairs` map; the atomic 36→37 migration inserts
 an empty map and advances native headers. Schema 59→60 adds `railings` and
-`railing_types`; native plugins now require API 43/schema 62. Generic API 2 and
+`railing_types`; native plugins now require API 44/schema 63. Generic API 2 and
 the `.osb` container version do not change. The bounded IFC writer refuses
 projects containing native stairs or railings rather than silently dropping
 them.
 
 Schema 60→61 adds the required `ramps` map for native straight-run ramps; see
 [native ramp authoring](native-ramps.md). Native plugin compatibility remains
-API 43/schema 62.
+API 44/schema 63.
 
 This increment does not create stair landings or turns, separate stringers,
 slab openings/joins, stair quantities, railing extensions, infill panels,

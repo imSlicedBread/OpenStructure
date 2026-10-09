@@ -1,5 +1,7 @@
 //! Headless real-egui desktop frames; no native-window inspection implied.
 use super::*;
+#[path = "arc_dimension_tests.rs"]
+mod arc_dimension_tests;
 #[path = "arc_tests.rs"]
 mod arc_tests;
 #[path = "crop_tests.rs"]
@@ -58,6 +60,9 @@ fn dimension_repair_fixture(
         orphan_hint: Point2::new(0.0, 0.6),
     };
     let (anchor, target, point) = match layout {
+        os_model::DimensionLayout::ElevationHorizontal
+        | os_model::DimensionLayout::ElevationVertical => unreachable!("plan-only fixture"),
+        ArcLength => unreachable!("arc-length uses paired curve repair"),
         Aligned => (1, parameters.second, Point2::new(1.0, 0.0)),
         Chain | Baseline => {
             let target = DimensionReference::WallEndpoint {
@@ -852,6 +857,74 @@ impl Harness {
         assert!(!self.app.plans.endpoint_pointer_claimed);
     }
 }
+fn add_endpoint_opening(
+    h: &mut Harness,
+    kind: os_model::OpeningKind,
+    typed: bool,
+) -> (Id, Option<Id>) {
+    use os_model::{Opening, OpeningDefinition, OpeningParams, OpeningType, OpeningTypeParams};
+    let (width, height, sill) = match kind {
+        os_model::OpeningKind::Door => (0.6, 2.1, 0.0),
+        os_model::OpeningKind::Window => (0.6, 1.2, 0.8),
+    };
+    let mut model = h.app.editor.document.model().clone();
+    let opening_type = typed.then(|| {
+        OpeningType::new(
+            "core.opening_type",
+            OpeningTypeParams {
+                window_operation: Default::default(),
+                family: Default::default(),
+                name: format!("Endpoint {kind:?}"),
+                kind,
+                width,
+                height,
+                sill,
+                pane_position: Default::default(),
+            },
+        )
+    });
+    let type_id = opening_type.as_ref().map(|ty| ty.id());
+    if let Some(opening_type) = opening_type {
+        model.opening_types.insert(opening_type.id(), opening_type);
+    }
+    let opening = Opening::new(
+        "core.opening",
+        OpeningParams {
+            open_state: Default::default(),
+            name: format!("Endpoint {kind:?}"),
+            host: h.wall,
+            offset: 0.3,
+            definition: type_id.map_or(
+                OpeningDefinition::Legacy {
+                    kind,
+                    width,
+                    height,
+                    sill,
+                },
+                |type_id| OpeningDefinition::Typed { type_id },
+            ),
+            width_override: None,
+            height_override: None,
+            sill_override: None,
+            pane_position_override: None,
+            lite_side_override: None,
+            hinge: Default::default(),
+            swing: Default::default(),
+        },
+    );
+    let opening_id = opening.id();
+    model.openings.insert(opening_id, opening);
+    h.app.editor.document = Document::from_model(model).unwrap();
+    h.app.editor.pending_geometry.insert(opening_id);
+    h.app.editor.pending_geometry.insert(h.wall);
+    h.app.editor.regenerate().unwrap();
+    h.app.plans.poll(&h.app.editor);
+    h.app.focus_plan(Some(h.view));
+    h.app.plans.split = true;
+    h.settle();
+    (opening_id, type_id)
+}
+
 fn button(pos: egui::Pos2, pressed: bool) -> egui::Event {
     egui::Event::PointerButton {
         pos,
@@ -1027,6 +1100,285 @@ fn endpoint_drag_preview_commit_identity_properties_and_history() {
             h.app.history(true);
             assert_eq!(h.app.editor.document.model(), &edited);
         }
+    }
+}
+
+#[test]
+fn endpoint_resize_previews_and_commits_hosted_doors_and_windows() {
+    use os_model::OpeningKind;
+
+    for (size, scale) in PROFILES {
+        for mode in [WallEdit::ResizeStart, WallEdit::ResizeEnd] {
+            for kind in [OpeningKind::Door, OpeningKind::Window] {
+                for typed in [false, true] {
+                    let mut h = Harness::new(size, scale);
+                    let (opening_id, type_id) = add_endpoint_opening(&mut h, kind, typed);
+                    let before = h.app.editor.document.model().clone();
+                    let scene = h.app.editor.scene.clone();
+                    let revision = h.app.editor.document.revision();
+                    let history = h.app.editor.document.history_stats();
+                    let original_opening = before.openings[&opening_id].parameters.clone();
+                    let original_wall = before.walls[&h.wall].parameters.clone();
+                    let moving = if mode == WallEdit::ResizeStart {
+                        original_wall.start()
+                    } else {
+                        original_wall.end()
+                    };
+                    let destination = Point2::new(0.0, 1.0);
+                    h.press(h.point(moving));
+                    assert_eq!(h.app.wall_gesture.as_ref().unwrap().edit_mode(), Some(mode));
+                    let pointer = h.point(destination);
+                    h.frame(vec![egui::Event::PointerMoved(pointer)]);
+                    assert_eq!(h.app.editor.document.model(), &before);
+                    assert_eq!(h.app.editor.document.revision(), revision);
+                    assert_eq!(h.app.editor.document.history_stats(), history);
+                    assert_eq!(h.app.editor.scene, scene);
+
+                    let parameters = h
+                        .app
+                        .wall_gesture
+                        .as_ref()
+                        .unwrap()
+                        .parameters(destination)
+                        .unwrap();
+                    let context = h.app.editor.native_plan_context(h.view).unwrap();
+                    let preview = crate::opening_tools::endpoint_resize_preview(
+                        &before,
+                        h.wall,
+                        &parameters,
+                        context,
+                    )
+                    .unwrap();
+                    assert!(!preview.is_empty(), "{kind:?}, typed={typed}, {mode:?}");
+                    assert!(
+                        h.output.shapes.iter().any(|shape| matches!(
+                            &shape.shape,
+                            egui::Shape::LineSegment { stroke, .. }
+                                if stroke.color == theme::ACCENT && stroke.width == 1.5
+                        )),
+                        "candidate opening symbols were not painted"
+                    );
+
+                    h.release(pointer);
+                    h.settle();
+                    assert!(!h.app.status_error, "{}", h.app.status);
+                    let after = h.app.editor.document.model().clone();
+                    assert_eq!(after.openings[&opening_id].parameters, original_opening);
+                    assert_eq!(after.openings[&opening_id].parameters.type_id(), type_id);
+                    let resized = &after.walls[&h.wall].parameters;
+                    if mode == WallEdit::ResizeStart {
+                        assert_eq!(resized.end(), original_wall.end());
+                    } else {
+                        assert_eq!(resized.start(), original_wall.start());
+                    }
+                    assert_eq!(h.app.editor.document.revision(), revision + 1);
+                    assert_eq!(
+                        h.app.editor.document.history_stats().undo_entries,
+                        history.undo_entries + 1
+                    );
+                    assert_eq!(
+                        h.app.editor.scene[&h.wall],
+                        crate::opening_tools::host_mesh(&after, h.wall).unwrap()
+                    );
+                    assert_eq!(
+                        h.app.editor.scene[&opening_id],
+                        crate::opening_tools::panel_mesh(&after, opening_id).unwrap()
+                    );
+                    let committed_scene = h.app.editor.scene.clone();
+                    h.app.history(false);
+                    h.settle();
+                    assert_eq!(h.app.editor.document.model(), &before);
+                    assert_eq!(h.app.editor.scene, scene);
+                    h.app.history(true);
+                    h.settle();
+                    assert_eq!(h.app.editor.document.model(), &after);
+                    assert_eq!(h.app.editor.scene, committed_scene);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn endpoint_resize_rejects_fit_and_clearance_conflicts_for_hosted_openings() {
+    use os_model::{ClearanceEnd, OpeningClearance, OpeningKind};
+
+    for (size, scale) in PROFILES {
+        let mut h = Harness::new(size, scale);
+        let (opening_id, _) = add_endpoint_opening(&mut h, OpeningKind::Window, true);
+        let mut model = h.app.editor.document.model().clone();
+        model.opening_clearances.insert(
+            opening_id,
+            OpeningClearance {
+                end: ClearanceEnd::End,
+                distance: 0.2,
+            },
+        );
+        model
+            .openings
+            .get_mut(&opening_id)
+            .unwrap()
+            .parameters
+            .offset = 1.2;
+        h.app.editor.document = Document::from_model(model).unwrap();
+        h.app.editor.regenerate().unwrap();
+        h.app.plans.poll(&h.app.editor);
+        h.app.focus_plan(Some(h.view));
+        h.settle();
+        let before = h.app.editor.document.model().clone();
+        let scene = h.app.editor.scene.clone();
+        let history = h.app.editor.document.history_stats();
+        let end = before.walls[&h.wall].parameters.end();
+        h.press(h.point(end));
+        // Keep enough host length for the aperture, but violate its End lock.
+        let pointer = h.point(Point2::new(0.8, 0.6));
+        h.frame(vec![egui::Event::PointerMoved(pointer)]);
+        assert_eq!(h.app.editor.document.model(), &before);
+        assert_eq!(h.app.editor.scene, scene);
+        assert!(h.output.shapes.iter().any(|shape| matches!(
+            &shape.shape,
+            egui::Shape::Text(text) if text.galley.job.text.contains("clearance lock")
+        )));
+        h.release(pointer);
+        h.settle();
+        assert_eq!(h.app.editor.document.model(), &before);
+        assert_eq!(h.app.editor.scene, scene);
+        assert_eq!(h.app.editor.document.history_stats(), history);
+        h.clean();
+
+        let mut h = Harness::new(size, scale);
+        let (opening_id, _) = add_endpoint_opening(&mut h, OpeningKind::Window, true);
+        let mut settings = h.app.editor.document.model().views[&h.view]
+            .parameters
+            .plan
+            .unwrap();
+        settings.visibility.windows = false;
+        h.app
+            .editor
+            .update_floor_plan(h.view, "Endpoint plan", h.app.active_level, settings)
+            .unwrap();
+        h.settle();
+        let before = h.app.editor.document.model().clone();
+        let scene = h.app.editor.scene.clone();
+        let history = h.app.editor.document.history_stats();
+        let mut valid_resize = before.walls[&h.wall].parameters.clone();
+        *valid_resize.path.straight_start_mut().unwrap() = Point2::new(0.0, 1.0);
+        assert!(
+            crate::opening_tools::endpoint_resize_preview(
+                &before,
+                h.wall,
+                &valid_resize,
+                h.app.editor.native_plan_context(h.view).unwrap(),
+            )
+            .unwrap()
+            .is_empty(),
+            "hidden window must not reappear in a valid resize preview"
+        );
+        h.press(h.point(before.walls[&h.wall].parameters.start()));
+        // The hidden window cannot be resized onto a wall shorter than its aperture.
+        let pointer = h.point(Point2::new(0.5, 0.0));
+        h.frame(vec![egui::Event::PointerMoved(pointer)]);
+        assert_eq!(h.app.editor.document.model(), &before);
+        assert_eq!(h.app.editor.scene, scene);
+        assert!(h.output.shapes.iter().any(|shape| matches!(
+            &shape.shape,
+            egui::Shape::Text(text) if text.galley.job.text.contains("fit inside host")
+        )));
+        h.release(pointer);
+        h.settle();
+        assert_eq!(h.app.editor.document.model(), &before);
+        assert_eq!(h.app.editor.scene, scene);
+        assert_eq!(h.app.editor.document.history_stats(), history);
+        assert!(
+            !h.app.editor.document.model().views[&h.view]
+                .parameters
+                .plan
+                .unwrap()
+                .visibility
+                .windows
+        );
+        assert!(
+            h.app
+                .editor
+                .document
+                .model()
+                .openings
+                .contains_key(&opening_id)
+        );
+        h.clean();
+    }
+}
+
+#[test]
+fn endpoint_resize_preview_respects_opening_and_host_phase_visibility() {
+    use os_model::{ElementLifecycle, OpeningKind};
+
+    for (size, scale) in PROFILES {
+        let mut h = Harness::new(size, scale);
+        let (opening_id, _) = add_endpoint_opening(&mut h, OpeningKind::Door, false);
+        let original = h.app.editor.document.model().clone();
+        let existing = original.existing_phase().unwrap();
+        let future = os_model::new_phase("Future endpoint", 2);
+        let future_id = future.id();
+        let context = h.app.editor.native_plan_context(h.view).unwrap();
+        let mut resized = original.walls[&h.wall].parameters.clone();
+        *resized.path.straight_start_mut().unwrap() = Point2::new(0.0, 1.0);
+
+        let mut future_opening = original.clone();
+        future_opening.phases.insert(future_id, future.clone());
+        future_opening.element_lifecycles.insert(
+            opening_id,
+            ElementLifecycle {
+                created_in: future_id,
+                demolished_in: None,
+            },
+        );
+        future_opening
+            .views
+            .get_mut(&h.view)
+            .unwrap()
+            .parameters
+            .plan
+            .as_mut()
+            .unwrap()
+            .target_phase = Some(existing);
+        assert!(
+            crate::opening_tools::endpoint_resize_preview(
+                &future_opening,
+                h.wall,
+                &resized,
+                context,
+            )
+            .unwrap()
+            .is_empty(),
+            "future opening must not reappear in the endpoint preview"
+        );
+
+        let mut future_host = original;
+        future_host.phases.insert(future_id, future);
+        future_host.element_lifecycles.insert(
+            h.wall,
+            ElementLifecycle {
+                created_in: future_id,
+                demolished_in: None,
+            },
+        );
+        future_host
+            .views
+            .get_mut(&h.view)
+            .unwrap()
+            .parameters
+            .plan
+            .as_mut()
+            .unwrap()
+            .target_phase = Some(existing);
+        assert!(
+            crate::opening_tools::endpoint_resize_preview(&future_host, h.wall, &resized, context,)
+                .unwrap()
+                .is_empty(),
+            "opening symbol must not appear when its host wall is phase-hidden"
+        );
+        h.clean();
     }
 }
 
@@ -1242,7 +1594,9 @@ fn aligned_dimensions_author_live_endpoint_references_with_one_history_step() {
         let view = h.view;
         h.frame(vec![]);
         h.click_text_in_band("Architecture", 28.0, 60.0);
-        h.click_text_in_band("Aligned dimension", 60.0, 150.0);
+        h.click_text_in_band("Dimensions…", 60.0, 150.0);
+        h.frame(vec![]);
+        h.click_text_in_band("Aligned dimension", 0.0, h.size.y);
         assert!(h.app.plans.dimension_draft.is_some());
         h.frame(vec![]);
         let canvas = h.app.plans.canvas_rect.unwrap();
@@ -1339,7 +1693,8 @@ fn aligned_dimensions_author_live_endpoint_references_with_one_history_step() {
 #[test]
 fn aligned_dimension_offset_is_editable_and_measurement_follows_wall_edits() {
     let mut h = Harness::new(PROFILES[0].0, PROFILES[0].1);
-    h.app.begin_aligned_dimension(h.view);
+    h.app
+        .begin_dimension(h.view, os_model::DimensionLayout::Aligned);
     h.click(h.point(Point2::new(-1.0, 0.0)));
     h.click(h.point(Point2::new(1.0, 0.0)));
     h.click(h.point(Point2::new(0.0, 0.5)));
@@ -1893,6 +2248,8 @@ fn chain_and_baseline_dimensions_collect_ordered_anchors_and_commit_once() {
             assert_eq!(spans[0].entity, id);
             assert_eq!(spans[0].spans[0].entity, id);
             match layout {
+                os_model::DimensionLayout::ElevationHorizontal
+                | os_model::DimensionLayout::ElevationVertical => unreachable!("plan-only fixture"),
                 os_model::DimensionLayout::Chain => {
                     assert_eq!(spans[0].value_m, Some(2.0));
                     assert_eq!(spans[0].spans[0].value_m, Some(1.0));
@@ -1908,7 +2265,9 @@ fn chain_and_baseline_dimensions_collect_ordered_anchors_and_commit_once() {
                     );
                 }
                 os_model::DimensionLayout::Aligned => unreachable!(),
-                os_model::DimensionLayout::Angular => unreachable!(),
+                os_model::DimensionLayout::Angular | os_model::DimensionLayout::ArcLength => {
+                    unreachable!()
+                }
             }
 
             h.app.history(false);
@@ -1924,7 +2283,8 @@ fn chain_and_baseline_dimensions_collect_ordered_anchors_and_commit_once() {
 fn aligned_dimension_cancel_and_context_change_leave_no_draft_or_partial_entity() {
     let mut h = Harness::new(PROFILES[0].0, PROFILES[0].1);
     let before = h.app.editor.document.model().clone();
-    h.app.begin_aligned_dimension(h.view);
+    h.app
+        .begin_dimension(h.view, os_model::DimensionLayout::Aligned);
     h.click(h.point(Point2::new(-1.0, 0.0)));
     assert_eq!(h.app.editor.document.model(), &before);
     h.frame(vec![escape()]);
@@ -1932,7 +2292,8 @@ fn aligned_dimension_cancel_and_context_change_leave_no_draft_or_partial_entity(
     assert!(h.app.plans.dimension_draft.is_none());
     assert_eq!(h.app.editor.document.model(), &before);
 
-    h.app.begin_aligned_dimension(h.view);
+    h.app
+        .begin_dimension(h.view, os_model::DimensionLayout::Aligned);
     h.click(h.point(Point2::new(-1.0, 0.0)));
     h.app
         .editor
@@ -1955,7 +2316,8 @@ fn dimension_draft_is_bound_to_its_native_plan_drawing_identity() {
     let before = h.app.editor.document.model().clone();
     let context = h.app.editor.native_plan_context(h.view).unwrap();
     let drawing_identity = h.app.plans.drawing.as_ref().unwrap().identity();
-    h.app.begin_aligned_dimension(h.view);
+    h.app
+        .begin_dimension(h.view, os_model::DimensionLayout::Aligned);
     assert_eq!(
         h.app
             .plans
@@ -1976,7 +2338,8 @@ fn dimension_draft_is_bound_to_its_native_plan_drawing_identity() {
 #[test]
 fn aligned_dimension_shows_recoverable_orphan_without_blocking_wall_deletion() {
     let mut h = Harness::new(PROFILES[0].0, PROFILES[0].1);
-    h.app.begin_aligned_dimension(h.view);
+    h.app
+        .begin_dimension(h.view, os_model::DimensionLayout::Aligned);
     h.click(h.point(Point2::new(-1.0, 0.0)));
     h.click(h.point(Point2::new(1.0, 0.0)));
     h.click(h.point(Point2::new(0.0, 0.5)));
@@ -2028,6 +2391,12 @@ fn endpoint_installed_drag_submits_and_worker_owns_completion() {
         ] {
             for cancel in [false, true] {
                 let mut h = Harness::new(size, scale);
+                let kind = if mode == WallEdit::ResizeStart {
+                    os_model::OpeningKind::Door
+                } else {
+                    os_model::OpeningKind::Window
+                };
+                let (opening_id, _) = add_endpoint_opening(&mut h, kind, true);
                 let boundary = (mode == WallEdit::TrimEnd).then(|| add_trim_boundary(&mut h, 1.5));
                 h.app.editor.host.unload(os_walls::PLUGIN_ID).unwrap();
                 h.app
@@ -2119,12 +2488,20 @@ fn endpoint_installed_drag_submits_and_worker_owns_completion() {
                 h.settle();
                 if cancel {
                     assert_eq!(h.app.editor.document.model(), &before);
+                    assert_eq!(
+                        h.app.editor.document.model().openings[&opening_id].parameters,
+                        before.openings[&opening_id].parameters
+                    );
                     assert!(!h.app.editor.document.can_undo());
                 } else {
                     assert!(!h.app.status_error, "{}", h.app.status);
                     let edited = h.app.editor.document.model().clone();
                     assert_eq!(edited.walls[&h.wall].header, before.walls[&h.wall].header);
                     assert_eq!(edited.walls[&h.wall].parameters, expected);
+                    assert_eq!(
+                        edited.openings[&opening_id].parameters,
+                        before.openings[&opening_id].parameters
+                    );
                     h.app.history(false);
                     assert_eq!(h.app.editor.document.model(), &before);
                     assert!(!h.app.editor.document.can_undo());

@@ -258,7 +258,11 @@ pub fn affected_entities(model: &Model, changed: &BTreeSet<Id>) -> BTreeSet<Id> 
             .filter(|view| {
                 (view.parameters.kind == os_model::ViewKind::Plan
                     || (view.parameters.kind == os_model::ViewKind::Section
-                        && view.parameters.section.is_some()))
+                        && view.parameters.section.is_some())
+                    || (view.parameters.kind == os_model::ViewKind::Elevation
+                        && view.parameters.elevation.is_some())
+                    || (view.parameters.kind == os_model::ViewKind::Facade
+                        && view.parameters.facade.is_some()))
                     && (geometry_changed || changed.contains(&view.id()))
             })
             .map(|view| view.id()),

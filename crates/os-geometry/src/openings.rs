@@ -1,4 +1,8 @@
 //! Shared positive component evaluator. Does not perform host booleans.
+#[cfg(test)]
+#[path = "openings_section_tests.rs"]
+mod section_tests;
+
 use crate::{
     GeometryKernel, Mesh,
     floors::{extrude_floor, triangulate_floor},
@@ -136,25 +140,158 @@ pub fn door_pair(p: &ResolvedOpening) -> Result<Option<[ResolvedOpening; 2]>> {
     })))
 }
 
-fn paired_panels(p: &ResolvedOpening, wall: &WallParams, elevation: f64) -> Result<Mesh> {
-    let mut mesh = Mesh::default();
+fn paired_panels(p: &ResolvedOpening, wall: &WallParams, elevation: f64) -> Result<Vec<Mesh>> {
+    let mut solids = Vec::new();
     for mut leaf in
         door_pair(p)?.ok_or_else(|| os_core::Error::Invalid("expected paired door".into()))?
     {
         leaf.family.depth = depth(p, wall);
-        append_mesh(&mut mesh, component_mesh(&leaf, wall, elevation)?)?;
+        solids.extend(component_solids(&leaf, wall, elevation)?);
     }
+    Ok(solids)
+}
+
+/// Assemble the same independent solids used by linked sections for the scene.
+pub fn component_mesh(p: &ResolvedOpening, wall: &WallParams, elevation: f64) -> Result<Mesh> {
+    let mut mesh = Mesh::default();
+    for solid in component_solids(p, wall, elevation)? {
+        append_mesh(&mut mesh, solid)?;
+    }
+    mesh.validate()?;
     Ok(mesh)
 }
 
-pub fn component_mesh(p: &ResolvedOpening, wall: &WallParams, elevation: f64) -> Result<Mesh> {
+/// Independently closed, uniformly materialed panels, leaves, panes and frame
+/// bars in world coordinates. Keep touching solids separate when sectioning;
+/// their assembled mesh is deliberately not a Boolean union. Order is stable.
+pub fn component_solids(
+    p: &ResolvedOpening,
+    wall: &WallParams,
+    elevation: f64,
+) -> Result<Vec<Mesh>> {
+    os_core::ensure(elevation.is_finite(), "invalid opening elevation")?;
+    // Derived bay/leaf clones must never recursively duplicate authored additions.
+    let mut base = p.clone();
+    base.family.extrusions.clear();
+    p.validate_host(wall)?;
+    let mut solids = derive_component_solids(&base, wall, elevation)?;
+    solids.extend(authored_solids(p, wall, elevation)?);
+    os_core::ensure(
+        solids.len() <= MAX_OPENING_COMPONENT_SOLIDS,
+        "opening component limit exceeded",
+    )?;
+    let mut vertices = 0usize;
+    let mut triangles = 0usize;
+    for solid in &solids {
+        solid.validate()?;
+        let surface = solid.surfaces.first().copied().unwrap_or_default();
+        os_core::ensure(
+            solid.surfaces.iter().all(|s| *s == surface),
+            "opening solid has mixed materials",
+        )?;
+        vertices = vertices.saturating_add(solid.vertices.len());
+        triangles = triangles.saturating_add(solid.triangles.len());
+        os_core::ensure(
+            vertices <= crate::section::MAX_SECTION_INPUT_VERTICES
+                && triangles <= crate::section::MAX_SECTION_INPUT_TRIANGLES,
+            "opening component geometry budget exceeded",
+        )?;
+    }
+    Ok(solids)
+}
+
+/// Two sliding sash tracks (ten solids), a lite and five frame bars need at
+/// most sixteen solids with the currently supported native families.
+pub const MAX_OPENING_COMPONENT_SOLIDS: usize = 16 + os_model::OpeningFamily::MAX_EXTRUSIONS;
+
+/// Closed additive solids in authored order. The frame is the same physical
+/// panel transform used above, including hinge, swing, pane position and pose.
+pub fn authored_solids(
+    p: &ResolvedOpening,
+    wall: &WallParams,
+    elevation: f64,
+) -> Result<Vec<Mesh>> {
+    use os_model::OpeningAttachment;
+    if p.family.extrusions.is_empty() {
+        return Ok(Vec::new());
+    }
+    p.validate_host(wall)?;
+    os_core::ensure(elevation.is_finite(), "invalid opening elevation")?;
+    let mut result = Vec::new();
+    for solid in &p.family.extrusions {
+        let mut mesh = extrude_floor(&solid.profile, solid.depth / 2., solid.depth)?;
+        mesh.surfaces = vec![
+            crate::SurfaceIdentity {
+                layer: Some(solid.id),
+                material: solid.material
+            };
+            mesh.triangles.len()
+        ];
+        let mut primary = primary_bay(p)?;
+        // Two-bay geometry uses the parent's effective depth, capped by the
+        // narrowest bay. Recomputing from the wider primary moves face-aligned panes.
+        primary.family.depth = depth(p, wall);
+        let (a, b) = if p.family.side_lite.is_some() {
+            (0., primary.width)
+        } else {
+            p.family.primary_interval(p.width)?
+        };
+        let bottom = if p.kind == OpeningKind::Window && p.family.side_lite.is_none() {
+            p.family.frame_width
+        } else {
+            0.
+        };
+        let height = if p.family.side_lite.is_some() {
+            primary.height
+        } else {
+            p.height - bottom - p.family.frame_width
+        };
+        for v in &mut mesh.vertices {
+            let normal = v.z + solid.normal_offset;
+            let (xy, z) = if solid.attachment == OpeningAttachment::OpeningFixed {
+                (
+                    world(wall, p.offset + v.x * p.width + solid.position.x, normal),
+                    elevation + p.sill + v.y * p.height + solid.position.y,
+                )
+            } else {
+                let x = a + v.x * (b - a) + solid.position.x;
+                let center = component_point(&primary, wall, x / primary.width);
+                let start = component_point(&primary, wall, 0.);
+                let end = component_point(&primary, wall, 1.);
+                let dx = (end.x - start.x) / primary.width;
+                let dy = (end.y - start.y) / primary.width;
+                // Positive normal is the panel's left normal, consistently
+                // following its directed hinge-to-free-edge axis.
+                (
+                    world(wall, center.x - dy * normal, center.y + dx * normal),
+                    elevation + primary.sill + bottom + v.y * height + solid.position.y,
+                )
+            };
+            *v = crate::Vec3::new(xy.x, xy.y, z);
+        }
+        // Mapping (profile x, profile y, extrusion z) to (axis, up, left)
+        // reverses orientation for both attachment frames.
+        for t in &mut mesh.triangles {
+            t.swap(1, 2);
+        }
+        mesh.validate()?;
+        result.push(mesh);
+    }
+    Ok(result)
+}
+
+fn derive_component_solids(
+    p: &ResolvedOpening,
+    wall: &WallParams,
+    elevation: f64,
+) -> Result<Vec<Mesh>> {
     p.validate_host(wall)?;
     p.family.validate_for(p.width, p.height, p.kind)?;
     if !wall.path.is_straight() {
-        return arc_component_mesh(p, wall, elevation);
+        return arc_component_solids(p, wall, elevation);
     }
     if let Some(bays) = p.family.bays(p.width)? {
-        return two_bay_mesh(p, wall, elevation, bays);
+        return two_bay_solids(p, wall, elevation, bays);
     }
     let thickness = depth(p, wall);
     let sash = has_closed_sash(p);
@@ -176,12 +313,12 @@ pub fn component_mesh(p: &ResolvedOpening, wall: &WallParams, elevation: f64) ->
         let mut mesh = crate::PrismKernel
             .tessellate(&crate::walls::wall_solid(&panel, elevation + p.sill)?)?;
         assign_material(&mut mesh, p.family.panel_material);
-        return Ok(mesh);
+        return Ok(vec![mesh]);
     }
     // Triangulate normalized coordinates so small/large type dimensions do not
     // change polygon predicates. Rotate the extrusion into the vertical plane.
     let profile = p.family.component_profile(p.width, p.height, p.kind);
-    let mut mesh = if paired {
+    let mut solids = if paired {
         paired_panels(p, wall, elevation)?
     } else if sash {
         let mut clear = p.clone();
@@ -190,7 +327,7 @@ pub fn component_mesh(p: &ResolvedOpening, wall: &WallParams, elevation: f64) ->
         clear.sill += f;
         clear.width -= 2. * f;
         clear.height -= 2. * f;
-        closed_sash_mesh(p, &clear, wall, elevation)?
+        closed_sash_solids(p, &clear, wall, elevation)?
     } else {
         let mut mesh = extrude_floor(&profile, thickness / 2., thickness)?;
         assign_material(&mut mesh, p.family.panel_material);
@@ -202,11 +339,10 @@ pub fn component_mesh(p: &ResolvedOpening, wall: &WallParams, elevation: f64) ->
             let xy = world(wall, center.x + dy * v.z, center.y - dx * v.z);
             *v = crate::Vec3::new(xy.x, xy.y, elevation + p.sill + v.y * p.height);
         }
-        mesh
+        vec![mesh]
     };
     if p.family.frame_width == 0.0 {
-        mesh.validate()?;
-        return Ok(mesh);
+        return Ok(solids);
     }
 
     let frame_x = p.family.frame_width / p.width;
@@ -232,10 +368,9 @@ pub fn component_mesh(p: &ResolvedOpening, wall: &WallParams, elevation: f64) ->
         for triangle in &mut frame.triangles {
             triangle.swap(1, 2);
         }
-        append_mesh(&mut mesh, frame)?;
+        solids.push(frame);
     }
-    mesh.validate()?;
-    Ok(mesh)
+    Ok(solids)
 }
 
 // Called only on straight hosts. Recognize equivalent rectangle windings and
@@ -292,12 +427,12 @@ pub fn sash_bay(p: &ResolvedOpening) -> Result<ResolvedOpening> {
 /// Static construction representation in the parent's pane envelope. Derive
 /// rails from the effective clear bay, including narrow legal instance pins.
 /// Separate sliding tracks overlap in elevation but never in volume.
-fn closed_sash_mesh(
+fn closed_sash_solids(
     parent: &ResolvedOpening,
     bay: &ResolvedOpening,
     wall: &WallParams,
     elevation: f64,
-) -> Result<Mesh> {
+) -> Result<Vec<Mesh>> {
     let d = depth(parent, wall);
     let center = pane_offset(parent, wall);
     let rail = 0.05_f64.min(bay.width * 0.1).min(bay.height * 0.1);
@@ -314,7 +449,7 @@ fn closed_sash_mesh(
     } else {
         vec![(0., bay.width, center, d)]
     };
-    let mut mesh = Mesh::default();
+    let mut solids = Vec::new();
     for (track, (start, end, y, thickness)) in tracks.into_iter().enumerate() {
         let x0 = start / bay.width;
         let x1 = end / bay.width;
@@ -364,11 +499,10 @@ fn closed_sash_mesh(
             for triangle in &mut part.triangles {
                 triangle.swap(1, 2);
             }
-            append_mesh(&mut mesh, part)?;
+            solids.push(part);
         }
     }
-    mesh.validate()?;
-    Ok(mesh)
+    Ok(solids)
 }
 
 /// Sweep convex, nonoverlapping material regions in (station, elevation).
@@ -575,7 +709,11 @@ fn clip_station(input: &[Point2], station: f64, after: bool) -> Vec<Point2> {
     out
 }
 
-fn arc_component_mesh(p: &ResolvedOpening, wall: &WallParams, elevation: f64) -> Result<Mesh> {
+fn arc_component_solids(
+    p: &ResolvedOpening,
+    wall: &WallParams,
+    elevation: f64,
+) -> Result<Vec<Mesh>> {
     os_core::ensure(elevation.is_finite(), "invalid opening elevation")?;
     let thickness = depth(p, wall);
     let f = p.family.frame_width;
@@ -638,7 +776,7 @@ fn arc_component_mesh(p: &ResolvedOpening, wall: &WallParams, elevation: f64) ->
         mesh.validate()?;
         Ok(mesh)
     };
-    let mut mesh = make_panel(&primary)?;
+    let mut solids = vec![make_panel(&primary)?];
     let mut bars = Vec::new();
     if let Some(bays) = bays {
         let mut lite = primary.clone();
@@ -651,7 +789,7 @@ fn arc_component_mesh(p: &ResolvedOpening, wall: &WallParams, elevation: f64) ->
             .as_ref()
             .and_then(|l| l.material)
             .or(p.family.panel_material);
-        append_mesh(&mut mesh, make_panel(&lite)?)?;
+        solids.push(make_panel(&lite)?);
         bars.push(rect_profile(
             bays.mullion.0 / p.width,
             bottom / p.height,
@@ -689,15 +827,9 @@ fn arc_component_mesh(p: &ResolvedOpening, wall: &WallParams, elevation: f64) ->
             y + d / 2.,
         )?;
         assign_material(&mut frame, p.family.frame_material);
-        append_mesh(&mut mesh, frame)?;
+        solids.push(frame);
     }
-    os_core::ensure(
-        mesh.vertices.len() <= crate::section::MAX_SECTION_INPUT_VERTICES
-            && mesh.triangles.len() <= crate::section::MAX_SECTION_INPUT_TRIANGLES,
-        "arc opening display budget exceeded",
-    )?;
-    mesh.validate()?;
-    Ok(mesh)
+    Ok(solids)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -757,12 +889,12 @@ pub fn primary_bay(p: &ResolvedOpening) -> Result<ResolvedOpening> {
     Ok(primary)
 }
 
-fn two_bay_mesh(
+fn two_bay_solids(
     p: &ResolvedOpening,
     wall: &WallParams,
     elevation: f64,
     bays: os_model::OpeningBays,
-) -> Result<Mesh> {
+) -> Result<Vec<Mesh>> {
     let primary = primary_bay(p)?;
     let thickness = depth(p, wall);
     let make_panel = |component: &ResolvedOpening| -> Result<Mesh> {
@@ -788,12 +920,12 @@ fn two_bay_mesh(
         }
         Ok(part)
     };
-    let mut mesh = if matches!(p.family.door_leaves, os_model::DoorLeaves::Paired { .. }) {
+    let mut solids = if matches!(p.family.door_leaves, os_model::DoorLeaves::Paired { .. }) {
         paired_panels(p, wall, elevation)?
     } else if has_closed_sash(p) {
-        closed_sash_mesh(p, &primary, wall, elevation)?
+        closed_sash_solids(p, &primary, wall, elevation)?
     } else {
-        make_panel(&primary)?
+        vec![make_panel(&primary)?]
     };
     let mut lite = primary;
     lite.kind = OpeningKind::Window;
@@ -805,7 +937,7 @@ fn two_bay_mesh(
         .as_ref()
         .and_then(|l| l.material)
         .or(p.family.panel_material);
-    append_mesh(&mut mesh, make_panel(&lite)?)?;
+    solids.push(make_panel(&lite)?);
     let f = p.family.frame_width;
     let bottom = if p.kind == OpeningKind::Window { f } else { 0. };
     let mut bars = vec![rect_profile(
@@ -840,10 +972,9 @@ fn two_bay_mesh(
         for t in &mut part.triangles {
             t.swap(1, 2);
         }
-        append_mesh(&mut mesh, part)?;
+        solids.push(part);
     }
-    mesh.validate()?;
-    Ok(mesh)
+    Ok(solids)
 }
 
 fn assign_material(mesh: &mut Mesh, material: Option<os_core::Id>) {

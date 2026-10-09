@@ -1,9 +1,9 @@
 # Contributing to OpenStructure
 
-OpenStructure welcomes proposed contributions and independently authored plugins.
-The public host repository is proprietary; read [LICENSE](LICENSE) before using
-its code. The plugin API and independent examples have a limited permission for
-compatible plugin development.
+OpenStructure welcomes contributions and independently authored plugins. The
+project is licensed under the Apache License 2.0; read [LICENSE](LICENSE) and
+[NOTICE](NOTICE) before redistributing it. Contributions are accepted under the
+same license, as described below.
 
 ## Before contributing
 
@@ -37,16 +37,15 @@ plugin: validate manifest permissions
 storage: add project schema version
 ```
 
-## Contributor agreement
+## Contributions and licensing
 
-Open issues and pull requests are welcome for review. Contributors keep ownership
-of their original work. Before merging a code or documentation contribution,
-the contributor and maintainers must agree in writing on permission to use,
-modify, distribute, and sublicense that contribution as part of OpenStructure.
-Opening a pull request alone does not grant those rights or guarantee acceptance.
-Do not submit material that you cannot authorize for this use.
+Contributors retain ownership of their original work. By intentionally
+submitting a contribution for inclusion, you offer it under Apache License 2.0,
+as described in Section 5 of that license. You confirm that you have the right to
+submit the work under those terms. No separate contributor agreement is required
+for contributions accepted under this policy.
 
 An independently authored plugin is not a contribution to the host merely
-because it uses the published plugin interface. Plugin authors choose their own
-terms for their original plugin code, subject to the limited SDK permission in
-[LICENSE](LICENSE) if they use the provided API or examples.
+because it uses the published plugin interface. Plugin authors choose the terms
+for their original plugin code. OpenStructure's API and examples are themselves
+available under Apache 2.0.

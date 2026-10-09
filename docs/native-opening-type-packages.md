@@ -5,7 +5,7 @@ projects using a bounded `.osot` file. The Manage ribbon imports a package; the
 selected opening type's Properties panel exports one. The package is portable
 JSON, independent of the project model schema, and contains the type parameters
 plus exact snapshots of only the referenced panel/pane, frame and optional
-fixed-lite materials and shared Length parameters.
+fixed-lite and authored-solid materials and shared Length parameters.
 It does not include placed openings, hosts, levels, or other project entities.
 
 Manage also provides a local package browser. Enter one directory, scan it, and
@@ -18,6 +18,17 @@ is retained only for the current application session; it is not saved in the
 project or across restarts.
 
 ## Import and conflict behavior
+
+Version 6 carries family-7 additive extrusions with their source solid identities,
+attachment frames, profiles, exact positions/depths and material references.
+Package 5 migrates unambiguously from family 6 by adding an empty extrusion list;
+legacy payloads already containing that field (even null) are rejected. Prior
+package upgrades continue through this step without altering old geometry.
+Import assigns each solid a fresh UUID, including on type update, and remaps its
+material through the existing conflict-aware dependency plan. Up to 19 distinct
+material snapshots are allowed (three base composition materials plus 16 solids).
+The supplied dependency set must match references exactly; extrusion-only
+materials are not omitted. The 1 MiB package limit remains unchanged.
 
 Version 5 carries the paired-door `family.door_leaves` setting in addition to
 the version-4 shared Length snapshots. `Single` preserves the existing

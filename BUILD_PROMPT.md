@@ -1,9 +1,8 @@
 # OpenStructure implementation prompt
 
-> Historical implementation prompt: its open-source and `LICENSE.pending`
-> instructions have been superseded by [LICENSE](LICENSE) and
-> [CONTRIBUTING.md](CONTRIBUTING.md). The host is now proprietary while the
-> repository remains public and compatible plugin development is permitted.
+> Historical implementation prompt: its original `LICENSE.pending` instructions
+> have been superseded. The project now uses Apache License 2.0; see
+> [LICENSE](LICENSE) and [CONTRIBUTING.md](CONTRIBUTING.md).
 
 Use this prompt to continue building the existing OpenStructure repository.
 It replaces the original bootstrap prompt. Editing or reviewing this document
@@ -548,11 +547,10 @@ matching repository if one exists. Do not recreate it or overwrite its history.
 - Configure requested repository protections only with real check names and
   available account features. Describe unavailable settings accurately.
 
-Licensing is currently pending: `LICENSE.pending` and `publish = false` are
-intentional. Do not silently replace them or call a pending license an open-source
-grant. Present a dependency-aware license choice to the owner before applying it.
-Keep SDK/application licensing, dependency obligations, and contributor terms
-consistent with that choice; a public GitHub repository alone does not settle it.
+The project has adopted Apache License 2.0. Keep Cargo license metadata,
+contribution guidance, plugin terms, and dependency notices consistent with it.
+Workspace packages may remain `publish = false` when crate publication is not
+intended; that setting does not change their license.
 
 If GitHub access or automatic approval is blocked, preserve completed local work
 and give the precise blocker and next action. Do not bypass the restriction or

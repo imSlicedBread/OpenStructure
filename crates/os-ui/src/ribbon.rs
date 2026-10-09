@@ -145,30 +145,28 @@ impl DesktopApp {
                                     if ui.add_enabled(self.plans.active.is_some(), egui::Button::new("Detail Line")).clicked() {
                                         self.begin_detail_line();
                                     }
-                                    if ui
-                                        .add_enabled_ui(self.plans.active.is_some(), |ui| {
-                                            command(
-                                                ui,
-                                                Icon::Measure,
-                                                "Aligned dimension",
-                                                true,
-                                            )
-                                        })
-                                        .inner
-                                        .on_hover_text(
-                                            "Dimension between two native wall endpoints in the active floor plan.",
-                                        )
-                                        .clicked()
-                                        && let Some(view) = self.plans.active
-                                    {
-                                        self.begin_aligned_dimension(view);
-                                    }
-                                    for (label, layout) in [("Chain", os_model::DimensionLayout::Chain), ("Baseline", os_model::DimensionLayout::Baseline), ("Angular", os_model::DimensionLayout::Angular)] {
-                                        if ui.add_enabled(self.plans.active.is_some(), egui::Button::new(label)).clicked()
-                                            && let Some(view) = self.plans.active {
-                                            self.begin_dimension(view, layout);
+                                    ui.menu_button("Dimensions…", |ui| {
+                                        for (label, layout) in [
+                                            ("Aligned dimension", os_model::DimensionLayout::Aligned),
+                                            ("Chain", os_model::DimensionLayout::Chain),
+                                            ("Baseline", os_model::DimensionLayout::Baseline),
+                                            ("Angular", os_model::DimensionLayout::Angular),
+                                            ("Arc length", os_model::DimensionLayout::ArcLength),
+                                        ] {
+                                            if ui
+                                                .add_enabled(
+                                                    self.plans.active.is_some(),
+                                                    egui::Button::new(label),
+                                                )
+                                                .clicked()
+                                            {
+                                                if let Some(view) = self.plans.active {
+                                                    self.begin_dimension(view, layout);
+                                                }
+                                                ui.close();
+                                            }
                                         }
-                                    }
+                                    });
                                 });
                                 ribbon_group(ui, "Build", |ui| {
                                     ui.horizontal(|ui| {

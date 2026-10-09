@@ -36,18 +36,28 @@ installed UI test uses real egui pointer events and the unchanged independently
 built `outputs/rust-wall-install` guest. It verifies:
 
 - Draw wall in plan routes to the installed adapter and commits through the worker.
-- Two linked walls, semantic endpoint snapping and an exact three-metre second wall.
-- Matching model/scene counts and one-step undo; Escape cancels an uncommitted preview.
+- Two linked walls: the first is exact-input 4 m; the second is snapped to the
+  first endpoint, exact-input 3 m at 90°, and asserted perpendicular.
+- Pointer and exact-input previews leave model revision/history unchanged; matching
+  model/scene counts and one-step undo.
+- The host's documented wall-prism fallback changes the first wall from Cut to
+  Projected under an elevated cut range while preserving picking; a plan shifted
+  to a level 10 m above hides both walls and removes their pick targets. The
+  original level/range are restored before persistence checks.
+- Split 2D/3D retains shared selection while installed Move, both endpoint resizes,
+  and Offset copy commit through the worker and undo to the same two-wall model.
 - Stopping at mouse release leaves the command pending; Escape on the next frame
   cancels before consumption even if guest execution already completed. Draining
   leaves the original two-wall model unchanged.
+- Save/reopen preserves the two wall UUIDs and parameters; the persisted plan can
+  be reopened after the document session reset.
 
 The installed test is ignored in a normal suite because it needs a user-selected
 installation. It was explicitly executed and passed, not counted as an ordinary
 CI pass. It is headless egui evidence, not a completed native desktop inspection.
 
 ```powershell
-$env:OPENSTRUCTURE_WALL_TEST_PLUGIN = 'C:\Users\Youca\Documents\ChatGPT\OpenStructure\outputs\rust-wall-install'
+$env:OPENSTRUCTURE_WALL_TEST_PLUGIN = (Resolve-Path 'outputs/rust-wall-install').Path
 .\tools\cargo.ps1 test -p os-ui --all-features --locked --offline --target-dir work/completion-build installed_pointer_ui_creates_snapped_walls_through_worker '--' --ignored --nocapture
 .\tools\cargo.ps1 test --workspace --all-features --lib --bins --tests --locked --offline --target-dir work/completion-build --quiet
 .\tools\cargo.ps1 test --workspace --all-features --doc --locked --offline --target-dir work/completion-build --quiet
@@ -87,3 +97,17 @@ Next: native creation/pending/cancel inspection; installed editing adapters;
 full D linked-view/failure acceptance before E1. D/E1–E4/G1–G6 remain incomplete,
 L1/L2 later. Production profile, license and publication choices remain open.
 There is no HEAD/remote, GitHub URL or hosted CI result.
+
+2026-10-06 acceptance extension: the ignored installed UI test was rerun against
+the existing local guest after adding preview immutability, split selection/edit,
+and save/reopen identity checks. It passed. This remains headless egui evidence;
+native-window inspection, independent-provider graphics qualification, and the
+broader D stale/invalid/wrong-scope and late-reply failure matrix remain open.
+
+2026-10-06 acceptance extension: the installed guest scenario now asserts the
+exact 4 m + 3 m perpendicular geometry, endpoint snap, Cut-to-Projected range
+change with picking, and elevated-level visibility/picking behavior. The ignored
+test passed against `outputs/rust-wall-install`; the range/picking assertions
+exercise the host-owned, documented straight-wall prism fallback, not guest-
+supplied plan graphics. It then restores the original plan settings and passes
+the existing save/reopen checks.

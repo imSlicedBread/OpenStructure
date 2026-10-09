@@ -74,6 +74,24 @@ the linked slice document. These are automated input/shape/model assertions,
 not native visual inspection. The earlier 2026-09-12 observations do not verify
 the new handles. Native manual endpoint-handle acceptance remains open.
 
+## Hosted opening endpoint preflight — 2026-10-06
+
+Direct start/end handle and toolbar resizes now preview hosted door/window plan
+symbols from the edited wall candidate. Stored opening offsets and all instance
+parameters remain unchanged; positions therefore follow the wall's host-relative
+axis. Every attached opening is checked, even when hidden in the active view.
+The candidate model, host cut and component meshes are preflighted together.
+Invalid fit, overlap, geometry or clearance-lock states reject the full edit
+without changing model, scene or history. A valid commit remains one Wall edit;
+the installed provider's bounded worker path is retained. Undo/redo regenerates
+the same host/opening geometry in split 2D/3D.
+
+Focused egui tests exercise typed and legacy doors/windows on both endpoint
+grips and DPI profiles, unchanged parameters, preview isolation,
+category/phase visibility, history and regeneration, plus hidden-fit and
+clearance-lock rejection. Native visual QA,
+automatic constraint settlement, and annotation/join repair are not claimed.
+
 ## Rotate/mirror — automated follow-up, 2026-09-27
 
 The [wall transform slice](plan-wall-edit-gestures.md#native-wall-rotatemirror--2026-09-27-automated-evidence)

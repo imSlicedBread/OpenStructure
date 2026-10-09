@@ -153,6 +153,8 @@ fn linked_section_definition_is_transactional_and_survives_save_reopen() {
     let mut document = Document::new("Section view").unwrap();
     let level = *document.model().levels.keys().next().unwrap();
     let parameters = ViewParams {
+        facade: None,
+        elevation: None,
         name: "Section A".into(),
         kind: ViewKind::Section,
         level: Some(level),

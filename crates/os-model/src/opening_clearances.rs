@@ -82,6 +82,16 @@ impl Model {
         for (&id, &lock) in &self.opening_clearances {
             let expected = self.clearance_offset(id, lock)?;
             let new = &self.openings[&id].parameters;
+            // Unrelated transactions (including copying a host to another level)
+            // must not normalize an already accepted source offset. Re-solve only
+            // when the lock, its resolved target, or the instance offset changes.
+            if let Some(old) = before.openings.get(&id)
+                && before.opening_clearances.get(&id) == Some(&lock)
+                && new.offset == old.parameters.offset
+                && before.clearance_offset(id, lock)? == expected
+            {
+                continue;
+            }
             if let Some(old) = before.openings.get(&id)
                 && before.opening_clearances.get(&id) == Some(&lock)
                 && (new.offset - old.parameters.offset).abs() > 1e-8

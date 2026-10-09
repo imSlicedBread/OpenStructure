@@ -115,7 +115,16 @@ named_parameters!(
 );
 // Plan settings contain only fixed-size scalars/points/options; inline entity
 // size already accounts for them. Keep this pattern exhaustive on schema changes.
-named_parameters!(ViewParams, kind, level, settings_revision, plan, section);
+named_parameters!(
+    ViewParams,
+    kind,
+    level,
+    settings_revision,
+    plan,
+    section,
+    elevation,
+    facade
+);
 named_parameters!(WallParams, path, thickness, height, level, material);
 named_parameters!(
     StairParams,
@@ -391,6 +400,22 @@ impl Model {
         entities!(openings, Opening);
         entities!(opening_types, OpeningType);
         for ty in opening_types.values() {
+            estimate.add(
+                ty.parameters
+                    .family
+                    .extrusions
+                    .capacity()
+                    .saturating_mul(size_of::<crate::OpeningExtrusion>()),
+            );
+            for solid in &ty.parameters.family.extrusions {
+                estimate.add(solid.name.capacity());
+                estimate.add(
+                    solid
+                        .profile
+                        .capacity()
+                        .saturating_mul(size_of::<os_core::Point2>()),
+                );
+            }
             estimate.add(
                 ty.parameters
                     .family

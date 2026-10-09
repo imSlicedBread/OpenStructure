@@ -1,5 +1,50 @@
 # Native hosted doors and windows
 
+## Authored additive profile solids (schema 67 / family 7)
+
+In the opening type editor choose **Solids…**. Add, duplicate, rename or delete up
+to 16 independently closed extrusions. Each has a type-local stable UUID, a simple
+3–32-vertex width/height-fraction profile, metric X/Z position, exact 1–500 mm
+depth, centre-plane normal offset within ±500 mm and optional project material.
+Drag profile vertices or edit their fractions numerically; insert/remove vertices
+with the existing profile tools. Depth is exact, not capped to the host. Every
+resolved edge must be at least 1 mm and the positioned profile must fit its frame.
+
+**Opening fixed** uses the full opening's start-jamb/sill frame and wall-left
+normal, independent of leaf pose. **Primary panel** uses its clear primary panel
+frame, including frame/lite insets and pane position; for a door it follows the
+actual hinge-to-free-edge direction, swing and committed angle. Positive normal
+is the directed panel's left normal. The parent effective depth is shared with
+two-bay pane geometry, including narrow lites and instance size overrides.
+
+This additive increment supports single rectangular doors and Fixed rectangular
+windows on straight native hosts. Paired leaves, sliding/casement windows, curved
+hosts and nonrectangular parent panels are explicitly rejected when additions are
+present. Additions neither enlarge the host cut nor change nominal schedule
+dimensions. They are independent solids, not Boolean unions; touching/overlap is
+not a constraint or clash-solving system. No nested families, void operations,
+revolves, sweeps, lofts, formulas or constrained sketches are introduced.
+
+Preview is draft-only. Apply preflights every affected placement (including hidden
+ones), then changes the type in one transaction. Invalid Apply keeps the draft
+and leaves model/history/3D untouched. Escape, Cancel and stale document revisions
+discard drafts. Instance UUIDs, hosts, dimension pins and clearance locks remain
+unchanged. Type duplication and package import allocate fresh solid identities.
+
+The shared closed-solid evaluator supplies 3D, section, wall-local elevation and
+world facade. Plan derives bounded cut/projected contours from those solids,
+including concave profiles; material and solid provenance accompany owner-level
+opening selection. Linked sheet/PDF uses the same vectors. Native per-opening and
+view-wide geometry budgets fail closed. IFC explicitly rejects authored additions,
+even on unused types, rather than omitting them.
+
+Evidence: model/document/storage `tests/opening_extrusions.rs`, frozen schema-66
+and package-5 fixtures, `os-geometry/src/openings_section_tests.rs`,
+`os-ui/src/opening_extrusion_tests.rs` and the package-import collision test.
+Egui authoring is exercised at 1280×800/100% and 1000×650/150%; numeric values in
+the harness are partly assigned to drafts, so this is not full keyboard-entry or
+native-window/physical-print qualification. General family authoring remains partial.
+
 Doors and windows host on straight native walls and native circular-arc walls.
 Curved hosts use analytic centerline stations and radial per-layer apertures,
 not chord approximations. Splines and plugin-defined host paths remain
@@ -734,6 +779,13 @@ not leave cached measurement coordinates. Dimension pick/repair only accepts
 opening jambs whose native symbol lines are visible in the current plan range
 and crop. See [native dimensions](native-dimensions.md).
 
+The same positive component evaluator feeds 3D scenes and linked sections.
+Leaves, sashes, panes, side-lites and frame members are cut independently so
+touching solids do not become an invalid section union. Resulting contours keep
+the opening UUID and component material and flow through section picking, crop,
+sheet and vector-PDF output; host reveal contours remain wall-owned. See
+[native linked sections](native-sections.md).
+
 Use an active floor plan on the host wall's level. The Architecture ribbon's Door
 or Window action starts a repeatable pointer tool: choose a saved type from its
 type picker, hover a visible straight or circular-arc wall for a transient
@@ -821,6 +873,18 @@ undo/redo. They exercise doors/windows, typed/legacy instances and reversed host
 at 1280×800/100% and 1000×650/150%. Existing `opening_drag_*` tests cover
 cancellation after snap acquisition and selection/pan precedence. This uses the
 existing same-host snap references and adds no snap kinds or schema changes.
+
+Native straight-wall Start/End endpoint resize also preflights hosted openings.
+Each typed or legacy door/window keeps its instance identity, dimensions and
+host-relative offset; it follows the resized wall axis. Candidate opening
+symbols preview in the plan, while the host cut and every hosted component mesh
+are validated without mutating the live model. Hidden openings are included.
+Invalid fit, overlap, geometry or clearance-lock candidates cancel atomically;
+clearance constraints are not automatically settled by endpoint editing. The
+installed Wall provider remains on its bounded worker route. Focused endpoint
+tests cover both handle directions and DPI profiles, both opening kinds and
+definitions, category/phase visibility, undo/redo and 2D/3D regeneration. See
+[wall endpoint evidence](plan-wall-edit-gestures.md#hosted-doorwindow-endpoint-preview--2026-10-06).
 
 The separate **Rehost** action in the Architecture ribbon moves the selected
 door or window to a different visible native straight or circular-arc wall on the active plan

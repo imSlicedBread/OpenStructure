@@ -11,11 +11,11 @@ cargo build -p os-app --locked
 cargo run -p os-app --locked
 ```
 
-The repository is public and proprietary. Anyone can read and fork it on GitHub;
-the permitted uses of its code are stated in [LICENSE](LICENSE). To propose a
-change without write access, fork the repository, push a branch to your fork,
-and open a pull request against `main`. See [CONTRIBUTING.md](CONTRIBUTING.md)
-for the rights review required before a contribution can be merged.
+The repository and its host code are open source under Apache License 2.0.
+Anyone can use, modify, and redistribute the code under that license. To
+propose a change without write access, fork the repository, push a branch to
+your fork, and open a pull request against `main`. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for contribution terms.
 Git Credential Manager can open browser authentication when pushing.
 Never place a password or access token in the remote URL.
 
@@ -50,4 +50,5 @@ After the first successful CI run, consider protecting `main`, requiring pull
 requests and passing checks, and enabling dependency alerts and Discussions.
 These settings are managed in GitHub and are not configured by this document.
 
-The host and plugin-development permissions are documented in [LICENSE](LICENSE).
+Project license and attribution terms are documented in [LICENSE](LICENSE) and
+[NOTICE](NOTICE).

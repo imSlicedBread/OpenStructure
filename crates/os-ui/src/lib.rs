@@ -835,7 +835,25 @@ impl DesktopApp {
         let mut parameters = dimension.parameters.clone();
         parameters.offset_m = self.dimension_offset_draft;
         parameters.baseline_spacing_m = self.dimension_spacing_draft;
-        if let Ok(resolved) = parameters.resolve(model) {
+        if parameters.layout == os_model::DimensionLayout::ArcLength {
+            match parameters.resolve_arc_length(model) {
+                Ok(arc) => parameters.orphan_hint = arc.point(0.5),
+                Err(reason) => {
+                    self.report(
+                        Err(Error::Invalid(format!(
+                            "Arc offset cannot resolve: {reason:?}"
+                        ))),
+                        "",
+                    );
+                    return;
+                }
+            }
+        } else if parameters.layout.is_elevation() {
+            if let Ok(resolved) = parameters.resolve_elevation(model) {
+                let (a, b) = parameters.elevation_line(resolved);
+                parameters.orphan_hint = Point2::new((a.x + b.x) * 0.5, (a.y + b.y) * 0.5);
+            }
+        } else if let Ok(resolved) = parameters.resolve(model) {
             let dx = resolved.second.x - resolved.first.x;
             let dy = resolved.second.y - resolved.first.y;
             let normal = Point2::new(-dy / resolved.length_metres, dx / resolved.length_metres);
@@ -1165,6 +1183,15 @@ impl DesktopApp {
     }
 
     fn show(&mut self, ctx: &egui::Context) {
+        let level_copy_modal = self.wall_level_copy_active();
+        if level_copy_modal {
+            self.wall_level_copy_dialog(ctx);
+            ctx.input_mut(|input| {
+                input
+                    .events
+                    .retain(|event| !matches!(event, egui::Event::Key { .. }));
+            });
+        }
         if self.plans.curtain_properties.is_some() {
             self.curtain_properties_dialog(ctx);
             ctx.input_mut(|input| {
@@ -1228,6 +1255,7 @@ impl DesktopApp {
         if self.pending.is_none()
             && !phase_modal
             && !floor_modal
+            && !level_copy_modal
             && self.exchange_pending.is_none()
             && !self.plans.sheet_pdf_pending()
             && self.plan_draft.is_none()
@@ -1818,11 +1846,21 @@ mod desktop_tests {
                 if h.app.plans.ready() && !h.app.editor.plugin_work_pending() {
                     break;
                 }
-                assert!(std::time::Instant::now() < deadline);
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "installed Wall plan did not settle: active={:?}, ready={}, plugin_work={}, status={}",
+                    h.app.plans.active,
+                    h.app.plans.ready(),
+                    h.app.editor.plugin_work_pending(),
+                    h.app.status
+                );
                 std::thread::yield_now();
             }
         };
         settle(&mut h);
+        let before_first_preview = h.app.editor.document.model().clone();
+        let before_first_revision = h.app.editor.document.revision();
+        let before_first_history = h.app.editor.document.history_stats();
         h.click("Draw wall in plan");
         assert!(
             h.app
@@ -1836,9 +1874,26 @@ mod desktop_tests {
         );
         let rect = h.app.plans.canvas_rect.unwrap();
         let start = egui::pos2(rect.left() + 50.0, rect.bottom() - 50.0);
-        let end = start + egui::vec2(130.0, 0.0);
         h.click_at(start);
-        assert!(h.app.editor.document.model().walls.is_empty());
+        let plan_view = h.app.plans.active.unwrap();
+        let first_start = {
+            let gesture = h.app.wall_gesture.as_mut().unwrap();
+            gesture.length = "4".into();
+            gesture.angle_degrees = "0".into();
+            gesture.start.unwrap()
+        };
+        let end = h
+            .app
+            .plans
+            .test_screen_point(plan_view, Point2::new(first_start.x + 4.0, first_start.y))
+            .unwrap();
+        assert_eq!(h.app.editor.document.model(), &before_first_preview);
+        assert_eq!(h.app.editor.document.revision(), before_first_revision);
+        assert_eq!(h.app.editor.document.history_stats(), before_first_history);
+        h.frame(vec![egui::Event::PointerMoved(end)]);
+        assert_eq!(h.app.editor.document.model(), &before_first_preview);
+        assert_eq!(h.app.editor.document.revision(), before_first_revision);
+        assert_eq!(h.app.editor.document.history_stats(), before_first_history);
         h.click_at(end);
         settle(&mut h);
         assert_eq!(h.app.editor.document.model().walls.len(), 1);
@@ -1852,13 +1907,30 @@ mod desktop_tests {
             .next()
             .unwrap()
             .clone();
+        assert!((first.parameters.length() - 4.0).abs() < 1e-8);
+        assert!((first.parameters.end().y - first.parameters.start().y).abs() < 1e-8);
         h.click("Draw wall in plan");
         h.click_at(end + egui::vec2(4.0, 0.0));
-        let gesture = h.app.wall_gesture.as_mut().unwrap();
-        assert!(gesture.start.unwrap().distance(first.parameters.end()) < 1e-8);
-        gesture.length = "3".into();
-        gesture.angle_degrees = "90".into();
-        h.click_at(end - egui::vec2(0.0, 80.0));
+        let second_start = {
+            let gesture = h.app.wall_gesture.as_mut().unwrap();
+            assert!(gesture.start.unwrap().distance(first.parameters.end()) < 1e-8);
+            gesture.length = "3".into();
+            gesture.angle_degrees = "90".into();
+            gesture.start.unwrap()
+        };
+        let second_end = h
+            .app
+            .plans
+            .test_screen_point(plan_view, Point2::new(second_start.x, second_start.y + 3.0))
+            .unwrap();
+        let before_second_preview = h.app.editor.document.model().clone();
+        let before_second_revision = h.app.editor.document.revision();
+        let before_second_history = h.app.editor.document.history_stats();
+        h.frame(vec![egui::Event::PointerMoved(second_end)]);
+        assert_eq!(h.app.editor.document.model(), &before_second_preview);
+        assert_eq!(h.app.editor.document.revision(), before_second_revision);
+        assert_eq!(h.app.editor.document.history_stats(), before_second_history);
+        h.click_at(second_end);
         settle(&mut h);
         assert_eq!(h.app.editor.document.model().walls.len(), 2);
         let second = h
@@ -1869,11 +1941,33 @@ mod desktop_tests {
             .walls
             .values()
             .find(|w| w.id() != first.id())
-            .unwrap();
+            .unwrap()
+            .clone();
         assert_eq!(second.parameters.start(), first.parameters.end());
         assert!((second.parameters.length() - 3.0).abs() < 1e-8);
+        let first_direction = Point2::new(
+            first.parameters.end().x - first.parameters.start().x,
+            first.parameters.end().y - first.parameters.start().y,
+        );
+        let second_direction = Point2::new(
+            second.parameters.end().x - second.parameters.start().x,
+            second.parameters.end().y - second.parameters.start().y,
+        );
+        assert!(
+            (first_direction.x * second_direction.x + first_direction.y * second_direction.y).abs()
+                < 1e-8
+        );
         assert_eq!(h.app.editor.scene.len(), 2);
         let two = h.app.editor.document.model().clone();
+        h.app.plans.split = true;
+        h.frame(vec![]);
+        h.app.select(Some(first.id()));
+        h.frame(vec![]);
+        assert_eq!(h.app.selected, Some(first.id()));
+        assert_eq!(
+            h.app.viewport_cache.as_ref().unwrap().selected,
+            Some(first.id())
+        );
         for (button, mode) in [
             ("Move wall", crate::plan_gesture::WallEdit::Move),
             ("Resize start", crate::plan_gesture::WallEdit::ResizeStart),
@@ -1963,7 +2057,11 @@ mod desktop_tests {
             repeat: false,
             modifiers: egui::Modifiers::NONE,
         }]);
-        assert!(h.app.status_error);
+        assert!(
+            h.app.status.to_ascii_lowercase().contains("cancel"),
+            "{}",
+            h.app.status
+        );
         assert_eq!(*h.app.editor.document.model(), two);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while !h
@@ -1993,6 +2091,139 @@ mod desktop_tests {
         }]);
         assert!(h.app.wall_gesture.is_none());
         assert_eq!(*h.app.editor.document.model(), before);
+        h.app.history(true);
+        settle(&mut h);
+        assert_eq!(*h.app.editor.document.model(), two);
+
+        let initial_settings = h.app.editor.document.model().views[&plan_view]
+            .parameters
+            .plan
+            .unwrap();
+        let initial_name = h.app.editor.document.model().views[&plan_view]
+            .parameters
+            .name
+            .clone();
+        let original_level = h.app.editor.document.model().views[&plan_view]
+            .parameters
+            .level
+            .unwrap();
+        let first_center = Point2::new(
+            (first.parameters.start().x + first.parameters.end().x) * 0.5,
+            (first.parameters.start().y + first.parameters.end().y) * 0.5,
+        );
+        let context = h.app.editor.native_plan_context(plan_view).unwrap();
+        let drawing = h.app.editor.native_wall_plan(plan_view).unwrap();
+        assert!(drawing.items(context).unwrap().iter().any(|item| {
+            item.entity == first.id() && item.footprint.role == os_geometry::plan::PlanRole::Cut
+        }));
+        assert_eq!(
+            drawing.pick(context, first_center).unwrap(),
+            Some(first.id())
+        );
+
+        let mut projected_settings = initial_settings;
+        projected_settings.range = os_model::PlanViewRange {
+            top: 4.0,
+            cut: 3.5,
+            bottom: 0.0,
+            depth: -1.0,
+        };
+        h.app
+            .editor
+            .update_floor_plan(plan_view, &initial_name, original_level, projected_settings)
+            .unwrap();
+        settle(&mut h);
+        let context = h.app.editor.native_plan_context(plan_view).unwrap();
+        let drawing = h.app.editor.native_wall_plan(plan_view).unwrap();
+        assert!(drawing.items(context).unwrap().iter().any(|item| {
+            item.entity == first.id()
+                && item.footprint.role == os_geometry::plan::PlanRole::Projected
+        }));
+        assert_eq!(
+            drawing.pick(context, first_center).unwrap(),
+            Some(first.id())
+        );
+
+        let mut raised_level_params = h.app.editor.document.model().levels[&original_level]
+            .parameters
+            .clone();
+        raised_level_params.name = "Installed Wall acceptance upper level".into();
+        raised_level_params.elevation += 10.0;
+        let raised_level = Level::new("core.level", raised_level_params);
+        let raised_level_id = raised_level.id();
+        h.app
+            .editor
+            .command("Add acceptance level", Command::AddLevel(raised_level))
+            .unwrap();
+        h.app
+            .editor
+            .update_floor_plan(
+                plan_view,
+                &initial_name,
+                raised_level_id,
+                projected_settings,
+            )
+            .unwrap();
+        settle(&mut h);
+        let context = h.app.editor.native_plan_context(plan_view).unwrap();
+        let drawing = h.app.editor.native_wall_plan(plan_view).unwrap();
+        assert!(
+            !drawing
+                .items(context)
+                .unwrap()
+                .iter()
+                .any(|item| item.entity == first.id() || item.entity == second.id())
+        );
+        assert_eq!(drawing.pick(context, first_center).unwrap(), None);
+
+        h.app
+            .editor
+            .update_floor_plan(plan_view, &initial_name, original_level, initial_settings)
+            .unwrap();
+        h.app
+            .editor
+            .command(
+                "Remove acceptance level",
+                Command::RemoveLevel(raised_level_id),
+            )
+            .unwrap();
+        settle(&mut h);
+        let final_model = h.app.editor.document.model().clone();
+        assert_eq!(final_model.walls, two.walls);
+        assert_eq!(final_model.levels, two.levels);
+        assert_eq!(
+            final_model.views[&plan_view].parameters.level,
+            two.views[&plan_view].parameters.level
+        );
+        assert_eq!(
+            final_model.views[&plan_view].parameters.plan,
+            two.views[&plan_view].parameters.plan
+        );
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("installed-wall-split.osb");
+        h.app.editor.save(&path).unwrap();
+        h.app.editor.open(&path).unwrap();
+        h.frame(vec![]);
+        h.app.focus_plan(Some(plan_view));
+        settle(&mut h);
+        assert_eq!(*h.app.editor.document.model(), final_model);
+        assert!(
+            h.app
+                .editor
+                .document
+                .model()
+                .walls
+                .contains_key(&first.id())
+        );
+        assert!(
+            h.app
+                .editor
+                .document
+                .model()
+                .walls
+                .contains_key(&second.id())
+        );
     }
 
     #[test]

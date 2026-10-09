@@ -94,9 +94,10 @@ impl Draft {
             });
         }
         for dimension in self.original.dimensions.values().filter(|d| {
-            d.parameters
-                .references()
-                .any(|r| r.wall_endpoint().is_some_and(|(wall, _)| wall == self.id))
+            d.parameters.layout != DimensionLayout::ArcLength
+                && d.parameters
+                    .references()
+                    .any(|r| r.wall_endpoint().is_some_and(|(wall, _)| wall == self.id))
         }) {
             dimension.parameters.validate_creation(&self.original)?;
             let mut parameters = dimension.parameters.clone();
@@ -121,9 +122,10 @@ impl Draft {
         let mut candidate = Document::from_model(self.original.clone())?;
         candidate.execute("Validate split dependencies", commands.clone())?;
         for dimension in self.original.dimensions.values().filter(|d| {
-            d.parameters
-                .references()
-                .any(|r| r.wall_endpoint().is_some_and(|(wall, _)| wall == self.id))
+            d.parameters.layout != DimensionLayout::ArcLength
+                && d.parameters
+                    .references()
+                    .any(|r| r.wall_endpoint().is_some_and(|(wall, _)| wall == self.id))
         }) {
             verify_dimension(
                 &dimension.parameters,

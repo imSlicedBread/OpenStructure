@@ -3,7 +3,7 @@ name = "os-render"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-license-file = "../../LICENSE"
+license = "Apache-2.0"
 publish.workspace = true
 
 [lints]

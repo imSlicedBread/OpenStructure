@@ -381,6 +381,29 @@ fn migrated_phase_id(project: Id, salt: u128) -> Id {
 
 /// Explicit native schema chain; never infer a version from optional field shapes.
 fn migrate_inner(value: &mut serde_json::Value, from: u32) -> Result<()> {
+    if from < 64
+        && let Some(views) = value.get("views").and_then(serde_json::Value::as_object)
+    {
+        ensure(
+            views.values().all(|view| {
+                view["parameters"].get("elevation").is_none()
+                    && view["parameters"]["kind"] != "Elevation"
+            }),
+            "ambiguous legacy elevation settings or view kind",
+        )?;
+    }
+    if from < 63
+        && let Some(dimensions) = value
+            .get("dimensions")
+            .and_then(serde_json::Value::as_object)
+    {
+        ensure(
+            dimensions
+                .values()
+                .all(|d| d["parameters"]["layout"] != "ArcLength"),
+            "ambiguous legacy arc-length layout",
+        )?;
+    }
     if from < 54
         && let Some(walls) = value.get("walls").and_then(serde_json::Value::as_object)
     {
@@ -413,6 +436,47 @@ fn migrate_inner(value: &mut serde_json::Value, from: u32) -> Result<()> {
                     .all(|reference| reference.get("WallFace").is_none()),
                 "ambiguous legacy wall face reference",
             )?;
+        }
+    }
+    if from < 66
+        && let Some(views) = value.get("views").and_then(serde_json::Value::as_object)
+    {
+        ensure(
+            views.values().all(|v| {
+                v["parameters"].get("facade").is_none() && v["parameters"]["kind"] != "Facade"
+            }),
+            "ambiguous legacy facade settings",
+        )?;
+    }
+    if from < 65
+        && let Some(dimensions) = value
+            .get("dimensions")
+            .and_then(serde_json::Value::as_object)
+    {
+        for dimension in dimensions.values() {
+            let p = &dimension["parameters"];
+            ensure(
+                !matches!(
+                    p["layout"].as_str(),
+                    Some("ElevationHorizontal" | "ElevationVertical")
+                ),
+                "ambiguous legacy elevation dimension",
+            )?;
+            for r in [p.get("first"), p.get("second")]
+                .into_iter()
+                .flatten()
+                .chain(
+                    p.get("additional")
+                        .and_then(serde_json::Value::as_array)
+                        .into_iter()
+                        .flatten(),
+                )
+            {
+                ensure(
+                    r.get("ElevationWall").is_none() && r.get("ElevationOpening").is_none(),
+                    "ambiguous legacy elevation reference",
+                )?;
+            }
         }
     }
     ensure(
@@ -458,7 +522,79 @@ fn migrate_inner(value: &mut serde_json::Value, from: u32) -> Result<()> {
 }
 
 fn migrate_step(value: &mut serde_json::Value, from: u32) -> Result<()> {
+    if from == 66 {
+        for ty in value["opening_types"]
+            .as_object_mut()
+            .ok_or_else(|| Error::Invalid("missing opening types".into()))?
+            .values_mut()
+        {
+            let family = ty["parameters"]["family"]
+                .as_object_mut()
+                .ok_or_else(|| Error::Invalid("missing opening family".into()))?;
+            ensure(
+                family.get("version") == Some(&serde_json::json!(6))
+                    && !family.contains_key("extrusions"),
+                "ambiguous legacy opening extrusions",
+            )?;
+            family.insert("version".into(), 7.into());
+            family.insert("extrusions".into(), serde_json::json!([]));
+        }
+    }
     match from {
+        63..=66 => {
+            let object = value
+                .as_object_mut()
+                .ok_or_else(|| Error::Invalid("invalid model".into()))?;
+            // Header-only migration: opaque properties/extensions are untouched.
+            for (name, data) in object.iter_mut() {
+                if name == "project" {
+                    ensure(
+                        data["header"]["schema_version"] == from,
+                        "invalid native header",
+                    )?;
+                    data["header"]["schema_version"] = (from + 1).into();
+                } else if name != "extensions"
+                    && let Some(map) = data.as_object_mut()
+                {
+                    for entity in map.values_mut().filter(|v| v.get("header").is_some()) {
+                        ensure(
+                            entity["header"]["schema_version"] == from,
+                            "invalid native header",
+                        )?;
+                        entity["header"]["schema_version"] = (from + 1).into();
+                    }
+                }
+            }
+            object.insert("schema_version".into(), (from + 1).into());
+            Ok(())
+        }
+        62 => {
+            let object = value
+                .as_object_mut()
+                .ok_or_else(|| Error::Invalid("invalid model".into()))?;
+            // Header-only migration. Do not descend into opaque metadata/extensions.
+            for (name, data) in object.iter_mut() {
+                if name == "project" {
+                    ensure(
+                        data["header"]["schema_version"] == 62,
+                        "invalid schema 62 header",
+                    )?;
+                    data["header"]["schema_version"] = 63.into();
+                } else if name != "extensions"
+                    && let Some(map) = data.as_object_mut()
+                {
+                    for entity in map.values_mut().filter(|v| v.get("header").is_some()) {
+                        ensure(
+                            entity["header"]["schema_version"] == 62,
+                            "invalid schema 62 header",
+                        )?;
+                        entity["header"]["schema_version"] = 63.into();
+                    }
+                }
+            }
+            object.insert("schema_version".into(), 63.into());
+            Ok(())
+        }
         61 => {
             let object = value
                 .as_object_mut()
@@ -2850,6 +2986,7 @@ fn migrate_step(value: &mut serde_json::Value, from: u32) -> Result<()> {
                         family.remove("frame_material");
                         family.remove("side_lite");
                         family.remove("door_leaves");
+                        family.remove("extrusions");
                         p.insert("family".into(), serde_json::Value::Object(family.clone()));
                     }
                 }

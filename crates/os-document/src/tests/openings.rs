@@ -162,6 +162,8 @@ fn fixture() -> (Document, Id, Vec<Id>, Vec<Id>, Id) {
     let view = View::new(
         "core.view",
         ViewParams {
+            facade: None,
+            elevation: None,
             name: "Plan".into(),
             kind: ViewKind::Plan,
             level: Some(level),

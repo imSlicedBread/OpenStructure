@@ -139,6 +139,8 @@ mod tests {
         let section =
             SectionViewSettings::new(Point2::new(0.0, 0.0), Point2::new(8.0, 0.0), -1.0, 9.0);
         let mut view = crate::ViewParams {
+            facade: None,
+            elevation: None,
             name: "Section A".into(),
             kind: crate::ViewKind::Section,
             level: Some(os_core::Id::new()),
