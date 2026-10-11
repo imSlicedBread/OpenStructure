@@ -38,6 +38,7 @@ fn fixture() -> (Document, Stair, Id, Id, Id, Id) {
     let material = Material::new(
         "core.material",
         MaterialParams {
+            cut_pattern: None,
             name: "Concrete".into(),
             density_kg_m3: 2400.0,
             color: [170, 170, 170],

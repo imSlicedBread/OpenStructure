@@ -62,6 +62,12 @@ pub enum Command {
         binding: Option<PlanGraphicsBinding>,
     },
     AddMaterial(Material),
+    AddMaterialPattern(MaterialPattern),
+    UpdateMaterialPattern {
+        id: Id,
+        parameters: MaterialPatternParams,
+    },
+    RemoveMaterialPattern(Id),
     UpdateMaterial {
         id: Id,
         parameters: MaterialParams,
@@ -404,6 +410,30 @@ impl Document {
                     )?;
                     candidate.element_lifecycles.insert(element, lifecycle);
                     element
+                }
+                Command::AddMaterialPattern(pattern) => {
+                    let id = pattern.id();
+                    ensure(
+                        !candidate.material_patterns.contains_key(&id),
+                        "pattern already exists",
+                    )?;
+                    candidate.material_patterns.insert(id, pattern);
+                    id
+                }
+                Command::UpdateMaterialPattern { id, parameters } => {
+                    let pattern = candidate
+                        .material_patterns
+                        .get_mut(&id)
+                        .ok_or_else(|| Error::Invalid("pattern missing".into()))?;
+                    pattern.parameters = parameters;
+                    id
+                }
+                Command::RemoveMaterialPattern(id) => {
+                    ensure(
+                        candidate.material_patterns.remove(&id).is_some(),
+                        "pattern missing",
+                    )?;
+                    id
                 }
                 Command::AddMaterial(material) => {
                     let id = material.id();
@@ -980,6 +1010,37 @@ impl Document {
                     id
                 }
                 Command::UpdateDimension { id, parameters } => {
+                    if parameters.layout.is_section() {
+                        let old = &candidate
+                            .dimensions
+                            .get(&id)
+                            .ok_or_else(|| Error::Invalid("dimension missing".into()))?
+                            .parameters;
+                        if old.view != parameters.view || old.layout != parameters.layout {
+                            parameters.validate_creation(&candidate)?;
+                        } else if old.first != parameters.first || old.second != parameters.second {
+                            parameters.validate()?;
+                            for (before, after) in [
+                                (old.first, parameters.first),
+                                (old.second, parameters.second),
+                            ] {
+                                if before != after {
+                                    after.resolve_section(&candidate, parameters.view).map_err(
+                                        |e| {
+                                            Error::Invalid(format!(
+                                                "Replacement section reference: {e:?}"
+                                            ))
+                                        },
+                                    )?;
+                                }
+                            }
+                            ensure(
+                                parameters.resolve_section(&candidate)
+                                    != Err(os_model::DimensionDiagnostic::CoincidentAnchors),
+                                "coincident section references",
+                            )?;
+                        }
+                    }
                     if parameters.layout.is_elevation() {
                         let old = &candidate
                             .dimensions

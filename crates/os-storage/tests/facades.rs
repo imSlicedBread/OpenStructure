@@ -26,6 +26,7 @@ fn schema_65_facade_migration_preserves_identity_metadata_and_rejects_smuggled_f
         serde_json::json!({"kind":"Facade","facade":{"schema_version":123}});
     let mut expected = old.clone();
     headers(&mut expected, SCHEMA_VERSION);
+    expected["material_patterns"] = serde_json::json!({});
     for ty in expected["opening_types"]
         .as_object_mut()
         .unwrap()

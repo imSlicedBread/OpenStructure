@@ -13,6 +13,7 @@ fn arc_length_schema_62_migration_only_advances_headers_and_preserves_opaque_dat
     let mut value = frozen();
     let mut expected = value.clone();
     expected["schema_version"] = SCHEMA_VERSION.into();
+    expected["material_patterns"] = serde_json::json!({});
     for (key, data) in expected.as_object_mut().unwrap() {
         if key == "project" {
             data["header"]["schema_version"] = SCHEMA_VERSION.into();

@@ -224,6 +224,7 @@ fn materialed_lites_pairs_and_eligible_sash_poses_project_on_both_sides() {
         let material = Material::new(
             "material",
             MaterialParams {
+                cut_pattern: None,
                 name: name.into(),
                 density_kg_m3: 1000.,
                 color: [120, 150, 180],

@@ -42,6 +42,8 @@ mod room_materials;
 mod room_separation_line_tests;
 mod room_separation_lines;
 mod room_tags;
+mod section_dimensions;
+mod section_editor;
 mod section_fills;
 mod selection;
 mod selection_filters;
@@ -86,6 +88,8 @@ mod opening_tests;
 mod providers;
 #[cfg(test)]
 mod roof_tests;
+#[cfg(test)]
+mod section_dimension_tests;
 #[cfg(test)]
 mod section_tests;
 #[cfg(test)]
@@ -875,6 +879,9 @@ pub(super) struct PlanWorkspace {
     // cannot turn into a pan or selection. This is not a live wall draft.
     endpoint_pointer_claimed: bool,
     section_placement: Option<SectionPlacementDraft>,
+    section_dimension: Option<section_dimensions::Draft>,
+    section_dimension_claimed: bool,
+    section_pointer_claimed: bool,
     #[cfg(feature = "external-plugins")]
     providers: providers::Providers,
     #[cfg(test)]
@@ -934,6 +941,10 @@ struct DimensionAnchorDraft {
 }
 
 struct SectionPlacementDraft {
+    #[cfg(test)]
+    numeric_rects: BTreeMap<&'static str, egui::Rect>,
+    settings: Option<os_model::SectionViewSettings>,
+    editing: Option<Id>,
     context: PlanContext,
     session: Id,
     revision: u64,
@@ -2239,6 +2250,10 @@ impl DesktopApp {
                     second: None,
                 });
                 let guidance = match layout {
+                    os_model::DimensionLayout::SectionHorizontal
+                    | os_model::DimensionLayout::SectionVertical => {
+                        "Use the section dimension tools"
+                    }
                     os_model::DimensionLayout::ElevationHorizontal
                     | os_model::DimensionLayout::ElevationVertical => {
                         "Use the elevation dimension tools"
@@ -2271,6 +2286,14 @@ impl DesktopApp {
     }
 
     pub(super) fn begin_dimension_repair(&mut self, anchor: usize) {
+        if self
+            .selected
+            .and_then(|id| self.editor.document.model().dimensions.get(&id))
+            .is_some_and(|d| d.parameters.layout.is_section())
+        {
+            self.begin_section_dimension_repair(anchor);
+            return;
+        }
         if self
             .selected
             .and_then(|id| self.editor.document.model().dimensions.get(&id))
@@ -2652,6 +2675,10 @@ impl DesktopApp {
                 self.plans.floor_hole_sketch = None;
                 self.plans.room_placement_active = false;
                 self.plans.section_placement = Some(SectionPlacementDraft {
+                    #[cfg(test)]
+                    numeric_rects: BTreeMap::new(),
+                    settings: None,
+                    editing: None,
                     context,
                     session: self.editor.document.session_id(),
                     revision: self.editor.document.revision(),
@@ -2681,13 +2708,32 @@ impl DesktopApp {
             .get(&draft.context.view_id)
             .and_then(|view| view.parameters.level)
             .ok_or_else(|| Error::Invalid("floor plan marker level is missing".into()))?;
-        let settings = os_model::SectionViewSettings::new(
-            start,
-            end,
-            draft.bottom_elevation,
-            draft.top_elevation,
-        );
+        let settings = draft.settings.unwrap_or_else(|| {
+            os_model::SectionViewSettings::new(
+                start,
+                end,
+                draft.bottom_elevation,
+                draft.top_elevation,
+            )
+        });
         settings.validate()?;
+        os_core::ensure(
+            self.plans.active == Some(draft.context.view_id)
+                && self.editor.document.session_id() == draft.session
+                && self.editor.document.revision() == draft.revision
+                && self.editor.native_view_context(draft.context.view_id)? == draft.context
+                && plan_provider_signature(&self.editor) == draft.provider_signature,
+            "section draft is stale",
+        )?;
+        if let Some(id) = draft.editing {
+            let mut parameters = self.editor.document.model().views[&id].parameters.clone();
+            parameters.section = Some(settings);
+            self.editor.command(
+                "Update section settings",
+                Command::UpdateView { id, parameters },
+            )?;
+            return Ok(id);
+        }
         let model = self.editor.document.model();
         let suffix = (1..=9_999)
             .map(|number| format!("Section {number}"))
@@ -3772,6 +3818,7 @@ impl DesktopApp {
             self.plans.active_sheet = None;
         }
         if self.plans.active != id {
+            self.plans.section_dimension = None;
             self.plans.facade = None;
             self.plans.elevation = elevations::State::default();
             self.plans.area_selection.cancel();
@@ -3852,8 +3899,10 @@ impl DesktopApp {
         }
     }
     pub(super) fn plan_workspace(&mut self, ctx: &egui::Context) {
+        self.validate_section_dimension(ctx);
         self.validate_elevation_interaction(ctx);
         self.validate_facade(ctx);
+        self.validate_section_editor(ctx);
         self.opening_type_assignment_dialog(ctx);
         self.opening_batch_edit_dialog(ctx);
         self.opening_array_dialog(ctx);
@@ -4137,7 +4186,9 @@ impl DesktopApp {
                         self.plans.overlap_selection.cancel();
                     }
                     if let Some(draft) = self.plans.section_placement.as_ref() {
-                        ui.label(if draft.first.is_some() {
+                        ui.label(if draft.settings.is_some() {
+                            "Review section settings"
+                        } else if draft.first.is_some() {
                             "Section marker · click the second point"
                         } else {
                             "Section marker · click the first point"
@@ -4397,6 +4448,8 @@ impl DesktopApp {
                     self.plans.sheet_sources.poll_providers(&mut self.editor);
                 }
                 if self.plans.facade.is_some() || self.active_facade().is_some() { self.facade_toolbar(ui); }
+                self.section_settings_toolbar(ui);
+                self.section_dimension_toolbar(ui);
                 if self.plans.active_sheet.is_some() {
                     self.sheet_workspace(ui);
                 } else if self.plans.active.is_some() {
@@ -4413,6 +4466,7 @@ impl DesktopApp {
                 }
             });
         if !ctx.input(|i| i.pointer.primary_down()) {
+            self.plans.section_dimension_claimed = false;
             self.plans.crop.claimed = false;
             self.plans.curtain_pointer_claimed = false;
             self.plans.column_pointer_claimed = false;
@@ -4431,6 +4485,9 @@ impl DesktopApp {
     }
 
     fn plan_canvas(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        if self.plans.section_pointer_claimed && self.plans.section_placement.is_none() {
+            return;
+        }
         if self.plans.facade_pointer_claimed && self.plans.facade.is_none() {
             return;
         }
@@ -4658,7 +4715,7 @@ impl DesktopApp {
         }
         let stale_section = self.plans.section_placement.as_ref().is_some_and(|draft| {
             self.plans.active != Some(draft.context.view_id)
-                || self.editor.native_plan_context(draft.context.view_id).ok()
+                || self.editor.native_view_context(draft.context.view_id).ok()
                     != Some(draft.context)
                 || self.editor.document.session_id() != draft.session
                 || self.editor.document.revision() != draft.revision
@@ -5001,6 +5058,12 @@ impl DesktopApp {
             return;
         }
         let size = [f64::from(rect.width()), f64::from(rect.height())];
+        if self.plans.section_dimension.is_some()
+            && response.contains_pointer()
+            && ctx.input(|i| i.pointer.primary_pressed())
+        {
+            self.plans.section_dimension_claimed = true;
+        }
         if fit && !self.plans.crop.claimed {
             let mut dimension_fit_points = Vec::new();
             for arc in drawing.arc_length_dimensions(context).unwrap_or_default() {
@@ -5870,6 +5933,8 @@ impl DesktopApp {
             (items, provider_lines)
         };
         if response.dragged()
+            && self.plans.section_dimension.is_none()
+            && !self.plans.section_dimension_claimed
             && !self.plans.dimension_pointer_claimed
             && self.wall_gesture.is_none()
             && !self.plans.area_selection.claimed
@@ -5907,11 +5972,47 @@ impl DesktopApp {
             );
         }
         painter.rect_filled(rect, 0.0, theme::CANVAS);
+        if drawing.is_section_drawing() {
+            for line in provider_lines
+                .iter()
+                .filter(|l| l.role != os_geometry::plan::PlanRole::Cut)
+            {
+                let (Ok(a), Ok(b)) = (
+                    camera.project(line.start, size),
+                    camera.project(line.end, size),
+                ) else {
+                    continue;
+                };
+                let appearance = drawing.line_appearance(context, line).ok().flatten();
+                let selected = self.selected == Some(line.entity);
+                let stroke = if selected {
+                    egui::Stroke::new(1.5, theme::ACCENT)
+                } else {
+                    egui::Stroke::new(1.0, theme::TEXT)
+                };
+                let _ = paint_plan_line(
+                    &painter,
+                    rect.min + egui::vec2(a.x as f32, a.y as f32),
+                    rect.min + egui::vec2(b.x as f32, b.y as f32),
+                    (!selected).then_some(appearance).flatten(),
+                    stroke,
+                    (camera.pixels_per_metre * context.scale_denominator / 1000.0) as f32,
+                    &mut 0.0,
+                );
+            }
+        }
         match section_fills::mesh(drawing, context, *camera, rect) {
             Ok(mesh) if !mesh.is_empty() => {
                 painter.add(egui::Shape::mesh(mesh));
             }
             Ok(_) => {}
+            Err(error) => {
+                ui.colored_label(theme::ERROR, error.to_string());
+                return;
+            }
+        }
+        match section_fills::hatches(drawing, context, *camera, rect) {
+            Ok(shapes) => painter.extend(shapes),
             Err(error) => {
                 ui.colored_label(theme::ERROR, error.to_string());
                 return;
@@ -6246,6 +6347,9 @@ impl DesktopApp {
         for line in provider_lines
             .iter()
             .filter(|line| drawing.is_native_line(line.entity))
+            .filter(|line| {
+                !drawing.is_section_drawing() || line.role == os_geometry::plan::PlanRole::Cut
+            })
         {
             let (Ok(a), Ok(b)) = (
                 camera.project(line.start, size),
@@ -6263,10 +6367,7 @@ impl DesktopApp {
             };
             let a = egui::pos2(rect.left() + a.x as f32, rect.top() + a.y as f32);
             let b = egui::pos2(rect.left() + b.x as f32, rect.top() + b.y as f32);
-            let appearance = drawing
-                .appearance(context, line.entity, line.role)
-                .ok()
-                .flatten();
+            let appearance = drawing.line_appearance(context, line).ok().flatten();
             let px_per_paper_mm =
                 (camera.pixels_per_metre * context.scale_denominator / 1000.0) as f32;
             let mut phase_mm = 0.0;
@@ -6606,6 +6707,13 @@ impl DesktopApp {
             response.hover_pos(),
         );
         let camera = *camera;
+        if self.plans.section_dimension.is_some() {
+            self.section_dimension_input(&response, &painter, camera);
+            return;
+        }
+        if self.plans.section_dimension_claimed {
+            return;
+        }
         if self
             .plans
             .dimension_draft
@@ -6618,6 +6726,12 @@ impl DesktopApp {
             let screen = rect.min + egui::vec2(screen.x as f32, screen.y as f32);
             painter.circle_stroke(screen, 7.0, egui::Stroke::new(2.0, theme::ACCENT));
             let label = match anchor.reference {
+                DimensionReference::SectionWall { feature, .. } => {
+                    format!("Wall {feature:?} (section)")
+                }
+                DimensionReference::SectionOpening { feature, .. } => {
+                    format!("Opening {feature:?} (section)")
+                }
                 DimensionReference::ElevationWall { feature, .. } => format!("Wall {feature:?}"),
                 DimensionReference::ElevationOpening { feature, .. } => {
                     format!("Opening {feature:?}")
@@ -7235,7 +7349,37 @@ impl DesktopApp {
                 )?;
                 Ok(rect.min + egui::vec2(point.x as f32, point.y as f32))
             };
-            if let Some(first) = draft.first {
+            if let Some(settings) = draft.settings.filter(|s| s.validate().is_ok()) {
+                let corners = if draft.editing.is_some() {
+                    [
+                        Point2::new(settings.min_station, settings.bottom_elevation),
+                        Point2::new(settings.max_station, settings.bottom_elevation),
+                        Point2::new(settings.max_station, settings.top_elevation),
+                        Point2::new(settings.min_station, settings.top_elevation),
+                    ]
+                } else {
+                    [
+                        settings.world_point(settings.min_station, 0.),
+                        settings.world_point(settings.max_station, 0.),
+                        settings.world_point(settings.max_station, settings.far_depth),
+                        settings.world_point(settings.min_station, settings.far_depth),
+                    ]
+                };
+                for i in 0..4 {
+                    if let (Ok(a), Ok(b)) = (screen(corners[i]), screen(corners[(i + 1) % 4])) {
+                        painter.line_segment([a, b], egui::Stroke::new(1.5, theme::ACCENT));
+                    }
+                }
+                if draft.editing.is_none() {
+                    let mid = (settings.min_station + settings.max_station) * 0.5;
+                    if let (Ok(a), Ok(b)) = (
+                        screen(settings.world_point(mid, 0.)),
+                        screen(settings.world_point(mid, settings.far_depth.min(1.))),
+                    ) {
+                        painter.arrow(a, b - a, egui::Stroke::new(2., theme::ACCENT));
+                    }
+                }
+            } else if let Some(first) = draft.first {
                 if let Ok(start) = screen(first) {
                     painter.circle_filled(start, 3.5, theme::ACCENT);
                     if let Some(end) = section_preview_target.and_then(|point| screen(point).ok()) {
@@ -8089,16 +8233,22 @@ impl DesktopApp {
                         .expect("checked section placement")
                         .first;
                     if let Some(first) = first {
-                        match self.commit_section_placement(first, point) {
-                            Ok(section) => {
-                                self.plans.section_placement = None;
-                                self.focus_plan(Some(section));
-                                self.report(
-                                    Ok(()),
-                                    "Section created · linked building cut is ready.",
-                                );
+                        let draft = self.plans.section_placement.as_mut().unwrap();
+                        if draft.settings.is_none() {
+                            let mut settings = os_model::SectionViewSettings::new(
+                                first,
+                                point,
+                                draft.bottom_elevation,
+                                draft.top_elevation,
+                            );
+                            settings.mode = os_model::SectionDisplayMode::CutAndProjection;
+                            match settings.validate() {
+                                Ok(()) => {
+                                    draft.settings = Some(settings);
+                                    self.status = "Review section direction, depth, crop and scale; Apply section creates the view.".into();
+                                }
+                                Err(error) => self.report(Err(error), ""),
                             }
-                            Err(error) => self.report(Err(error), ""),
                         }
                     } else if self.plans.section_placement.as_mut().is_some_and(|draft| {
                         draft.first = Some(point);

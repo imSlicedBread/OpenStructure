@@ -10,6 +10,50 @@ fn area(fill: &PlanSectionFillPolygon) -> f64 {
         .sum()
 }
 
+#[test]
+fn section_projection_curved_host_and_thin_framed_window_share_visibility() {
+    let (mut e, level, _, host, window, _) = fixture();
+    let mut wall = e.document.model().walls[&host].parameters.clone();
+    wall.path = os_model::WallPath::CircularArc {
+        center: Point2::new(4., 0.),
+        radius: 4.,
+        start_angle_rad: std::f64::consts::PI,
+        signed_sweep_rad: -std::f64::consts::PI,
+    };
+    e.command(
+        "Arc",
+        Command::UpdateWall {
+            id: host,
+            parameters: wall,
+        },
+    )
+    .unwrap();
+    let mut s = SectionViewSettings::new(Point2::new(-1., -1.), Point2::new(9., -1.), -1., 5.);
+    s.mode = os_model::SectionDisplayMode::CutAndProjection;
+    s.side = os_model::ElevationSide::Right;
+    s.far_depth = 10.;
+    let view = e.create_section_view("Arc projection", level, s).unwrap();
+    let c = e.native_section_context(view).unwrap();
+    let d = e.native_drawing(view).unwrap();
+    let lines = d.provider_lines(c).unwrap();
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.entity == host && l.role == PlanRole::Projected)
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.entity == window && l.role == PlanRole::Projected)
+    );
+    assert!(
+        lines
+            .iter()
+            .filter(|l| l.entity == window)
+            .all(|l| d.line_surface(window, l.feature).material.is_some())
+    );
+}
+
 fn covers(fill: &PlanSectionFillPolygon, p: Point2) -> bool {
     fill.points
         .iter()

@@ -108,6 +108,7 @@ fn paired_doors_package_v5_v4_upgrade_and_save_reopen() {
     let material = Material::new(
         "core.material",
         MaterialParams {
+            cut_pattern: None,
             name: "Leaf".into(),
             density_kg_m3: 700.,
             color: [120, 90, 60],
@@ -124,6 +125,7 @@ fn paired_doors_package_v5_v4_upgrade_and_save_reopen() {
     let current = parse_opening_type_package(&bytes).unwrap();
     let mut old: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     old["version"] = 4.into();
+    old.as_object_mut().unwrap().remove("material_patterns");
     old["parameters"]["family"]["version"] = 5.into();
     old["parameters"]["family"]
         .as_object_mut()

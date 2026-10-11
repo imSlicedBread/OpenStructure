@@ -273,7 +273,6 @@ impl Editor {
             .section
             .ok_or_else(|| os_core::Error::Invalid("section definition missing".into()))?;
         section.validate()?;
-        let length = section.length()?;
         let middle =
             section.bottom_elevation + (section.top_elevation - section.bottom_elevation) * 0.5;
         Ok(PlanContext {
@@ -289,10 +288,10 @@ impl Editor {
                 depth: section.bottom_elevation,
             },
             crop: Some(PlanCrop {
-                min: Point2::new(0.0, section.bottom_elevation),
-                max: Point2::new(length, section.top_elevation),
+                min: Point2::new(section.min_station, section.bottom_elevation),
+                max: Point2::new(section.max_station, section.top_elevation),
             }),
-            scale_denominator: 100.0,
+            scale_denominator: section.scale_denominator,
             show_walls: true,
             show_extensions: false,
         })
@@ -345,6 +344,10 @@ impl Editor {
             .expect("validated section definition");
         let building = model.levels[&marker_level].parameters.building;
         ensure(
+            model.extensions.is_empty(),
+            "Section incomplete: external plugin geometry has no certified section/projection adapter",
+        )?;
+        ensure(
             model
                 .walls
                 .len()
@@ -396,6 +399,13 @@ impl Editor {
                 let parameters =
                     ceiling_resolver.effective_parameters(model, &ceiling.parameters)?;
                 let Some(parameters) = parameters else {
+                    ensure(
+                        section.mode == os_model::SectionDisplayMode::CutOnly,
+                        format!(
+                            "Section incomplete: ceiling {} has no resolved boundary",
+                            ceiling.id()
+                        ),
+                    )?;
                     return Ok(None);
                 };
                 let elevation = model.levels[&parameters.level].parameters.elevation;
@@ -486,8 +496,52 @@ impl Editor {
             railing_members.insert(railing.id(), geometry.members);
         }
         Ok(PreparedSectionSnapshot {
+            dimensions: model
+                .dimensions
+                .values()
+                .filter(|d| d.parameters.view == view)
+                .map(|d| elevations::dimension_graphic(model, d.id(), &d.parameters))
+                .collect(),
+            settings: section,
+            columns: model
+                .columns
+                .values()
+                .filter(|e| model.levels[&e.parameters.level].parameters.building == building)
+                .map(|e| {
+                    (
+                        e.id(),
+                        e.parameters.clone(),
+                        model.levels[&e.parameters.level].parameters.elevation,
+                    )
+                })
+                .collect(),
+            casework: model
+                .casework
+                .values()
+                .filter(|e| model.levels[&e.parameters.level].parameters.building == building)
+                .map(|e| {
+                    (
+                        e.id(),
+                        e.parameters.clone(),
+                        model.casework_types[&e.parameters.type_id]
+                            .parameters
+                            .clone(),
+                        model.levels[&e.parameters.level].parameters.elevation,
+                    )
+                })
+                .collect(),
             railing_members,
             openings,
+            material_patterns: model
+                .materials
+                .iter()
+                .filter_map(|(id, material)| {
+                    material
+                        .parameters
+                        .cut_pattern
+                        .map(|pattern| (*id, model.material_patterns[&pattern].parameters.clone()))
+                })
+                .collect(),
             material_colors: model
                 .materials
                 .iter()
@@ -1808,47 +1862,42 @@ fn section_marker_lines(
     basis: HorizontalBasis,
 ) -> Result<Vec<os_render::plan::PlanLine>> {
     settings.validate()?;
-    let length = settings.length()?;
-    let dx = (settings.end.x - settings.start.x) / length;
-    let dy = (settings.end.y - settings.start.y) / length;
-    let arrow_length = length.min(0.35);
-    let arrow_half_width = arrow_length * 0.45;
-    let root = Point2::new(
-        settings.end.x - dx * arrow_length,
-        settings.end.y - dy * arrow_length,
-    );
-    let normal = Point2::new(-dy * arrow_half_width, dx * arrow_half_width);
-    let left = Point2::new(root.x + normal.x, root.y + normal.y);
-    let right = Point2::new(root.x - normal.x, root.y - normal.y);
-    let [start, end, left, right] = [settings.start, settings.end, left, right]
-        .map(|point| basis.world_to_plane(point))
+    let mid = (settings.min_station + settings.max_station) * 0.5;
+    let tip = settings.world_point(mid, 0.6);
+    let mut segments = vec![
+        (settings.start, settings.end),
+        (settings.world_point(mid, 0.), tip),
+        (tip, settings.world_point(mid - 0.15, 0.35)),
+        (tip, settings.world_point(mid + 0.15, 0.35)),
+        (
+            settings.world_point(settings.min_station, -0.15),
+            settings.world_point(settings.min_station, 0.15),
+        ),
+        (
+            settings.world_point(settings.max_station, -0.15),
+            settings.world_point(settings.max_station, 0.15),
+        ),
+    ];
+    if settings.mode == os_model::SectionDisplayMode::CutAndProjection {
+        let a = settings.world_point(settings.min_station, 0.);
+        let b = settings.world_point(settings.max_station, 0.);
+        let c = settings.world_point(settings.max_station, settings.far_depth);
+        let d = settings.world_point(settings.min_station, settings.far_depth);
+        segments.extend([(b, c), (c, d), (d, a)]);
+    }
+    segments
         .into_iter()
-        .collect::<Result<Vec<_>>>()?
-        .try_into()
-        .map_err(|_| os_core::Error::Invalid("invalid section marker points".into()))?;
-    Ok(vec![
-        os_render::plan::PlanLine {
-            entity,
-            feature: 0,
-            start,
-            end,
-            role: PlanRole::Projected,
-        },
-        os_render::plan::PlanLine {
-            entity,
-            feature: 1,
-            start: end,
-            end: left,
-            role: PlanRole::Projected,
-        },
-        os_render::plan::PlanLine {
-            entity,
-            feature: 2,
-            start: end,
-            end: right,
-            role: PlanRole::Projected,
-        },
-    ])
+        .enumerate()
+        .map(|(feature, (a, b))| {
+            Ok(os_render::plan::PlanLine {
+                entity,
+                feature: feature as u32,
+                start: basis.world_to_plane(a)?,
+                end: basis.world_to_plane(b)?,
+                role: PlanRole::Projected,
+            })
+        })
+        .collect()
 }
 
 struct SectionFloor {
@@ -1863,10 +1912,20 @@ struct SectionFloor {
 /// Additional independent solids travel with the frozen section source, without
 /// changing the existing curtain/stair source constructors.
 pub(crate) struct PreparedSectionSnapshot {
+    dimensions: Vec<os_render::plan::PlanDimensionItem>,
+    settings: os_model::SectionViewSettings,
+    columns: Vec<(Id, os_model::ColumnParams, f64)>,
+    casework: Vec<(
+        Id,
+        os_model::CaseworkParams,
+        os_model::CaseworkTypeParams,
+        f64,
+    )>,
     source: SectionSnapshot,
     railing_members: BTreeMap<Id, Vec<os_geometry::Mesh>>,
     openings: Vec<SectionOpening>,
     material_colors: BTreeMap<Id, [u8; 3]>,
+    material_patterns: BTreeMap<Id, os_model::MaterialPatternParams>,
 }
 
 impl std::ops::Deref for PreparedSectionSnapshot {
@@ -1878,9 +1937,43 @@ impl std::ops::Deref for PreparedSectionSnapshot {
 
 impl PreparedSectionSnapshot {
     pub(crate) fn derive(self) -> Result<PlanDrawing> {
+        let hatch_plane = self.source.plane;
+        let mut additional = Vec::new();
+        for (id, p, z) in self.columns {
+            additional.push((id, os_geometry::columns::column_mesh(&p, z)?));
+        }
+        for (id, p, t, z) in self.casework {
+            additional.push((id, os_geometry::casework::casework_mesh(&p, &t, z)?));
+        }
+        let projection = (self.settings.mode == os_model::SectionDisplayMode::CutAndProjection)
+            .then(|| {
+                let s = self.settings;
+                let length = s.start.distance(s.end);
+                os_geometry::elevation::FacadeVolume {
+                    origin: s.start,
+                    axis: Point2::new(
+                        (s.end.x - s.start.x) / length,
+                        (s.end.y - s.start.y) / length,
+                    ),
+                    left_side: s.side == os_model::ElevationSide::Left,
+                    near: 0.0,
+                    far: s.far_depth,
+                    bounds: os_geometry::elevation::ElevationBounds {
+                        min_station: s.min_station,
+                        max_station: s.max_station,
+                        bottom_elevation: s.bottom_elevation,
+                        top_elevation: s.top_elevation,
+                    },
+                }
+            });
         self.source
-            .derive_with_components(self.railing_members, self.openings)
-            .map(|drawing| drawing.with_material_colors(self.material_colors))
+            .derive_with_components(self.railing_members, self.openings, additional, projection)
+            .and_then(|drawing| {
+                drawing
+                    .with_material_colors(self.material_colors)
+                    .with_section_hatches(self.material_patterns, hatch_plane)?
+                    .with_dimensions(self.dimensions)
+            })
     }
 }
 
@@ -1908,13 +2001,15 @@ impl SectionSnapshot {
         self,
         railing_members: BTreeMap<Id, Vec<os_geometry::Mesh>>,
     ) -> Result<PlanDrawing> {
-        self.derive_with_components(railing_members, Vec::new())
+        self.derive_with_components(railing_members, Vec::new(), Vec::new(), None)
     }
 
     fn derive_with_components(
         self,
         railing_members: BTreeMap<Id, Vec<os_geometry::Mesh>>,
         openings: Vec<SectionOpening>,
+        additional: Vec<(Id, os_geometry::Mesh)>,
+        projection: Option<os_geometry::elevation::FacadeVolume>,
     ) -> Result<PlanDrawing> {
         use os_geometry::plan::PlanRole;
         use os_geometry::section::SECTION_TOLERANCE;
@@ -1924,7 +2019,20 @@ impl SectionSnapshot {
         let mut layer_lines: BTreeMap<Id, Vec<PlanLine>> = BTreeMap::new();
         let mut line_surfaces = BTreeMap::new();
         let mut raw_segment_count = 0usize;
-        let mut fills = SectionFills::default();
+        let mut fills = SectionFills::new(projection);
+        for (entity, mesh) in additional {
+            add_section_contours(
+                segments.entry(entity).or_default(),
+                fills.capture(
+                    0,
+                    entity,
+                    mesh.surfaces.first().copied().unwrap_or_default(),
+                    &mesh,
+                    self.plane,
+                )?,
+                &mut raw_segment_count,
+            )?;
+        }
         for wall in self.walls {
             if wall.layers.iter().any(|layer| layer.id.is_some()) {
                 segments.entry(wall.entity).or_default();
@@ -2094,6 +2202,11 @@ impl SectionSnapshot {
                 // Components are sectioned independently; their touching shells
                 // cannot be passed to the section kernel as a single union.
                 if !section_plane_crosses_component(&component.mesh, self.plane)? {
+                    fills.record_projection(
+                        assembly,
+                        material_surface(component.component.material),
+                        &component.mesh,
+                    )?;
                     continue;
                 }
                 let contours = fills.capture(
@@ -2168,6 +2281,11 @@ impl SectionSnapshot {
             for (member_index, member) in members.into_iter().enumerate() {
                 // The rail and posts touch, but are not a sectionable mesh union.
                 if !section_plane_crosses_component(&member, self.plane)? {
+                    fills.record_projection(
+                        entity,
+                        member.surfaces.first().copied().unwrap_or_default(),
+                        &member,
+                    )?;
                     continue;
                 }
                 let mut edges = Vec::new();
@@ -2265,15 +2383,20 @@ impl SectionSnapshot {
                     end: segment.end,
                     role: PlanRole::Cut,
                 });
+                if let Some(surface) = fills.surface(entity) {
+                    line_surfaces
+                        .entry((entity, feature as u32))
+                        .or_insert(surface);
+                }
             }
             if !features.is_empty() {
-                if stair_materials.contains_key(&entity) {
+                if projection.is_none() && stair_materials.contains_key(&entity) {
                     stair_lines.push(os_render::plan::PlanStairItem::from_section_lines(
                         entity,
                         stair_materials[&entity],
                         features,
                     ));
-                } else if ramp_materials.contains_key(&entity) {
+                } else if projection.is_none() && ramp_materials.contains_key(&entity) {
                     ramp_lines.push(os_render::plan::PlanRampItem::from_section_lines(
                         entity,
                         ramp_materials[&entity],
@@ -2284,6 +2407,41 @@ impl SectionSnapshot {
                 }
             }
         }
+        let cut_lines = lines.values().flatten().cloned().collect::<Vec<_>>();
+        let mut duplicate_work = 0usize;
+        for projected in fills.projected()? {
+            let mut pieces = vec![(projected.start, projected.end)];
+            for cut in &cut_lines {
+                duplicate_work = duplicate_work.saturating_add(pieces.len());
+                ensure(
+                    duplicate_work <= 40_000_000 && pieces.len() <= MAX_PLAN_ELEMENTS,
+                    "Section incomplete: duplicate-edge work budget exceeded",
+                )?;
+                pieces = pieces
+                    .into_iter()
+                    .flat_map(|piece| {
+                        os_geometry::walls::subtract_segment(piece, (cut.start, cut.end))
+                    })
+                    .collect();
+            }
+            let output = lines.entry(projected.entity).or_default();
+            for (start, end) in pieces {
+                line_count = line_count.saturating_add(1);
+                ensure(
+                    line_count <= MAX_PLAN_ELEMENTS,
+                    "Section incomplete: combined line budget exceeded",
+                )?;
+                let feature = output.iter().map(|l| l.feature).max().map_or(0, |v| v + 1);
+                line_surfaces.insert((projected.entity, feature), projected.surface);
+                output.push(PlanLine {
+                    entity: projected.entity,
+                    feature,
+                    start,
+                    end,
+                    role: PlanRole::Projected,
+                });
+            }
+        }
         let unavailable = lines.keys().copied().collect();
         PlanDrawing::from_prisms(self.context, &BTreeMap::new(), unavailable)?
             .with_native_lines(lines)
@@ -2291,6 +2449,7 @@ impl SectionSnapshot {
             .and_then(|drawing| drawing.with_ramps(ramp_lines))
             .map(|drawing| drawing.with_line_surfaces(line_surfaces))
             .and_then(|drawing| drawing.with_section_fills(fills.finish()))
+            .map(PlanDrawing::with_section_strokes)
     }
 }
 

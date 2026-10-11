@@ -259,6 +259,7 @@ fn authored_extrusions_owner_material_cross_view_sheet_pdf_save_ifc_and_type_dup
         let mat = Material::new(
             "core.material",
             MaterialParams {
+                cut_pattern: None,
                 name: "Bronze handle".into(),
                 density_kg_m3: 8500.,
                 color: [150, 90, 40],

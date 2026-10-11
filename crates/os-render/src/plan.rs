@@ -30,12 +30,14 @@ mod grids;
 mod overlap;
 mod provider_lines;
 mod section_fills;
+mod section_hatches;
 pub use angular::PlanAngularDimension;
 pub use arc_length::{ARC_LENGTH_SEGMENTS, PlanArcLengthDimension};
 pub use grids::PlanGrid;
 pub use provider_lines::PlanLine;
 pub(crate) use section_fills::clip_section_polygon;
 pub use section_fills::{PlanSectionFill, PlanSectionFillPolygon};
+pub use section_hatches::{MAX_SECTION_HATCH_SEGMENTS, PlanSectionHatch, SECTION_HATCH_WEIGHT_MM};
 
 pub const MAX_PLAN_ELEMENTS: usize = 10_000;
 /// Bound triangle-based fills so many maximally detailed floors cannot stall
@@ -346,6 +348,7 @@ impl PlanRoomItem {
 /// Bounded initial polygon IR. Drawing adapters can consume the same ordered list
 /// as picking; screen/output adapters and curves/text/styles are later D/E work.
 pub struct PlanDrawing {
+    section_strokes: bool,
     material_colors: BTreeMap<Id, [u8; 3]>,
     line_surfaces: BTreeMap<(Id, u32), os_geometry::SurfaceIdentity>,
     identity: Id,
@@ -358,6 +361,7 @@ pub struct PlanDrawing {
     grid_segments: Vec<crate::snapping::SnapSegment>,
     lines: Vec<PlanLine>,
     section_fills: Vec<PlanSectionFillPolygon>,
+    section_hatches: Vec<PlanSectionHatch>,
     rooms: Vec<PlanRoomItem>,
     room_tags: Vec<PlanRoomTag>,
     opening_tags: Vec<PlanOpeningTag>,
@@ -547,7 +551,9 @@ impl PlanDrawing {
             grid_segments: Vec::new(),
             lines: Vec::new(),
             section_fills: Vec::new(),
+            section_hatches: Vec::new(),
             rooms: Vec::new(),
+            section_strokes: false,
             room_tags: Vec::new(),
             opening_tags: Vec::new(),
             detail_lines: Vec::new(),
@@ -769,6 +775,41 @@ impl PlanDrawing {
             .copied()
             .and_then(|a| a.for_role(role)))
     }
+    /// Native sections resolve per-component material and fixed paper weights.
+    /// This does not opt sections into plan-only graphics templates.
+    pub fn with_section_strokes(mut self) -> Self {
+        self.section_strokes = true;
+        self
+    }
+    pub fn is_section_drawing(&self) -> bool {
+        self.section_strokes
+    }
+    pub fn line_appearance(
+        &self,
+        current: PlanContext,
+        line: &PlanLine,
+    ) -> Result<Option<PlanStroke>> {
+        self.items(current)?;
+        if self.section_strokes {
+            Ok(Some(PlanStroke {
+                // Cut outlines must contrast with even white or same-material
+                // fills. Material provenance is retained separately on lines.
+                color: if line.role == PlanRole::Cut {
+                    [24, 24, 24]
+                } else {
+                    [88, 88, 88]
+                },
+                weight_mm: if line.role == PlanRole::Cut {
+                    0.35
+                } else {
+                    0.18
+                },
+                dashed: false,
+            }))
+        } else {
+            self.appearance(current, line.entity, line.role)
+        }
+    }
     /// Attach deterministic model-derived room graphics after geometry derivation.
     /// Invalid/stale room polygons are rejected rather than drawn or picked.
     pub fn with_rooms(mut self, mut rooms: Vec<PlanRoomItem>) -> Result<Self> {
@@ -956,19 +997,25 @@ impl PlanDrawing {
                 )?;
                 match (dimension.value_m, dimension.diagnostic.as_ref()) {
                     (Some(value), None) => {
-                        let measured = dimension.witness_start.distance(dimension.witness_end);
+                        // Axis-only elevation/section dimensions intentionally
+                        // ignore the perpendicular witness delta. Validate the
+                        // signed-axis projection against the displayed length,
+                        // while still allowing that perpendicular component.
+                        let line_x = dimension.line_end.x - dimension.line_start.x;
+                        let line_y = dimension.line_end.y - dimension.line_start.y;
+                        let measured = line_x.hypot(line_y);
+                        let witness_x = dimension.witness_end.x - dimension.witness_start.x;
+                        let witness_y = dimension.witness_end.y - dimension.witness_start.y;
+                        let projected = (witness_x * line_x + witness_y * line_y).abs() / measured;
                         ensure(
                             value.is_finite()
                                 && value > 1e-6
                                 && measured.is_finite()
                                 && measured > 1e-6
                                 && (measured - value).abs() <= 1e-8_f64.max(measured * 1e-8)
-                                && dimension
-                                    .line_start
-                                    .distance(dimension.line_end)
-                                    .is_finite()
-                                && dimension.line_start.distance(dimension.line_end) > 1e-6,
-                            "dimension value does not match its anchors",
+                                && projected.is_finite()
+                                && (projected - value).abs() <= 1e-8_f64.max(value * 1e-8),
+                            "dimension value does not match its witness projection",
                         )?;
                     }
                     (None, Some(_)) => {}

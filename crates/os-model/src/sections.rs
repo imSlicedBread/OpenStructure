@@ -2,7 +2,13 @@
 use os_core::{Point2, Result, ensure};
 use serde::{Deserialize, Serialize};
 
-pub const SECTION_SETTINGS_VERSION: u32 = 1;
+pub const SECTION_SETTINGS_VERSION: u32 = 2;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SectionDisplayMode {
+    CutOnly,
+    CutAndProjection,
+}
 
 /// A vertical section plane and its authored view extents, in metres.
 ///
@@ -19,6 +25,12 @@ pub struct SectionViewSettings {
     pub end: Point2,
     pub bottom_elevation: f64,
     pub top_elevation: f64,
+    pub side: crate::ElevationSide,
+    pub mode: SectionDisplayMode,
+    pub far_depth: f64,
+    pub min_station: f64,
+    pub max_station: f64,
+    pub scale_denominator: f64,
 }
 
 impl SectionViewSettings {
@@ -29,6 +41,12 @@ impl SectionViewSettings {
             end,
             bottom_elevation,
             top_elevation,
+            side: crate::ElevationSide::Left,
+            mode: SectionDisplayMode::CutOnly,
+            far_depth: 30.0,
+            min_station: 0.0,
+            max_station: start.distance(end),
+            scale_denominator: 100.0,
         }
     }
 
@@ -60,6 +78,33 @@ impl SectionViewSettings {
                 && (self.top_elevation - self.bottom_elevation).is_finite()
                 && self.top_elevation - self.bottom_elevation <= 1e7,
             "section elevation range must be finite, positive and bounded",
+        )?;
+        ensure(
+            [self.far_depth, self.scale_denominator]
+                .into_iter()
+                .all(|v| v.is_finite() && v.abs() <= 1e6)
+                && [self.min_station, self.max_station]
+                    .into_iter()
+                    .all(|v| v.is_finite() && v.abs() <= 1e7)
+                && self.far_depth > 0.0
+                && self.max_station > self.min_station
+                && self.scale_denominator >= 1.0,
+            "section needs a positive finite depth, ordered station crop and scale between 1 and 1000000",
+        )
+    }
+
+    pub fn world_point(self, station: f64, depth: f64) -> Point2 {
+        let length = self.start.distance(self.end);
+        let x = (self.end.x - self.start.x) / length;
+        let y = (self.end.y - self.start.y) / length;
+        let sign = if self.side == crate::ElevationSide::Left {
+            -1.0
+        } else {
+            1.0
+        };
+        Point2::new(
+            self.start.x + x * station - y * sign * depth,
+            self.start.y + y * station + x * sign * depth,
         )
     }
 

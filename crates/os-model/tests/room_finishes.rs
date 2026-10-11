@@ -8,6 +8,7 @@ fn room_material_refs_validate_each_slot_independently_of_codes() {
     let material = Material::new(
         "core.material",
         MaterialParams {
+            cut_pattern: None,
             name: "Oak".into(),
             density_kg_m3: 650.,
             color: [160, 100, 60],

@@ -17,9 +17,14 @@ pub enum DimensionLayout {
     ArcLength,
     ElevationHorizontal,
     ElevationVertical,
+    SectionHorizontal,
+    SectionVertical,
 }
 
 impl DimensionLayout {
+    pub fn is_section(self) -> bool {
+        matches!(self, Self::SectionHorizontal | Self::SectionVertical)
+    }
     pub fn is_elevation(self) -> bool {
         matches!(self, Self::ElevationHorizontal | Self::ElevationVertical)
     }
@@ -43,6 +48,14 @@ pub enum DimensionEndpoint {
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum DimensionReference {
+    SectionWall {
+        wall: Id,
+        feature: ElevationDimensionFeature,
+    },
+    SectionOpening {
+        opening: Id,
+        feature: ElevationDimensionFeature,
+    },
     ElevationWall {
         wall: Id,
         feature: ElevationDimensionFeature,
@@ -85,8 +98,11 @@ impl DimensionReference {
         match self {
             Self::WallEndpoint { wall, .. }
             | Self::WallFace { wall, .. }
+            | Self::SectionWall { wall, .. }
             | Self::ElevationWall { wall, .. } => wall,
-            Self::OpeningJamb { opening, .. } | Self::ElevationOpening { opening, .. } => opening,
+            Self::OpeningJamb { opening, .. }
+            | Self::ElevationOpening { opening, .. }
+            | Self::SectionOpening { opening, .. } => opening,
         }
     }
 
@@ -108,7 +124,10 @@ impl DimensionReference {
         mut opening: impl FnMut(Id) -> std::result::Result<(Id, f64, f64), DimensionDiagnostic>,
     ) -> std::result::Result<Point2, DimensionDiagnostic> {
         let (host, station) = match self {
-            Self::ElevationWall { .. } | Self::ElevationOpening { .. } => {
+            Self::ElevationWall { .. }
+            | Self::ElevationOpening { .. }
+            | Self::SectionWall { .. }
+            | Self::SectionOpening { .. } => {
                 return Err(DimensionDiagnostic::InvalidGeometry);
             }
             Self::WallEndpoint { wall, .. } => (wall, None),
@@ -235,6 +254,8 @@ pub type Dimension = Entity<DimensionParams>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DimensionDiagnostic {
+    MissingSectionView,
+    OutsideSection,
     MissingElevationView,
     WrongHost,
     MissingPlanView,
@@ -526,6 +547,7 @@ impl DimensionParams {
             self.layout,
             DimensionLayout::Angular | DimensionLayout::ArcLength
         ) || self.layout.is_elevation()
+            || self.layout.is_section()
             || self.validate().is_err()
         {
             return Err(DimensionDiagnostic::InvalidGeometry);
@@ -595,6 +617,8 @@ impl DimensionParams {
                 DimensionLayout::Aligned
                 | DimensionLayout::ElevationHorizontal
                 | DimensionLayout::ElevationVertical
+                | DimensionLayout::SectionHorizontal
+                | DimensionLayout::SectionVertical
                 | DimensionLayout::Angular
                 | DimensionLayout::ArcLength => self.additional.is_empty(),
                 DimensionLayout::Chain | DimensionLayout::Baseline => !self.additional.is_empty(),
@@ -629,6 +653,25 @@ impl DimensionParams {
         )?;
         let references: Vec<_> = self.references().collect();
         for (i, reference) in references.iter().enumerate() {
+            let section_feature = match reference {
+                DimensionReference::SectionWall { feature, .. }
+                | DimensionReference::SectionOpening { feature, .. } => Some(feature),
+                _ => None,
+            };
+            ensure(
+                self.layout.is_section() == section_feature.is_some(),
+                "dimension reference coordinate system does not match section layout",
+            )?;
+            if let Some(feature) = section_feature {
+                ensure(
+                    (self.layout == DimensionLayout::SectionHorizontal)
+                        == matches!(
+                            feature,
+                            ElevationDimensionFeature::Start | ElevationDimensionFeature::End
+                        ),
+                    "dimension reference is on the wrong section axis",
+                )?;
+            }
             let feature = match reference {
                 DimensionReference::ElevationWall { feature, .. }
                 | DimensionReference::ElevationOpening { feature, .. } => Some(feature),
@@ -685,6 +728,9 @@ impl DimensionParams {
     ) -> std::result::Result<ResolvedDimension, DimensionDiagnostic> {
         if self.layout.is_elevation() {
             return self.resolve_elevation(model);
+        }
+        if self.layout.is_section() {
+            return self.resolve_section(model);
         }
         if self.layout == DimensionLayout::ArcLength {
             let arc = self.resolve_arc_length(model)?;
@@ -752,6 +798,8 @@ pub(crate) fn validate(model: &Model) -> Result<()> {
                     view.parameters.kind
                         == if dimension.parameters.layout.is_elevation() {
                             ViewKind::Elevation
+                        } else if dimension.parameters.layout.is_section() {
+                            ViewKind::Section
                         } else {
                             ViewKind::Plan
                         }

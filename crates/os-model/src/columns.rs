@@ -154,6 +154,7 @@ mod tests {
         let material = crate::Material::new(
             "core.material",
             crate::MaterialParams {
+                cut_pattern: None,
                 name: "Steel".into(),
                 density_kg_m3: 7850.0,
                 color: [180, 180, 180],

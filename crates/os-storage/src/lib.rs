@@ -381,6 +381,20 @@ fn migrated_phase_id(project: Id, salt: u128) -> Id {
 
 /// Explicit native schema chain; never infer a version from optional field shapes.
 fn migrate_inner(value: &mut serde_json::Value, from: u32) -> Result<()> {
+    if from < 70 {
+        ensure(
+            value.get("material_patterns").is_none(),
+            "ambiguous legacy material patterns",
+        )?;
+        if let Some(materials) = value["materials"].as_object() {
+            ensure(
+                materials
+                    .values()
+                    .all(|m| m["parameters"].get("cut_pattern").is_none()),
+                "ambiguous legacy material cut pattern",
+            )?;
+        }
+    }
     if from < 64
         && let Some(views) = value.get("views").and_then(serde_json::Value::as_object)
     {
@@ -522,6 +536,74 @@ fn migrate_inner(value: &mut serde_json::Value, from: u32) -> Result<()> {
 }
 
 fn migrate_step(value: &mut serde_json::Value, from: u32) -> Result<()> {
+    if from == 69 {
+        value["material_patterns"] = serde_json::json!({});
+    }
+    if from == 68 {
+        for dimension in value["dimensions"]
+            .as_object()
+            .ok_or_else(|| Error::Invalid("missing dimensions".into()))?
+            .values()
+        {
+            let p = &dimension["parameters"];
+            ensure(
+                !matches!(
+                    p["layout"].as_str(),
+                    Some("SectionHorizontal" | "SectionVertical")
+                ),
+                "section dimension discriminants require schema 69",
+            )?;
+            for reference in [&p["first"], &p["second"]]
+                .into_iter()
+                .chain(p["additional"].as_array().into_iter().flatten())
+            {
+                ensure(
+                    reference.get("SectionWall").is_none()
+                        && reference.get("SectionOpening").is_none(),
+                    "section reference discriminants require schema 69",
+                )?;
+            }
+        }
+    }
+    if from == 67 {
+        for view in value["views"]
+            .as_object_mut()
+            .ok_or_else(|| Error::Invalid("missing views".into()))?
+            .values_mut()
+        {
+            if let Some(section) = view["parameters"].get_mut("section")
+                && !section.is_null()
+            {
+                #[derive(serde::Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct Legacy {
+                    schema_version: u32,
+                    start: serde_json::Value,
+                    end: serde_json::Value,
+                    bottom_elevation: f64,
+                    top_elevation: f64,
+                }
+                let old: Legacy = serde_json::from_value(section.clone()).map_err(storage)?;
+                ensure(old.schema_version == 1, "ambiguous legacy section settings")?;
+                // Deserialize through the strict current point readers as well.
+                let mut next = serde_json::to_value(os_model::SectionViewSettings::new(
+                    serde_json::from_value(old.start.clone()).map_err(storage)?,
+                    serde_json::from_value(old.end.clone()).map_err(storage)?,
+                    old.bottom_elevation,
+                    old.top_elevation,
+                ))
+                .map_err(storage)?;
+                next["start"] = old.start;
+                next["end"] = old.end;
+                next["bottom_elevation"] = section["bottom_elevation"].clone();
+                next["top_elevation"] = section["top_elevation"].clone();
+                let settings: os_model::SectionViewSettings =
+                    serde_json::from_value(next.clone()).map_err(storage)?;
+                settings.validate()?;
+                *section = next;
+            }
+        }
+    }
     if from == 66 {
         for ty in value["opening_types"]
             .as_object_mut()
@@ -541,7 +623,7 @@ fn migrate_step(value: &mut serde_json::Value, from: u32) -> Result<()> {
         }
     }
     match from {
-        63..=66 => {
+        63..=69 => {
             let object = value
                 .as_object_mut()
                 .ok_or_else(|| Error::Invalid("invalid model".into()))?;
@@ -4468,6 +4550,7 @@ mod tests {
         let material = Material::new(
             "core.material",
             MaterialParams {
+                cut_pattern: None,
                 name: "Timber".into(),
                 density_kg_m3: 500.0,
                 color: [180, 180, 180],

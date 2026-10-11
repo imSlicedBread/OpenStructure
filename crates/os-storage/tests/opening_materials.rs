@@ -75,6 +75,7 @@ fn opening_materials_schema_31_family_3_migration_and_save_reopen() {
         os_model::Material::new(
             "core.material",
             os_model::MaterialParams {
+                cut_pattern: None,
                 name: name.into(),
                 density_kg_m3: 500.,
                 color: [180, 180, 180],

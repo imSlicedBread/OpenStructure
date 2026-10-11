@@ -83,6 +83,7 @@ impl PlanDrawing {
             }
         }
         self.section_fills = polygons;
+        self.section_hatches.clear();
         Ok(self)
     }
 

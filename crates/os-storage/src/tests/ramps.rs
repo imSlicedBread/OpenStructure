@@ -70,6 +70,7 @@ fn native_ramp_save_reopen_preserves_parameters_levels_material_and_identity() {
     let material = Material::new(
         "core.material",
         MaterialParams {
+            cut_pattern: None,
             name: "Concrete".into(),
             density_kg_m3: 2400.0,
             color: [148, 152, 160],

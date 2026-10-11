@@ -12,6 +12,7 @@ fn ceiling_geometry_level_and_material_invalidate_derived_views() {
     let material = Material::new(
         "core.material",
         MaterialParams {
+            cut_pattern: None,
             name: "Ceiling paint".into(),
             density_kg_m3: 900.0,
             color: [230, 230, 230],

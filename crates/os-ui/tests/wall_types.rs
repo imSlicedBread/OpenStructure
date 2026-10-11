@@ -88,6 +88,7 @@ fn fixture() -> (Editor, Id, [Id; 2], WallType, [Id; 2]) {
         Material::new(
             "core.material",
             MaterialParams {
+                cut_pattern: None,
                 name: "Masonry".into(),
                 density_kg_m3: 1800.0,
                 color: [180, 180, 180],
@@ -96,6 +97,7 @@ fn fixture() -> (Editor, Id, [Id; 2], WallType, [Id; 2]) {
         Material::new(
             "core.material",
             MaterialParams {
+                cut_pattern: None,
                 name: "Insulation".into(),
                 density_kg_m3: 40.0,
                 color: [180, 180, 180],
@@ -238,6 +240,7 @@ fn shared_edit_reorder_flip_material_density_history_and_reopen() {
         Command::UpdateMaterial {
             id: mids[0],
             parameters: MaterialParams {
+                cut_pattern: None,
                 name: "Masonry".into(),
                 density_kg_m3: 2000.,
                 color: [180, 180, 180],

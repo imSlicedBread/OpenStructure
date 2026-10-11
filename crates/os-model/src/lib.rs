@@ -3,7 +3,9 @@ use os_core::{Id, Point2, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub const SCHEMA_VERSION: u32 = 67;
+pub const SCHEMA_VERSION: u32 = 70;
+mod material_patterns;
+pub use material_patterns::*;
 mod railings;
 pub use railings::*;
 mod curtain_systems;
@@ -54,6 +56,7 @@ mod dimensions;
 pub use dimensions::*;
 mod elevation_dimensions;
 mod room_separation_lines;
+mod section_dimensions;
 pub use room_separation_lines::*;
 mod rooms;
 pub use rooms::*;
@@ -135,6 +138,9 @@ pub struct MaterialParams {
     pub density_kg_m3: f64,
     /// Opaque display RGB bytes, independent of density and material identity.
     pub color: [u8; 3],
+    /// None retains the solid cut fill. References a project-owned pattern.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cut_pattern: Option<Id>,
 }
 /// Frozen pre-schema-34 display swatch, also used for unassigned layer fallback.
 pub fn legacy_surface_color(id: Id) -> [u8; 3] {
@@ -374,6 +380,8 @@ pub struct Model {
     pub dimensions: BTreeMap<Id, Dimension>,
     pub grids: BTreeMap<Id, Grid>,
     pub materials: BTreeMap<Id, Material>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub material_patterns: BTreeMap<Id, MaterialPattern>,
     pub views: BTreeMap<Id, View>,
     pub plan_graphics_templates: BTreeMap<Id, PlanGraphicsTemplate>,
     pub plan_graphics: BTreeMap<Id, PlanGraphicsBinding>,
@@ -464,6 +472,7 @@ impl Model {
             dimensions: BTreeMap::new(),
             grids: BTreeMap::new(),
             materials: BTreeMap::new(),
+            material_patterns: BTreeMap::new(),
             views: BTreeMap::from([(view.id(), view)]),
             plan_graphics_templates: BTreeMap::new(),
             plan_graphics: BTreeMap::new(),
@@ -573,6 +582,14 @@ impl Model {
         check_map!(ceilings, "core.ceiling");
         check_map!(dimensions, "core.dimension");
         check_map!(materials, "core.material");
+        check_map!(material_patterns, "core.material_pattern");
+        ensure(
+            self.material_patterns.len() <= MAX_MATERIAL_PATTERNS,
+            "too many material patterns",
+        )?;
+        for pattern in self.material_patterns.values() {
+            pattern.parameters.validate()?;
+        }
         check_map!(views, "core.view");
         check_map!(plan_graphics_templates, "core.plan_graphics_template");
         self.validate_plan_graphics()?;
@@ -715,6 +732,12 @@ impl Model {
             )?;
         }
         for e in self.materials.values() {
+            if let Some(id) = e.parameters.cut_pattern {
+                ensure(
+                    self.material_patterns.contains_key(&id),
+                    "material cut pattern missing",
+                )?;
+            }
             ensure(
                 e.parameters.density_kg_m3.is_finite() && e.parameters.density_kg_m3 > 0.0,
                 "invalid material density",

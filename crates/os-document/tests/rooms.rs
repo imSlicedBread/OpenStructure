@@ -46,6 +46,7 @@ fn room_material_update_remove_rejection_and_history_are_atomic() {
         let material = Material::new(
             "core.material",
             MaterialParams {
+                cut_pattern: None,
                 name: "Oak".into(),
                 density_kg_m3: 650.,
                 color: [160, 100, 60],

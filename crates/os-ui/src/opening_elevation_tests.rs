@@ -191,6 +191,7 @@ fn elevation_crop_picking_materials_sheet_pdf_and_regeneration() {
     let m = os_model::Material::new(
         "core.material",
         os_model::MaterialParams {
+            cut_pattern: None,
             name: "Panel".into(),
             density_kg_m3: 800.,
             color: [80, 100, 120],

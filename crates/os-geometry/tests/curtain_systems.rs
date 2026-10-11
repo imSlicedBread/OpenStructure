@@ -18,6 +18,7 @@ fn diagonal_curtain_prisms_preserve_envelopes_materials_and_analytic_volume() {
         Material::new(
             "core.material",
             MaterialParams {
+                cut_pattern: None,
                 name: format!("Density {density}"),
                 density_kg_m3: density,
                 color: [60, 90, 120],
@@ -198,6 +199,7 @@ fn curtain_geometry_rejects_invalid_context_and_nonfinite_quantities() {
                 let material = Material::new(
                     "core.material",
                     MaterialParams {
+                        cut_pattern: None,
                         name: "Invalid density".into(),
                         density_kg_m3: f64::INFINITY,
                         color: [0; 3],

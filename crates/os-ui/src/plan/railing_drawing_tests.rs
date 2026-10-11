@@ -26,6 +26,7 @@ fn fixture(side: StairRailingSide, start: Point2, end: Point2) -> (Editor, Id, I
     let material = Material::new(
         "core.material",
         MaterialParams {
+            cut_pattern: None,
             name: "Railing finish".into(),
             density_kg_m3: 7800.,
             color: [80, 100, 120],

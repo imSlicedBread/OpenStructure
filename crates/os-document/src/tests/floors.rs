@@ -85,6 +85,7 @@ fn fixture() -> (Document, Floor, Id) {
     let material = Material::new(
         "core.material",
         MaterialParams {
+            cut_pattern: None,
             name: "Concrete".into(),
             density_kg_m3: 2400.0,
             color: [180, 180, 180],

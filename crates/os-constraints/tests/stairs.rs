@@ -23,6 +23,7 @@ fn stair_levels_and_material_invalidate_its_plan_and_derived_geometry() {
     let material = Material::new(
         "core.material",
         MaterialParams {
+            cut_pattern: None,
             name: "Concrete".into(),
             density_kg_m3: 2400.0,
             color: [160, 160, 160],

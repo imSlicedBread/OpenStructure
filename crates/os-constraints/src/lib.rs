@@ -248,6 +248,7 @@ pub fn affected_entities(model: &Model, changed: &BTreeSet<Id>) -> BTreeSet<Id> 
             || model.levels.contains_key(id)
             || model.grids.contains_key(id)
             || model.materials.contains_key(id)
+            || model.material_patterns.contains_key(id)
             || model.rooms.contains_key(id)
             || model.room_separation_lines.contains_key(id)
     });

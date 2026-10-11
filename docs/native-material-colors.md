@@ -43,8 +43,9 @@ API 2 and container 2 are unchanged. Older native guests must rebuild/reinstall.
   lookup fallback and selection priority.
 
 This is bounded display appearance. It adds no textures, transparency, PBR,
-hatch standards, appearance styles, finish material quantities, or
-IFC associations. Schema 35 adds independent room finish material references and
+surface hatch or general appearance standards, finish material quantities, or
+IFC associations. Native vertical Section cut hatches use the separately
+defined [material pattern workflow](native-material-patterns.md). Schema 35 adds independent room finish material references and
 subdued active-plan floor fills; see [native rooms](native-rooms.md).
 Room finish strings and opening-family assignments keep their
 existing meanings. Headless drawing and pixel tests do not qualify a native

@@ -38,6 +38,7 @@ fn fixture() -> (os_model::Model, os_model::CurtainSystem) {
         Material::new(
             "core.material",
             MaterialParams {
+                cut_pattern: None,
                 name: name.into(),
                 density_kg_m3: 1800.,
                 color: [90, 100, 110],
@@ -71,6 +72,45 @@ fn fixture() -> (os_model::Model, os_model::CurtainSystem) {
         .parameters
         .elevation = 0.2;
     (model, curtain)
+}
+
+#[test]
+fn curtain_section_projection_attributes_visible_frame_edges_to_mullion_material() {
+    let (mut model, curtain) = fixture();
+    let level = curtain.parameters.level;
+    let id = curtain.id();
+    let frame_material = model.curtain_mullion_types[&curtain.parameters.mullion_type]
+        .parameters
+        .material;
+    model.curtain_systems.insert(id, curtain);
+    let mut e = Editor::new().unwrap();
+    e.document = Document::from_model(model).unwrap();
+    let mut s = SectionViewSettings::new(Point2::new(0., -1.), Point2::new(4., -1.), -1., 5.);
+    s.mode = os_model::SectionDisplayMode::CutAndProjection;
+    s.side = os_model::ElevationSide::Right;
+    s.far_depth = 3.;
+    let view = e
+        .create_section_view("Curtain projection", level, s)
+        .unwrap();
+    let c = e.native_section_context(view).unwrap();
+    let d = e.native_drawing(view).unwrap();
+    let lines = d.provider_lines(c).unwrap();
+    assert!(!lines.is_empty());
+    assert!(
+        lines
+            .iter()
+            .all(|l| l.entity == id && l.role == PlanRole::Projected)
+    );
+    let materials = lines
+        .iter()
+        .map(|l| d.line_surface(id, l.feature).material)
+        .collect::<std::collections::BTreeSet<_>>();
+    // Frame members project in front of the pane borders. Hidden panel edges
+    // must not be added solely to expose their material in the vector output.
+    assert_eq!(
+        materials,
+        std::collections::BTreeSet::from([frame_material])
+    );
 }
 
 // Give test snapshots a deterministic context so drawing access validates.

@@ -66,6 +66,11 @@ pub(super) fn append_contours(
             // A supporting plane has no area of cut. This matches other native
             // components and avoids treating a tangent as an opening filling.
             if !section_plane_crosses_component(&solid, plane)? {
+                fills.record_projection(
+                    opening.entity,
+                    solid.surfaces.first().copied().unwrap_or_default(),
+                    &solid,
+                )?;
                 continue;
             }
             let mut edges = Vec::new();

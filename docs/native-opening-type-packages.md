@@ -8,6 +8,13 @@ plus exact snapshots of only the referenced panel/pane, frame and optional
 fixed-lite and authored-solid materials and shared Length parameters.
 It does not include placed openings, hosts, levels, or other project entities.
 
+Version 7 carries an exact `material_patterns` dependency map for hatch patterns
+referenced by the included material snapshots. Import remaps each pattern to an
+independent project UUID and preserves sharing among the package's materials;
+name conflicts receive a visible imported name. Version 6 migrates to an empty
+pattern map only when the new field is absent. A legacy material already using
+a pattern or a pre-existing `material_patterns` field is rejected as ambiguous.
+
 Manage also provides a local package browser. Enter one directory, scan it, and
 search the valid packages by type name, door/window kind, path, or referenced
 material name. Scanning runs off the UI thread and does not recurse. Symlinks and
@@ -72,7 +79,7 @@ an existing package and writes through a temporary sibling for atomic replacemen
 
 ## Format and limits
 
-Format identifier: `OpenStructure.OpeningTypePackage`, version 5. Version-1
+Format identifier: `OpenStructure.OpeningTypePackage`, version 7. Version-1
 packages remain importable and are upgraded as single-panel families (family
 version 4 to 5 with `side_lite: null`); version-1 and version-2 imports default
 window operation to Fixed. Version 2 can carry the optional two-bay
@@ -96,6 +103,13 @@ opening profiles/material references, unsupported versions and files over 1
 MiB. Material snapshots are deduplicated and UUID-sorted; encoding is
 deterministic. The source UUID is only a reference for remapping and is not
 installed as the destination type identity.
+
+Version 7 adds required `material_patterns` snapshots. Their source UUID set
+must exactly match the `cut_pattern` references in the package materials.
+Version-6 packages migrate to an empty map only when they contain neither the
+new map nor material pattern references; older versions chain through this
+migration. Pattern definitions are validated and remapped independently during
+import, including when the source UUID already exists in the destination.
 
 The local browser examines at most 4,096 directory entries, 128 `.osot` files,
 and 32 MiB of package bytes per scan. A global cap failure aborts the scan;

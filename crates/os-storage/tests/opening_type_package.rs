@@ -24,6 +24,7 @@ fn fixture(kind: OpeningKind) -> (Model, Id) {
         let mut material = Material::new(
             "core.material",
             MaterialParams {
+                cut_pattern: None,
                 name: name.into(),
                 density_kg_m3: density,
                 color,
@@ -62,12 +63,81 @@ fn valid_json() -> Value {
 }
 
 #[test]
+fn material_pattern_dependencies_transfer_and_legacy_v6_defaults_are_strict() {
+    let (mut model, ty) = fixture(OpeningKind::Door);
+    let pattern = os_model::MaterialPattern::new(
+        "core.material_pattern",
+        os_model::MaterialPatternParams {
+            name: "Wood".into(),
+            angle_degrees: 45.,
+            spacing: 0.05,
+            origin: [2., 3., 4.],
+        },
+    );
+    let pid = pattern.id();
+    model.material_patterns.insert(pid, pattern.clone());
+    for mid in [id(1), id(2)] {
+        model
+            .materials
+            .get_mut(&mid)
+            .unwrap()
+            .parameters
+            .cut_pattern = Some(pid);
+    }
+    let bytes = export_opening_type_package(&model, ty).unwrap();
+    let package = parse_opening_type_package(&bytes).unwrap();
+    assert_eq!(
+        package.material_patterns,
+        std::collections::BTreeMap::from([(pid, pattern.parameters)])
+    );
+    assert!(
+        package
+            .materials
+            .iter()
+            .all(|m| m.parameters.cut_pattern == Some(pid))
+    );
+    let mut bad = package.clone();
+    bad.material_patterns.clear();
+    assert!(bad.validate().is_err());
+    let mut bad = package.clone();
+    let p = bad.material_patterns.remove(&pid).unwrap();
+    bad.material_patterns.insert(id(1), p);
+    for m in &mut bad.materials {
+        m.parameters.cut_pattern = Some(id(1));
+    }
+    assert!(
+        bad.validate().is_err(),
+        "pattern/material identity collision"
+    );
+    let mut legacy = valid_json();
+    legacy["version"] = 6.into();
+    legacy.as_object_mut().unwrap().remove("material_patterns");
+    let imported = parse_opening_type_package(&serde_json::to_vec(&legacy).unwrap()).unwrap();
+    assert!(imported.material_patterns.is_empty());
+    assert!(
+        imported
+            .materials
+            .iter()
+            .all(|m| m.parameters.cut_pattern.is_none())
+    );
+    let mut ambiguous = valid_json();
+    ambiguous["version"] = 6.into();
+    assert!(
+        parse_opening_type_package(&serde_json::to_vec(&ambiguous).unwrap()).is_err(),
+        "a v6 package cannot already contain the v7 pattern dependency field"
+    );
+    legacy["materials"][0]["parameters"]["cut_pattern"] = serde_json::json!(pid);
+    assert!(parse_opening_type_package(&serde_json::to_vec(&legacy).unwrap()).is_err());
+}
+
+#[test]
 fn two_bay_packages_v1_v2_upgrade_to_v3_strict_and_three_materials() {
     for kind in [OpeningKind::Door, OpeningKind::Window] {
         let (mut model, ty) = fixture(kind);
         let mut v1: Value =
             serde_json::from_slice(&export_opening_type_package(&model, ty).unwrap()).unwrap();
         v1["version"] = 1.into();
+        v1.as_object_mut().unwrap().remove("material_patterns");
         v1["parameters"]["family"]
             .as_object_mut()
             .unwrap()
@@ -127,6 +197,7 @@ fn v2_window_type_import_defaults_operation_and_v3_round_trips_it() {
     let mut v2: Value =
         serde_json::from_slice(&export_opening_type_package(&model, ty).unwrap()).unwrap();
     v2["version"] = json!(2);
+    v2.as_object_mut().unwrap().remove("material_patterns");
     v2["parameters"]["family"]
         .as_object_mut()
         .unwrap()
@@ -183,6 +254,7 @@ fn typed_door_and_window_round_trip_exact_materials_without_mutation() {
         assert_eq!(
             package,
             OpeningTypePackage {
+                material_patterns: Default::default(),
                 length_parameters: Default::default(),
                 length_bindings: Default::default(),
                 source_type_id: ty,
@@ -311,7 +383,7 @@ fn rejects_corrupt_duplicate_escaped_duplicate_and_deep_json() {
         vec![0xff],
         b"null".to_vec(),
         format!("{raw} {{}}").into_bytes(),
-        raw.replacen("\"version\":6", "\"version\":6,\"version\":6", 1)
+        raw.replacen("\"version\":7", "\"version\":7,\"version\":7", 1)
             .into_bytes(),
         raw.replacen(
             "\"density_kg_m3\":720.0",

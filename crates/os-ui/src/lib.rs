@@ -43,6 +43,7 @@ pub mod migration_tools;
 pub mod plugin_tools;
 #[cfg(feature = "external-plugins")]
 pub use plugin_jobs::PluginPoll;
+mod material_graphics;
 mod ribbon;
 mod room_tools;
 pub mod theme;
@@ -508,6 +509,7 @@ pub struct DesktopApp {
     opening_type_library_dialog: Option<opening_type_package_ui::OpeningTypeLibraryDialog>,
     opening_type_library_path: String,
     wall_type_draft: Option<wall_type_tools::WallTypeDraft>,
+    material_graphics_draft: Option<material_graphics::MaterialGraphicsDraft>,
     phase_draft: Option<phase_tools::PhaseDraft>,
     lifecycle_draft: Option<phase_tools::LifecycleDraft>,
     preferred_door_type: Option<Id>,
@@ -575,6 +577,7 @@ impl DesktopApp {
             opening_type_library_dialog: None,
             opening_type_library_path: "opening-library".into(),
             wall_type_draft: None,
+            material_graphics_draft: None,
             phase_draft: None,
             lifecycle_draft: None,
             preferred_door_type: None,
@@ -646,6 +649,7 @@ impl DesktopApp {
         self.opening_type_draft = None;
         self.length_draft = None;
         self.wall_type_draft = None;
+        self.material_graphics_draft = None;
         self.cancel_aligned_dimension();
         let selected = id.filter(|id| {
             let model = self.editor.document.model();
@@ -848,9 +852,13 @@ impl DesktopApp {
                     return;
                 }
             }
-        } else if parameters.layout.is_elevation() {
-            if let Ok(resolved) = parameters.resolve_elevation(model) {
-                let (a, b) = parameters.elevation_line(resolved);
+        } else if parameters.layout.is_elevation() || parameters.layout.is_section() {
+            if let Ok(resolved) = parameters.resolve(model) {
+                let (a, b) = if parameters.layout.is_section() {
+                    parameters.section_line(resolved)
+                } else {
+                    parameters.elevation_line(resolved)
+                };
                 parameters.orphan_hint = Point2::new((a.x + b.x) * 0.5, (a.y + b.y) * 0.5);
             }
         } else if let Ok(resolved) = parameters.resolve(model) {
@@ -1295,6 +1303,7 @@ impl DesktopApp {
         self.show_opening_type_library_dialog(ctx);
         self.show_opening_type_package_dialog(ctx);
         self.wall_type_dialog(ctx);
+        self.material_graphics_dialog(ctx);
         self.save_destination_dialog(ctx);
         self.confirmation(ctx);
         self.exchange_confirmation(ctx);

@@ -7,6 +7,7 @@ fn two_bay_lite_only_material_removal_is_atomic() {
     let material = Material::new(
         "core.material",
         MaterialParams {
+            cut_pattern: None,
             name: "Lite".into(),
             density_kg_m3: 2500.,
             color: [100, 150, 190],
@@ -47,6 +48,7 @@ fn opening_materials_references_are_validated_atomically_with_history() {
     let material = Material::new(
         "core.material",
         MaterialParams {
+            cut_pattern: None,
             name: "Timber".into(),
             density_kg_m3: 500.,
             color: [180, 180, 180],

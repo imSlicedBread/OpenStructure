@@ -171,11 +171,15 @@ pub(crate) fn dimension_graphic(
         orphan_hint: p.orphan_hint,
         diagnostic: None,
     };
-    match p.resolve_elevation(model) {
+    match p.resolve(model) {
         Ok(r) => {
             item.witness_start = r.first;
             item.witness_end = r.second;
-            (item.line_start, item.line_end) = p.elevation_line(r);
+            (item.line_start, item.line_end) = if p.layout.is_section() {
+                p.section_line(r)
+            } else {
+                p.elevation_line(r)
+            };
             item.value_m = Some(r.length_metres);
         }
         Err(reason) => item.diagnostic = Some(format!("{reason:?}")),

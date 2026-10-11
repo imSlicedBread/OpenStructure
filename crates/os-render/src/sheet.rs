@@ -493,6 +493,22 @@ fn compose_view_marks(
     let clip = Some(viewport_rect);
     if let Some(bounds) = model_bounds {
         let viewport_color = PaperColor::BLACK;
+        if drawing.is_section_drawing() {
+            for line in drawing
+                .provider_lines(context)?
+                .iter()
+                .filter(|l| l.role != PlanRole::Cut)
+            {
+                append_line(
+                    &mut marks,
+                    line,
+                    bounds,
+                    viewport,
+                    clip,
+                    drawing.line_appearance(context, line)?,
+                )?;
+            }
+        }
         for fill in drawing.section_fills(context)? {
             let points = crate::plan::clip_section_polygon(&fill.points, Some(bounds))?;
             if points.is_empty() {
@@ -512,6 +528,22 @@ fn compose_view_marks(
                 Some(PaperColor { red, green, blue }),
                 clip,
             ));
+        }
+        for hatch in drawing.section_hatches(context)? {
+            if let Some((a, b)) = clip_segment(hatch.start, hatch.end, bounds) {
+                ensure(marks.len() < MAX_SHEET_MARKS, "sheet mark budget exceeded")?;
+                marks.push(path_mark(
+                    vec![viewport.model_to_paper(a)?, viewport.model_to_paper(b)?],
+                    false,
+                    Some(PaperStroke {
+                        color: PaperColor::BLACK,
+                        width_mm: crate::plan::SECTION_HATCH_WEIGHT_MM,
+                        dashed: false,
+                    }),
+                    None,
+                    clip,
+                ));
+            }
         }
         for item in drawing
             .items(context)?
@@ -533,6 +565,9 @@ fn compose_view_marks(
             append_grid(&mut marks, grid, bounds, viewport, clip)?;
         }
         for line in drawing.provider_lines(context)? {
+            if drawing.is_section_drawing() && line.role != PlanRole::Cut {
+                continue;
+            }
             append_line(
                 &mut marks,
                 line,
@@ -541,7 +576,7 @@ fn compose_view_marks(
                 clip,
                 drawing
                     .is_native_line(line.entity)
-                    .then(|| drawing.appearance(context, line.entity, line.role))
+                    .then(|| drawing.line_appearance(context, line))
                     .transpose()?
                     .flatten(),
             )?;

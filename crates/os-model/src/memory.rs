@@ -97,7 +97,8 @@ named_parameters!(SiteParams, project);
 named_parameters!(BuildingParams, site);
 named_parameters!(LevelParams, elevation, building);
 named_parameters!(GridParams, building, start, end);
-named_parameters!(MaterialParams, density_kg_m3, color);
+named_parameters!(MaterialParams, density_kg_m3, color, cut_pattern);
+named_parameters!(MaterialPatternParams, angle_degrees, spacing, origin);
 named_parameters!(PlanGraphicsTemplateParams, styles);
 named_parameters!(PhaseParams, order);
 named_parameters!(CurtainPanelTypeParams, kind, thickness, material);
@@ -231,6 +232,7 @@ impl Model {
             detail_lines,
             grids,
             materials,
+            material_patterns,
             views,
             plan_graphics_templates,
             plan_graphics,
@@ -492,6 +494,7 @@ impl Model {
         }
         entities!(grids, Grid);
         entities!(materials, Material);
+        entities!(material_patterns, MaterialPattern);
         entities!(views, View);
         estimate.tree::<Id, Schedule>(schedules.len());
         for schedule in schedules.values() {

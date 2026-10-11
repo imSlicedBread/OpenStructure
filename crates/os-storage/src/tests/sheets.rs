@@ -90,6 +90,7 @@ fn sheets_schema_thirteen_migration_preserves_native_data_through_schema_ninetee
     expected["ceilings"] = json!({});
     expected["casework_types"] = json!({});
     expected["casework"] = json!({});
+    expected["material_patterns"] = json!({});
     expected["phases"] = value["phases"].clone();
     expected["element_lifecycles"] = value["element_lifecycles"].clone();
     apply_schema_38_plan_settings(&mut expected);

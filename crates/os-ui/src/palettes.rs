@@ -310,6 +310,12 @@ impl DesktopApp {
             );
             for (index, reference) in parameters.references().enumerate() {
                 let target = match reference {
+                    os_model::DimensionReference::SectionWall { feature, .. } => {
+                        format!("Wall {feature:?} (section)")
+                    }
+                    os_model::DimensionReference::SectionOpening { feature, .. } => {
+                        format!("Opening {feature:?} (section)")
+                    }
                     os_model::DimensionReference::ElevationWall { feature, .. } => {
                         format!("Wall {feature:?} (elevation)")
                     }
@@ -359,8 +365,8 @@ impl DesktopApp {
                         ui.colored_label(theme::ERROR, format!("Broken reference: {reason:?}"));
                     }
                 }
-            } else if parameters.layout.is_elevation() {
-                match parameters.resolve_elevation(self.editor.document.model()) {
+            } else if parameters.layout.is_elevation() || parameters.layout.is_section() {
+                match parameters.resolve(self.editor.document.model()) {
                     Ok(r) => {
                         ui.label(format!("{:.3} m", r.length_metres));
                     }
@@ -1188,6 +1194,8 @@ impl DesktopApp {
                             let anchor_label = |reference: os_model::DimensionReference| {
                                     match reference {
                                         os_model::DimensionReference::ElevationWall { feature, .. } => format!("Wall {feature:?} (elevation)"),
+                                        os_model::DimensionReference::SectionWall { feature, .. } => format!("Wall {feature:?} (section)"),
+                                        os_model::DimensionReference::SectionOpening { feature, .. } => format!("Opening {feature:?} (section)"),
                                         os_model::DimensionReference::ElevationOpening { feature, .. } => format!("Opening {feature:?} (nominal extent)"),
                                     os_model::DimensionReference::WallFace { wall, side, station_m } =>
                                         format!("{} {side:?} face at {station_m:.3} m", model.walls.get(&wall).map_or("Missing wall", |w| w.parameters.name.as_str())),

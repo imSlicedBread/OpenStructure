@@ -623,6 +623,7 @@ fn arc_window_flip_fixture(size: egui::Vec2, scale: f32, positive: bool) -> (Har
         let material = os_model::Material::new(
             "core.material",
             os_model::MaterialParams {
+                cut_pattern: None,
                 name: name.into(),
                 density_kg_m3: 650.0,
                 color: [100, 90, 80],

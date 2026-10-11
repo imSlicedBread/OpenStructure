@@ -315,6 +315,112 @@ fn paper() -> PaperSheetInfo<'static> {
 }
 
 #[test]
+fn section_projected_cut_styles_and_exact_vectors_match_multi_scale_sheet_pdf() {
+    let ctx = context();
+    let entity = Id::new();
+    let material = Id::new();
+    let cut = PlanLine {
+        entity,
+        feature: 0,
+        start: Point2::new(-0.5, 0.),
+        end: Point2::new(0.5, 0.),
+        role: PlanRole::Cut,
+    };
+    let projected = PlanLine {
+        entity,
+        feature: 1,
+        start: Point2::new(-0.5, 0.75),
+        end: Point2::new(0.5, 0.75),
+        role: PlanRole::Projected,
+    };
+    let surface = SurfaceIdentity {
+        layer: None,
+        material: Some(material),
+    };
+    let mut region = fill([[-0.5, 0.], [0.5, 0.], [0., 0.5]]);
+    region.entity = entity;
+    region.surface = surface;
+    let d = PlanDrawing::from_prisms(ctx, &BTreeMap::new(), vec![entity])
+        .unwrap()
+        .with_native_lines(BTreeMap::from([(
+            entity,
+            vec![cut.clone(), projected.clone()],
+        )]))
+        .unwrap()
+        .with_line_surfaces(BTreeMap::from([
+            ((entity, 0), surface),
+            ((entity, 1), surface),
+        ]))
+        .with_section_fills(vec![region])
+        .unwrap()
+        .with_material_colors(BTreeMap::from([(material, [255, 255, 255])]))
+        .with_section_strokes();
+    assert_eq!(d.line_surface(entity, 0), surface);
+    assert_eq!(d.line_surface(entity, 1), surface);
+    let mut v1 = viewport();
+    v1.width_mm = 40.;
+    v1.height_mm = 40.;
+    let mut v2 = v1;
+    v2.center_mm.x = 200.;
+    v2.scale_denominator = 50.;
+    let page = compose_sheet_views(paper(), &[("100", v1, ctx, &d), ("50", v2, ctx, &d)]).unwrap();
+    for view in [v1, v2] {
+        let marks: Vec<_> = page
+            .marks()
+            .iter()
+            .filter(|m| m.clip == Some(view.paper_rect().unwrap()))
+            .collect();
+        assert_eq!(marks.len(), 3);
+        for (index, line) in [(0, &projected), (2, &cut)] {
+            let PaperMarkKind::Path {
+                points_mm,
+                stroke: Some(stroke),
+                fill: None,
+                closed: false,
+            } = &marks[index].kind
+            else {
+                panic!("stroke order")
+            };
+            assert_eq!(
+                *points_mm,
+                vec![
+                    view.model_to_paper(line.start).unwrap(),
+                    view.model_to_paper(line.end).unwrap()
+                ]
+            );
+            let expected = d.line_appearance(ctx, line).unwrap().unwrap();
+            assert_eq!(stroke.width_mm, expected.weight_mm);
+            assert_eq!(
+                [stroke.color.red, stroke.color.green, stroke.color.blue],
+                expected.color
+            );
+            assert_ne!(expected.color, [255, 255, 255]);
+        }
+        assert!(matches!(
+            marks[1].kind,
+            PaperMarkKind::Path {
+                fill: Some(PaperColor {
+                    red: 255,
+                    green: 255,
+                    blue: 255
+                }),
+                stroke: None,
+                ..
+            }
+        ));
+    }
+    let pdf = String::from_utf8(page.to_pdf().unwrap()).unwrap();
+    assert_eq!(pdf.matches("h\nf\n").count(), 2);
+    assert!(pdf.contains("0.510236 w") && pdf.contains("0.992126 w"));
+    assert!(pdf.contains("0.094118 0.094118 0.094118 RG"));
+    assert!(pdf.contains("0.345098 0.345098 0.345098 RG"));
+    let mut stale = ctx;
+    stale.model_revision += 1;
+    assert!(d.line_appearance(stale, &cut).is_err());
+    assert!(compose_view_sheet(paper(), "stale", v1, stale, &d).is_err());
+}
+
+#[test]
 fn section_sheet_and_pdf_fill_before_contours_without_triangle_strokes() {
     let ctx = context();
     let material = Id::new();

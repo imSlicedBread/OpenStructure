@@ -9,6 +9,7 @@ fn frozen() -> Value {
 }
 
 fn advance_headers(value: &mut Value) {
+    value["material_patterns"] = json!({});
     for ty in value["opening_types"].as_object_mut().unwrap().values_mut() {
         ty["parameters"]["family"]["version"] = 7.into();
         ty["parameters"]["family"]["extrusions"] = json!([]);

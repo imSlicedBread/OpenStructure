@@ -10,6 +10,7 @@ fn material_color_only_edit_refreshes_native_texture_and_history_at_both_dpis() 
         let material = os_model::Material::new(
             "core.material",
             os_model::MaterialParams {
+                cut_pattern: None,
                 name: "Paint".into(),
                 density_kg_m3: 1000.,
                 color: [220, 20, 30],

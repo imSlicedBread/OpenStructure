@@ -44,6 +44,7 @@ fn fixture() -> (Editor, Id, Id, Id, Id, Id) {
         let m = Material::new(
             "core.material",
             MaterialParams {
+                cut_pattern: None,
                 name: name.into(),
                 density_kg_m3: 800.,
                 color: [80, 100, 120],

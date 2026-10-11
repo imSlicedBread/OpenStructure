@@ -77,6 +77,7 @@ fn fixture(size: egui::Vec2, scale: f32) -> (Harness, Id, Id, Id) {
     let material = os_model::Material::new(
         "core.material",
         os_model::MaterialParams {
+            cut_pattern: None,
             name: "Slab concrete".into(),
             density_kg_m3: 2400.,
             color: [180, 180, 180],

@@ -198,7 +198,7 @@ fn linked_section_draws_native_wall_openings_floor_and_plan_marker() {
         .iter()
         .filter(|line| line.entity == section)
         .collect();
-    assert_eq!(marker.len(), 3);
+    assert_eq!(marker.len(), 6);
     assert!(editor.document.model().views[&section].parameters.kind == ViewKind::Section);
 
     // Transverse through the clear window aperture, away from the slab hole's

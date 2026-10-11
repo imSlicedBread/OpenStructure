@@ -35,14 +35,12 @@ pub struct ElevationBounds {
 impl ElevationBounds {
     pub fn validate(self) -> Result<()> {
         ensure(
-            [
-                self.min_station,
-                self.max_station,
-                self.bottom_elevation,
-                self.top_elevation,
-            ]
-            .into_iter()
-            .all(within)
+            [self.bottom_elevation, self.top_elevation]
+                .into_iter()
+                .all(within)
+                && [self.min_station, self.max_station]
+                    .into_iter()
+                    .all(|v| v.is_finite() && v.abs() <= 1e7)
                 && self.max_station - self.min_station > T
                 && self.top_elevation - self.bottom_elevation > T,
             "invalid elevation bounds",
@@ -435,13 +433,25 @@ pub fn project_facade(
     volume: FacadeVolume,
 ) -> Result<Vec<ElevationSegment>> {
     volume.validate()?;
-    project_window(
+    let mut lines = project_window(
         meshes,
         volume.origin,
         volume.axis,
         volume.left_side,
         Some(volume),
-    )
+    )?;
+    // The solve accepts boundary values within T. Canonicalize that numerical
+    // fringe before strict downstream crop/picking so rotated boundary edges
+    // cannot disappear. This never introduces a clip-plane edge.
+    for line in &mut lines {
+        for p in [&mut line.start, &mut line.end] {
+            p.x =
+                p.x.clamp(volume.bounds.min_station, volume.bounds.max_station);
+            p.y =
+                p.y.clamp(volume.bounds.bottom_elevation, volume.bounds.top_elevation);
+        }
+    }
+    Ok(lines)
 }
 
 fn project_window(
@@ -561,7 +571,15 @@ fn project_window(
         let normal = Point2::new(-(pb.y - pa.y) / length, (pb.x - pa.x) / length);
         let mut splits = vec![0., 1.];
         work.add(faces.len())?;
-        for f in &faces {
+        // Only faces intersecting this projected edge can affect its visibility
+        // or either symbolic side. Bound the broad phase once per edge, then
+        // avoid rescanning unrelated building faces at every split interval.
+        let nearby: Vec<_> = faces
+            .iter()
+            .filter(|f| f.interval(pa, pb).is_some())
+            .cloned()
+            .collect();
+        for f in &nearby {
             if let Some((mut lo, mut hi)) = f.interval(pa, pb) {
                 if let Some(w) = window {
                     let mut interval = (lo, hi);
@@ -592,9 +610,9 @@ fn project_window(
             let t = (pair[0] + pair[1]) * 0.5;
             let p = lerp(pa, pb, t);
             let depth = a.z + (b.z - a.z) * t;
-            work.add(faces.len() * 2)?;
-            let l = front(&faces, p, normal, window);
-            let r = front(&faces, p, Point2::new(-normal.x, -normal.y), window);
+            work.add(nearby.len() * 2)?;
+            let l = front(&nearby, p, normal, window);
+            let r = front(&nearby, p, Point2::new(-normal.x, -normal.y), window);
             let visible = [l, r]
                 .into_iter()
                 .flatten()

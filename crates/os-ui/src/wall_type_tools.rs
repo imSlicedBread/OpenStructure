@@ -96,6 +96,9 @@ impl DesktopApp {
         });
     }
     pub(super) fn wall_type_controls(&mut self, ui: &mut egui::Ui) {
+        if ui.button("Project materials / Section hatches…").clicked() {
+            self.begin_material_graphics();
+        }
         theme::section(ui, "Wall type / layers");
         let types: Vec<_> = self
             .editor
@@ -284,7 +287,7 @@ impl DesktopApp {
                     }); });
                 }
                 if ui.button("New project material").clicked() {
-                    let material = os_model::Material::new("core.material", os_model::MaterialParams { name: "New material".into(), density_kg_m3: 1000.0, color: [180, 180, 180] });
+                    let material = os_model::Material::new("core.material", os_model::MaterialParams { cut_pattern: None, name: "New material".into(), density_kg_m3: 1000.0, color: [180, 180, 180] });
                     draft.materials.insert(material.id(), material);
                 }
             });
@@ -321,6 +324,7 @@ mod tests {
         let material = os_model::Material::new(
             "core.material",
             os_model::MaterialParams {
+                cut_pattern: None,
                 name: "Paint".into(),
                 density_kg_m3: 1000.,
                 color: [120, 140, 160],

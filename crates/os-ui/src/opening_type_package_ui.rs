@@ -675,11 +675,37 @@ fn build_import_plan(
     let mut additions = Vec::new();
     let mut material_remaps = Vec::new();
     let mut remapped = std::collections::BTreeMap::new();
+    let mut commands = Vec::new();
+    let mut pattern_remaps = std::collections::BTreeMap::new();
+    for (source, parameters) in &package.material_patterns {
+        // New project identities prevent source UUID collisions from overwriting
+        // destination definitions. Shared references within the package stay shared.
+        let mut parameters = parameters.clone();
+        parameters.name = unique_name(
+            &parameters.name,
+            candidate
+                .material_patterns
+                .values()
+                .map(|p| p.parameters.name.as_str()),
+        );
+        let pattern = os_model::MaterialPattern::new("core.material_pattern", parameters);
+        pattern_remaps.insert(*source, pattern.id());
+        material_remaps.push(format!(
+            "Pattern {} → independent project copy",
+            pattern.parameters.name
+        ));
+        candidate
+            .material_patterns
+            .insert(pattern.id(), pattern.clone());
+        commands.push(Command::AddMaterialPattern(pattern));
+    }
     for snapshot in &package.materials {
+        let mut parameters = snapshot.parameters.clone();
+        parameters.cut_pattern = parameters.cut_pattern.map(|id| pattern_remaps[&id]);
         if let Some((id, _)) = candidate
             .materials
             .iter()
-            .find(|(_, material)| material.parameters == snapshot.parameters)
+            .find(|(_, material)| material.parameters == parameters)
         {
             remapped.insert(snapshot.source_id, *id);
             material_remaps.push(format!(
@@ -688,7 +714,6 @@ fn build_import_plan(
             ));
             continue;
         }
-        let mut parameters = snapshot.parameters.clone();
         let requested = parameters.name.clone();
         parameters.name = unique_name(
             &requested,
@@ -713,11 +738,7 @@ fn build_import_plan(
 
     // Always copy shared Length dependencies to fresh project identities. Names
     // never imply identity or permission to overwrite an existing driver.
-    let mut commands: Vec<_> = additions
-        .iter()
-        .cloned()
-        .map(Command::AddMaterial)
-        .collect();
+    commands.extend(additions.iter().cloned().map(Command::AddMaterial));
     let mut length_remaps = std::collections::BTreeMap::new();
     for (source, snapshot) in &package.length_parameters {
         let mut p = snapshot.clone();
@@ -906,9 +927,23 @@ fn authored_extrusions_package_import_remaps_solid_ids_and_material_only_depende
         WindowPanePosition,
     };
     let mut source = Editor::new().unwrap();
+    let pattern = os_model::MaterialPattern::new(
+        "core.material_pattern",
+        os_model::MaterialPatternParams {
+            name: "Portable hatch".into(),
+            angle_degrees: 30.,
+            spacing: 0.1,
+            origin: [1., 2., 3.],
+        },
+    );
+    let pid = pattern.id();
+    source
+        .command("Pattern", Command::AddMaterialPattern(pattern.clone()))
+        .unwrap();
     let material = Material::new(
         "core.material",
         os_model::MaterialParams {
+            cut_pattern: Some(pid),
             name: "Only solid material".into(),
             color: [180, 20, 70],
             density_kg_m3: 5000.,
@@ -944,6 +979,13 @@ fn authored_extrusions_package_import_remaps_solid_ids_and_material_only_depende
     .unwrap();
     assert_eq!(package.materials.len(), 1);
     let mut dest = Editor::new().unwrap();
+    let mut conflicting_pattern = pattern.clone();
+    conflicting_pattern.parameters.spacing = 0.9;
+    dest.command(
+        "Pattern collision",
+        Command::AddMaterialPattern(conflicting_pattern.clone()),
+    )
+    .unwrap();
     let mut collision = source.document.model().materials[&mid].clone();
     collision.parameters.color = [1, 2, 3];
     dest.command("Collision", Command::AddMaterial(collision))
@@ -960,6 +1002,19 @@ fn authored_extrusions_package_import_remaps_solid_ids_and_material_only_depende
     assert_ne!(solid.id, sid);
     assert_ne!(solid.material, Some(mid));
     let imported = &dest.document.model().materials[&solid.material.unwrap()].parameters;
+    let imported_pattern = imported.cut_pattern.unwrap();
+    assert_ne!(imported_pattern, pid);
+    assert_eq!(
+        dest.document.model().material_patterns[&pid],
+        conflicting_pattern
+    );
+    let imported_pattern = &dest.document.model().material_patterns[&imported_pattern].parameters;
+    assert_eq!(imported_pattern.spacing, pattern.parameters.spacing);
+    assert_eq!(imported_pattern.origin, pattern.parameters.origin);
+    assert_eq!(
+        imported_pattern.angle_degrees,
+        pattern.parameters.angle_degrees
+    );
     assert_eq!(imported.color, package.materials[0].parameters.color);
     assert_eq!(
         imported.density_kg_m3,

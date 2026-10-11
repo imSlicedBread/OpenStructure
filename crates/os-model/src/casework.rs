@@ -327,6 +327,7 @@ mod tests {
         let material = crate::Material::new(
             "core.material",
             crate::MaterialParams {
+                cut_pattern: None,
                 name: "Oak".into(),
                 density_kg_m3: 700.0,
                 color: [180, 140, 90],

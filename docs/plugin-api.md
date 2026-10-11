@@ -1,4 +1,18 @@
-# Plugin protocols: native Model API 48 and generic API 2
+# Plugin protocols: native Model API 51 and generic API 2
+
+Native API 51 requires model schema 70. Full Model transport includes the
+project material-pattern collection and optional material cut-pattern
+references. API 50 and older native guests must rebuild/reinstall. No generic
+API or pointer-gesture protocol changes are introduced. See
+[native material patterns](native-material-patterns.md).
+
+Native API 49 requires model schema 68 and section settings version 2. Full
+Model transport now carries persisted section side, cut/projection mode, finite
+depth, station crop and scale. Schema 67 sections migrate with deterministic
+CutOnly defaults; generic API 2, container 2 and plugin pointer protocols are
+unchanged. Native API 48 and older guests must rebuild/reinstall. See
+[native sections](native-sections.md) for supported projection categories and
+explicit limits.
 
 Native API 48 requires model schema 67 / opening family 7, adding bounded authored
 profile-extrusion data to full-model transport. API 47 and older native guests
@@ -68,9 +82,10 @@ the Wasm buffer ABI are unchanged. Version gates cover API 33 rejection and
 current schema agreement in `os-plugin-api` and `os-plugin-host` tests.
 
 API 35/schema 54 added required Fixed/Sliding/Casement window-symbol metadata;
-older models migrate existing types to Fixed. Current native full-model
-transport uses API 48/schema 67. Native API 47 and older guests must rebuild and
-reinstall. Generic API 2 and container 2 are unchanged.
+older models migrate existing types to Fixed. At that increment native full-model
+transport used API 50/schema 69; current transport uses API 51/schema 70. Native
+API 50 and older guests must rebuild and reinstall. Generic API 2 and container 2
+are unchanged.
 
 API 32 requires model schema 51. It retains required `ScheduleParams.group_by`
 (ordered, at most two distinct Level/Kind/Type/Width/Height/Sill keys),

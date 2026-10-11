@@ -14,7 +14,7 @@ use std::{
 };
 
 pub const OPENING_TYPE_PACKAGE_FORMAT: &str = "OpenStructure.OpeningTypePackage";
-pub const OPENING_TYPE_PACKAGE_VERSION: u32 = 6;
+pub const OPENING_TYPE_PACKAGE_VERSION: u32 = 7;
 pub const MAX_OPENING_TYPE_PACKAGE_BYTES: usize = 1024 * 1024;
 
 /// Source identities are references for import remapping, not destination identities.
@@ -23,6 +23,7 @@ pub struct OpeningTypePackage {
     pub source_type_id: Id,
     pub parameters: OpeningTypeParams,
     pub materials: Vec<OpeningTypePackageMaterial>,
+    pub material_patterns: std::collections::BTreeMap<Id, os_model::MaterialPatternParams>,
     pub length_parameters: std::collections::BTreeMap<Id, LengthParameterParams>,
     pub length_bindings: OpeningTypeLengthBindings,
 }
@@ -44,6 +45,7 @@ struct WirePackage {
     #[serde(deserialize_with = "deserialize_type_parameters")]
     parameters: OpeningTypeParams,
     materials: Vec<OpeningTypePackageMaterial>,
+    material_patterns: std::collections::BTreeMap<Id, os_model::MaterialPatternParams>,
     length_parameters: std::collections::BTreeMap<Id, LengthParameterParams>,
     length_bindings: OpeningTypeLengthBindings,
 }
@@ -56,6 +58,8 @@ struct StrictMaterialParams {
     name: String,
     density_kg_m3: f64,
     color: [u8; 3],
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cut_pattern: Option<Id>,
 }
 
 fn deserialize_type_parameters<'de, D: serde::Deserializer<'de>>(
@@ -111,6 +115,29 @@ impl OpeningTypePackage {
             "Length snapshots must exactly match bindings",
         )?;
         let mut source_identities = BTreeSet::from([self.source_type_id]);
+        ensure(
+            self.material_patterns.len() <= os_model::MAX_MATERIAL_PATTERNS,
+            "too many pattern snapshots",
+        )?;
+        ensure(
+            self.material_patterns
+                .keys()
+                .copied()
+                .collect::<BTreeSet<_>>()
+                == self
+                    .materials
+                    .iter()
+                    .filter_map(|m| m.parameters.cut_pattern)
+                    .collect(),
+            "pattern snapshots must exactly match material references",
+        )?;
+        for (id, parameters) in &self.material_patterns {
+            ensure(
+                !id.0.is_nil() && source_identities.insert(*id),
+                "invalid pattern snapshot identity",
+            )?;
+            parameters.validate()?;
+        }
         for (id, p) in &self.length_parameters {
             ensure(
                 !id.0.is_nil() && source_identities.insert(*id),
@@ -187,6 +214,21 @@ pub fn export_opening_type_package(model: &Model, type_id: Id) -> Result<Vec<u8>
     let package = OpeningTypePackage {
         source_type_id: type_id,
         parameters: ty.parameters.clone(),
+        material_patterns: materials
+            .iter()
+            .filter_map(|m| m.parameters.cut_pattern)
+            .map(|id| {
+                let pattern = model
+                    .material_patterns
+                    .get(&id)
+                    .ok_or_else(|| storage("referenced material pattern missing"))?;
+                ensure(
+                    pattern.id() == id && pattern.header.type_id == "core.material_pattern",
+                    "invalid pattern snapshot identity",
+                )?;
+                Ok((id, pattern.parameters.clone()))
+            })
+            .collect::<Result<_>>()?,
         materials,
         length_parameters: model
             .opening_type_length_bindings
@@ -221,6 +263,7 @@ fn encode_opening_type_package(package: &OpeningTypePackage) -> Result<Vec<u8>> 
         source_type_id: package.source_type_id,
         parameters: package.parameters.clone(),
         materials: package.materials.clone(),
+        material_patterns: package.material_patterns.clone(),
         length_parameters: package.length_parameters.clone(),
         length_bindings: package.length_bindings,
     };
@@ -245,6 +288,20 @@ pub fn parse_opening_type_package(bytes: &[u8]) -> Result<OpeningTypePackage> {
     let raw = std::str::from_utf8(bytes).map_err(storage)?;
     json_guard::validate(raw).map_err(storage)?;
     let mut value: serde_json::Value = serde_json::from_str(raw).map_err(storage)?;
+    if value["version"].as_u64().is_some_and(|v| v <= 6) {
+        ensure(
+            value.get("material_patterns").is_none(),
+            "ambiguous legacy package patterns",
+        )?;
+        ensure(
+            value["materials"].as_array().is_some_and(|materials| {
+                materials
+                    .iter()
+                    .all(|m| m["parameters"].get("cut_pattern").is_none())
+            }),
+            "ambiguous legacy package cut pattern",
+        )?;
+    }
     if value["version"] == 1 {
         let family = value["parameters"]["family"]
             .as_object_mut()
@@ -310,6 +367,14 @@ pub fn parse_opening_type_package(bytes: &[u8]) -> Result<OpeningTypePackage> {
         family.insert("extrusions".into(), serde_json::json!([]));
         value["version"] = 6.into();
     }
+    if value["version"] == 6 {
+        ensure(
+            value.get("material_patterns").is_none(),
+            "ambiguous legacy package material patterns",
+        )?;
+        value["material_patterns"] = serde_json::json!({});
+        value["version"] = 7.into();
+    }
     let wire: WirePackage = serde_json::from_value(value).map_err(storage)?;
     ensure(
         wire.format == OPENING_TYPE_PACKAGE_FORMAT,
@@ -323,6 +388,7 @@ pub fn parse_opening_type_package(bytes: &[u8]) -> Result<OpeningTypePackage> {
         source_type_id: wire.source_type_id,
         parameters: wire.parameters,
         materials: wire.materials,
+        material_patterns: wire.material_patterns,
         length_parameters: wire.length_parameters,
         length_bindings: wire.length_bindings,
     };

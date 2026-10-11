@@ -108,6 +108,7 @@ fn curtain_scene_level_type_material_updates_and_staged_open() {
     let material = Material::new(
         "core.material",
         MaterialParams {
+            cut_pattern: None,
             name: "Glass".into(),
             density_kg_m3: 2500.,
             color: [50, 80, 110],

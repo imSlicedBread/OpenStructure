@@ -163,6 +163,7 @@ fn facade_multistorey_slab_roof_materials_and_rotated_world_axis() {
     let material = Material::new(
         "core.material",
         MaterialParams {
+            cut_pattern: None,
             name: "Stone".into(),
             density_kg_m3: 2200.,
             color: [120, 130, 140],

@@ -228,6 +228,7 @@ fn opening_family_panel_and_frame_material_selectors_work_at_both_dpis() {
         let panel = os_model::Material::new(
             "core.material",
             os_model::MaterialParams {
+                cut_pattern: None,
                 name: "Oak panel".into(),
                 density_kg_m3: 650.,
                 color: [180, 180, 180],
@@ -236,6 +237,7 @@ fn opening_family_panel_and_frame_material_selectors_work_at_both_dpis() {
         let frame = os_model::Material::new(
             "core.material",
             os_model::MaterialParams {
+                cut_pattern: None,
                 name: "Bronze frame".into(),
                 density_kg_m3: 8_500.,
                 color: [180, 180, 180],

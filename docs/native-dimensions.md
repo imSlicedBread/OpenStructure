@@ -1,5 +1,45 @@
 # Native wall dimensions
 
+## Native Section dimensions (schema 69 / native API 50)
+
+Section views expose Horizontal dimension and Vertical dimension. Pick two
+visible native straight-wall or rectangular door/window aperture extents, then
+click the offset. Properties edit the offset, explicitly replace either anchor,
+or delete the dimension. Each successful operation is one undoable transaction.
+Escape, invalid release, changed revision/session/view/settings/provider or
+drawing identity cancel the transient draft without model/history/scene edits.
+Canvas presses stay consumed through release; ordinary dragging still pans.
+
+`SectionHorizontal` and `SectionVertical` layouts accept only `SectionWall` and
+`SectionOpening` references. UUIDs and a semantic feature are stored, never mesh
+edges or cached lengths. The four feature names reuse the existing
+`ElevationDimensionFeature` vocabulary, but resolution is exclusively in the
+owning Section view: Start/End are minimum/maximum **section station**, and
+Bottom/Top are absolute project elevations. They are not wall-local elevation
+references; cross-view resolution is rejected. The analytic nominal rectangular
+footprint intersects the section plane in CutOnly, or its near/far volume in
+CutAndProjection. Changing that volume can change the measured extents. Station
+and height crop do not shorten measurements; fully excluded sources report
+`OutsideSection`. Opening references follow the same opening UUID and its current
+host, including live typed sizes and instance overrides.
+
+Acquisition requires a collinear visible stroke from the current drawing,
+clipped to the nominal edge and view crop, within 12 logical pixels. Aperture
+references win exact ties against their host cut outline. Missing sources keep
+the annotation with explicit diagnostics and can be repaired one anchor at a
+time; there is no automatic nearest-edge reassignment. Curved hosts and custom
+aperture cut profiles fail closed. Chains, constraints, arbitrary mesh references
+and general annotation/print qualification remain outside this slice.
+
+The frozen drawing stores one shared `PlanDimensionItem` used by canvas, sheet
+and vector PDF. Tests: `os-model/tests/section_dimensions.rs`,
+`os-document/tests/section_dimensions.rs`, `os-storage/tests/section_dimensions.rs`,
+`os-render/tests/section_dimensions.rs`, and
+`os-ui/src/plan_workspace/section_dimension_tests.rs` plus acquisition/context
+tests in `section_dimensions.rs`. The real-egui tests cover 1280×800/100% and
+1000×650/150%, preview immutability, history, cancellation, repair, pan precedence,
+and sheet/PDF labels. These are automated checks, not physical-print approval.
+
 ## Linked elevation dimensions (schema 65)
 
 Horizontal/vertical dimensions now belong to linked straight-wall elevations.

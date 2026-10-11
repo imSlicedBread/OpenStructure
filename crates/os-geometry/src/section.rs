@@ -20,6 +20,9 @@ use std::collections::{BTreeMap, BTreeSet};
 #[path = "section_fill.rs"]
 mod fill;
 pub use fill::{MAX_SECTION_FILL_TRIANGLES, tessellate_contours};
+#[path = "section_projection.rs"]
+mod projection;
+pub use projection::mask_projected_segments;
 
 /// Absolute plane and contour comparison tolerance in metres.
 pub const SECTION_TOLERANCE: f64 = 1e-8;

@@ -60,7 +60,9 @@ fn dimension_repair_fixture(
         orphan_hint: Point2::new(0.0, 0.6),
     };
     let (anchor, target, point) = match layout {
-        os_model::DimensionLayout::ElevationHorizontal
+        os_model::DimensionLayout::SectionHorizontal
+        | os_model::DimensionLayout::SectionVertical
+        | os_model::DimensionLayout::ElevationHorizontal
         | os_model::DimensionLayout::ElevationVertical => unreachable!("plan-only fixture"),
         ArcLength => unreachable!("arc-length uses paired curve repair"),
         Aligned => (1, parameters.second, Point2::new(1.0, 0.0)),
@@ -719,6 +721,7 @@ impl Harness {
         let material = os_model::Material::new(
             "core.material",
             os_model::MaterialParams {
+                cut_pattern: None,
                 name: "Fixture concrete".into(),
                 density_kg_m3: 2400.0,
                 color: [180, 180, 180],
@@ -2248,7 +2251,9 @@ fn chain_and_baseline_dimensions_collect_ordered_anchors_and_commit_once() {
             assert_eq!(spans[0].entity, id);
             assert_eq!(spans[0].spans[0].entity, id);
             match layout {
-                os_model::DimensionLayout::ElevationHorizontal
+                os_model::DimensionLayout::SectionHorizontal
+                | os_model::DimensionLayout::SectionVertical
+                | os_model::DimensionLayout::ElevationHorizontal
                 | os_model::DimensionLayout::ElevationVertical => unreachable!("plan-only fixture"),
                 os_model::DimensionLayout::Chain => {
                     assert_eq!(spans[0].value_m, Some(2.0));

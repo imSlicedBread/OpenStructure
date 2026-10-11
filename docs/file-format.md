@@ -1,4 +1,32 @@
-# Native .osb format, container 2 / model schema 67
+# Native .osb format, container 2 / model schema 70
+
+Schema 69→70 adds the project `material_patterns` collection and optional
+`MaterialParams.cut_pattern` reference. Existing schema-69 materials receive no
+pattern and continue to render solid fills. Pre-existing pattern fields in
+schema-69 input are treated as ambiguous and rejected atomically. Material
+pattern definitions are bounded, project-owned parallel cut hatches used by
+native Sections; opening-type package v7 transfers only referenced definitions.
+Native full-model providers require API 51/schema 70; generic API 2 and
+container 2 remain unchanged. See [native material patterns](native-material-patterns.md).
+
+Schema 68→69 advances native entity headers for new dimension discriminants:
+`SectionHorizontal`/`SectionVertical` layouts and `SectionWall`/`SectionOpening`
+UUID+feature references. Existing payloads, identities, view settings and opaque
+metadata remain unchanged; schema-68 input claiming the new discriminants is
+rejected atomically. Section dimensions resolve only in their owning Section
+frame, independently of Elevation references. At schema 69, native Model API 50
+was required; current providers use API 51/schema 70. Generic API 2 and container 2 remain unchanged. Frozen migration and
+populated live/orphan save/reopen evidence: `os-storage/tests/section_dimensions.rs`.
+
+Schema 67→68 migrates configured section definitions from settings version 1
+to version 2. The new fields persist viewer side, cut-only versus finite-depth
+background projection, station crop, far depth and drawing scale. Existing
+sections migrate to Left / CutOnly, a 30 m far-depth default, the full marker
+station interval and scale 1:100; their UUIDs, endpoints, elevations, view
+metadata and extension payloads are preserved. Ambiguous or malformed legacy
+section definitions reject the migration atomically. Native API 49/schema 68
+is required; generic API 2 and container 2 are unchanged. Frozen fixture,
+migration and save/reopen evidence: `tests/section_v2.rs`.
 
 Schema 66→67 advances native headers and migrates each opening family from version
 6 to 7, adding a required empty `extrusions` list. Legacy families already carrying
@@ -21,7 +49,8 @@ The view UUID identifies its derived marker. Existing wall-local Elevation
 settings and dimensions retain their semantics. Header-only migration rejects
 legacy Facade kinds or facade fields (including null) before mutation, preserving
 IDs and opaque metadata. Tests: `os-storage/tests/facades.rs`. This introduced
-native API 47/schema 66; current providers require API 48/schema 67.
+native API 47/schema 66; at the later section-dimension increment providers
+required API 50/schema 69. Current providers require API 51/schema 70.
 
 Schema 64→65 adds `DimensionLayout::ElevationHorizontal/ElevationVertical` and
 explicit `DimensionReference::ElevationWall/ElevationOpening` variants. Each
@@ -33,7 +62,8 @@ derived; existing Plan references retain world-XY semantics. Header-only
 migration rejects these new layouts/references in legacy payloads, including
 additional anchors, without touching opaque properties/extensions. The frozen
 schema-64 fixture and live/orphan round trips are in storage elevation tests.
-This increment introduced native Model API 46; current providers require API 48.
+This increment introduced native Model API 46; the later section-dimension
+increment required API 50, and current providers require API 51/schema 70.
 Generic API 2 and container 2 are unchanged.
 
 Schema 63→64 introduces linked native straight-wall `Elevation` views and optional
@@ -66,15 +96,16 @@ offset; analytic measurements and display samples remain derived. Native API
 Schema 61→62 adds the required `casework_types` and `casework` root
 collections. Migration rejects either pre-existing key, inserts both empty,
 advances native headers, and validates before adoption. Native full-model
-plugins now require API 48/schema 67; container 2 and generic plugin API 2 are
-unchanged. See [native casework](native-casework.md) for current scope and
+plugins then required API 50/schema 69; current providers require API 51/schema
+70. Container 2 and generic plugin API 2 are unchanged. See [native casework](native-casework.md) for current scope and
 limitations.
 
 Schema 60→61 adds the required `ramps` root collection for native straight-run
 ramps. Migration rejects a pre-existing key, inserts an empty map, advances
 native headers, and validates before adoption. Ramp rise and slope remain derived
 from the referenced levels; container 2 and generic plugin API 2 are unchanged.
-Native full-model plugins now require API 48/schema 67.
+At that increment, native full-model plugins required API 50/schema 69; current
+providers require API 51/schema 70.
 
 Schema 59→60 adds the required `railings` and `railing_types` root collections.
 The strict migration requires both keys to be absent, inserts empty maps,
@@ -812,26 +843,25 @@ data preservation, and multiple configured definitions saved/reopened together.
 Schedule sheet placements, table pagination, CSV, room schedules and family
 authoring are outside this slice.
 
-## Section view definition (schema 15)
+## Section view definition (schema 68)
 
 `ViewParams.section` is an optional, versioned `SectionViewSettings` object.
 When present, it is valid only for a `Section` view and carries finite start/end
-points in world XY plus absolute bottom/top elevations, all in metres. The
-associated `ViewParams.level` is the intended plan-marker level. The line must
-be longer than one micrometre and no longer than 10,000 km; the vertical range
-must be positive and no larger than the same bounded extent. Plan and perspective
-views may not carry section settings. Creating a Section view through a document
-edit requires both its marker level and section definition.
+points in world XY, absolute bottom/top elevations, viewer side, display mode,
+far depth, station crop and scale denominator; lengths and elevations are in
+metres. The associated `ViewParams.level` is the plan-marker level. The line
+must be longer than one micrometre and no longer than 10,000 km; the vertical
+range must be positive and bounded. Plan and perspective views may not carry
+section settings. Creating a Section view requires both its marker level and
+section definition.
 
-Migration 14→15 advances the model and native entity headers while preserving
-existing view parameters; legacy views acquire no inferred section definition.
-If a schema-14 view already contains a `section` field, migration rejects the
-ambiguous input. The data type and compatibility behavior are documented in
-[native-sections.md](native-sections.md). The desktop currently provides a
-two-click plan marker, linked contour drawing for supported native walls/openings
-and floors, and source selection. Section sheet placement and cut fills/poché
-remain unimplemented. The separate `os-geometry::section::vertical_section`
-kernel helper operates on already-built closed meshes.
+Migration 67→68 upgrades configured version-1 section settings and advances
+the model/native headers while preserving unrelated view parameters and opaque
+metadata. Ambiguous or malformed legacy section definitions are rejected.
+Unconfigured legacy Section views remain repairable. See
+[native-sections.md](native-sections.md) for cut/projection behavior, UI and
+qualification limits. The separate `os-geometry::section::vertical_section`
+kernel operates on already-built closed meshes.
 
 ## SQLite migration path
 

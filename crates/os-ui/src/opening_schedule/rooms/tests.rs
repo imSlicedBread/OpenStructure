@@ -89,6 +89,7 @@ pub(crate) fn add_material(app: &mut DesktopApp) -> Id {
     let material = os_model::Material::new(
         "core.material",
         os_model::MaterialParams {
+            cut_pattern: None,
             name: "Oak".into(),
             density_kg_m3: 650.,
             color: [160, 100, 60],

@@ -25,6 +25,10 @@ editor or Revit-like family system.
   from those IDs. The material picker is in the wall-type/material-layers editor.
   Color changes preserve geometry and assignments; see
   [shared material colors](native-material-colors.md) for migration and evidence.
+  For native Section cut fills, the assigned material can also select a shared
+  project hatch. Opening type packages carry and remap only referenced hatch
+  definitions; see [native material patterns](native-material-patterns.md) and
+  [opening type packages](native-opening-type-packages.md).
   Texture, transparency, reflectance and physical-finish properties remain absent.
 - Assignments affect the opening component mesh only. Host wall cuts and plan
   symbols remain unchanged. IFC export does not yet emit opening material
@@ -39,8 +43,8 @@ are inserted as null, family versions advance to 4, and native entity headers
 advance to 32. Old families therefore retain their prior default appearance.
 Malformed, ambiguous, or inconsistent headers are rejected without partial
 migration. At introduction, native full-model plugin API 13 required schema 32.
-Current native API 32 requires schema 51; generic API 2 and container version 2
-remain unchanged.
+At introduction, native API 32 required schema 51. Current native API 51 requires
+schema 70; generic API 2 and container version 2 remain unchanged.
 
 ## Evidence and remaining work
 
@@ -57,8 +61,9 @@ shared type behavior and persistence. The full `cargo test --workspace
 `cargo clippy --workspace --all-targets --all-features --locked --offline --
 -D warnings` both pass.
 
-Appearance is bounded to shared display RGB: per-instance material overrides,
-textures, transparency, PBR, IFC material export, and material schedules remain
+Appearance is bounded to shared display RGB plus native Section material cut
+patterns: per-instance material overrides, surface hatches, textures,
+transparency, PBR, IFC material export, and material schedules remain
 unimplemented. Single-type versioned packages now support file-based transfer;
 searchable catalogs, office libraries, constrained sketches and nested
 components remain. See [native opening type packages](native-opening-type-packages.md)

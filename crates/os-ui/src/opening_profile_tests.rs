@@ -332,6 +332,7 @@ fn material_color_shared_wall_opening_render_preview_geometry_and_history() {
         Material::new(
             "core.material",
             MaterialParams {
+                cut_pattern: None,
                 name: "Shared".into(),
                 density_kg_m3: 650.,
                 color,
@@ -490,6 +491,7 @@ fn opening_materials_shared_types_preview_failure_history_and_reopen() {
         os_model::Material::new(
             "core.material",
             os_model::MaterialParams {
+                cut_pattern: None,
                 name: name.into(),
                 density_kg_m3: 500.,
                 color: [180, 180, 180],

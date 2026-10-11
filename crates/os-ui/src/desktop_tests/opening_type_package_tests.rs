@@ -172,6 +172,7 @@ fn two_bay_package_dependencies_collisions_history_and_reopen() {
                 let material = Material::new(
                     "core.material",
                     MaterialParams {
+                        cut_pattern: None,
                         name: name.into(),
                         density_kg_m3: 2500.,
                         color: [40, 90, 150],
@@ -273,6 +274,7 @@ fn source_package(
         let panel = Material::new(
             "core.material",
             MaterialParams {
+                cut_pattern: None,
                 name: "Pine panel".into(),
                 density_kg_m3: 540.0,
                 color: [160, 120, 80],
@@ -281,6 +283,7 @@ fn source_package(
         let frame = Material::new(
             "core.material",
             MaterialParams {
+                cut_pattern: None,
                 name: "Black metal".into(),
                 density_kg_m3: 7_850.0,
                 color: [25, 25, 25],
@@ -321,6 +324,7 @@ fn package_import_is_previewed_atomic_and_round_trips_door_and_window_types_at_b
             let conflicting = Material::new(
                 "core.material",
                 MaterialParams {
+                    cut_pattern: None,
                     name: "Pine panel".into(),
                     density_kg_m3: 700.0,
                     color: [100, 100, 100],

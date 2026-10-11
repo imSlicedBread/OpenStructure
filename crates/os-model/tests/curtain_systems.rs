@@ -24,6 +24,7 @@ fn curtain_components_have_disjoint_clear_envelopes_and_finite_quantities() {
     let material = Material::new(
         "core.material",
         MaterialParams {
+            cut_pattern: None,
             name: "Overflow".into(),
             density_kg_m3: f64::MAX,
             color: [0; 3],

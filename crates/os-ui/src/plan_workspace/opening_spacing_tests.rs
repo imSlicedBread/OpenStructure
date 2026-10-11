@@ -187,6 +187,7 @@ fn fixture(
         let material = os_model::Material::new(
             "core.material",
             os_model::MaterialParams {
+                cut_pattern: None,
                 name: "Spacing test material".into(),
                 density_kg_m3: 650.,
                 color: [100, 90, 80],

@@ -5,6 +5,9 @@ use os_model::{SectionViewSettings, ViewKind, Wall, WallParams};
 const SIZE: egui::Vec2 = egui::vec2(1280.0, 800.0);
 
 struct Harness {
+    size: egui::Vec2,
+    scale: f32,
+    output: Option<egui::FullOutput>,
     app: DesktopApp,
     ctx: egui::Context,
     time: f64,
@@ -41,6 +44,9 @@ impl Harness {
         let ctx = egui::Context::default();
         theme::apply(&ctx);
         let mut harness = Self {
+            size: SIZE,
+            scale: 1.,
+            output: None,
             app,
             ctx,
             time: 0.0,
@@ -57,13 +63,8 @@ impl Harness {
 
     fn frame(&mut self, events: Vec<egui::Event>) {
         self.time += 1.0 / 60.0;
-        let input = egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, SIZE)),
-            time: Some(self.time),
-            events,
-            ..Default::default()
-        };
-        let _ = self.ctx.run(input, |ctx| self.app.show(ctx));
+        let input = super::sheet_tests::raw_input(self.size, self.scale, self.time, events);
+        self.output = Some(self.ctx.run(input, |ctx| self.app.show(ctx)));
     }
 
     fn settle(&mut self) {
@@ -97,6 +98,61 @@ impl Harness {
         self.frame(vec![egui::Event::PointerMoved(point)]);
         self.frame(vec![button(point, true)]);
         self.frame(vec![button(point, false)]);
+    }
+
+    fn action(&mut self, label: &str) {
+        self.frame(vec![]);
+        let point = self
+            .output
+            .as_ref()
+            .unwrap()
+            .shapes
+            .iter()
+            .find_map(|s| match &s.shape {
+                egui::Shape::Text(t) if t.galley.job.text == label => {
+                    Some(egui::Rect::from_min_size(t.pos, t.galley.size()).center())
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("missing {label}"));
+        self.click(point);
+    }
+
+    fn number(&mut self, label: &'static str, value: &str) {
+        self.time += 0.5;
+        self.frame(vec![]);
+        self.frame(vec![]);
+        let point = self
+            .app
+            .plans
+            .section_placement
+            .as_ref()
+            .unwrap()
+            .numeric_rects[label]
+            .center();
+        self.click(point);
+        assert!(
+            self.ctx.wants_keyboard_input(),
+            "{label} must accept exact keyboard input"
+        );
+        self.frame(vec![
+            egui::Event::Key {
+                key: egui::Key::A,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::CTRL | egui::Modifiers::COMMAND,
+            },
+            egui::Event::Text(value.into()),
+        ]);
+        self.frame(vec![egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }]);
+        self.frame(vec![]);
     }
 }
 
@@ -151,6 +207,10 @@ fn two_click_section_is_preview_only_then_one_undoable_linked_view() {
     assert_eq!(h.app.editor.document.model(), &original);
     assert_eq!(h.app.editor.document.revision(), revision);
     h.click(end);
+
+    assert_eq!(h.app.editor.document.model(), &original);
+    assert_eq!(h.app.editor.document.revision(), revision);
+    h.action("Apply section");
 
     let section = h.app.plans.active.unwrap();
     assert_eq!(h.app.editor.document.revision(), revision + 1);
@@ -230,6 +290,102 @@ fn escape_and_stale_document_cancel_section_marker_without_partial_view() {
 }
 
 #[test]
+fn section_settings_real_numeric_apply_history_cancel_and_stale_authority_both_dpis() {
+    for (size, scale) in [(SIZE, 1.), (egui::vec2(1000., 650.), 1.5)] {
+        let mut h = Harness::new();
+        h.size = size;
+        h.scale = scale;
+        h.frame(vec![]);
+        h.app.begin_section_placement(h.view);
+        h.frame(vec![]);
+        let original = h.app.editor.document.model().clone();
+        h.click(h.point(Point2::new(18., 20.)));
+        h.click(h.point(Point2::new(22., 20.)));
+        assert_eq!(h.app.editor.document.model(), &original);
+        h.number("Depth", "7.5");
+        h.number("Scale 1:", "50");
+        let draft = h
+            .app
+            .plans
+            .section_placement
+            .as_ref()
+            .unwrap()
+            .settings
+            .unwrap();
+        assert_eq!(draft.far_depth, 7.5);
+        assert_eq!(draft.scale_denominator, 50.);
+        h.action("Apply section");
+        let id = h.app.plans.active.unwrap();
+        assert_ne!(id, h.view);
+        h.settle();
+        let saved = h.app.editor.document.model().clone();
+        let history = h.app.editor.document.history_stats().undo_entries;
+        h.action("Section settings");
+        h.number("Crop start", "-1.25");
+        h.number("Top", "6.5");
+        assert_eq!(h.app.editor.document.model(), &saved);
+        h.action("View from right");
+        h.action("Apply section");
+        h.settle();
+        assert_eq!(h.app.plans.active, Some(id));
+        let edited = h.app.editor.document.model().clone();
+        let s = edited.views[&id].parameters.section.unwrap();
+        assert_eq!(s.min_station, -1.25);
+        assert_eq!(s.top_elevation, 6.5);
+        assert_eq!(s.side, os_model::ElevationSide::Right);
+        assert_eq!(
+            h.app.editor.document.history_stats().undo_entries,
+            history + 1
+        );
+        h.app.history(false);
+        assert_eq!(h.app.editor.document.model(), &saved);
+        h.app.history(true);
+        assert_eq!(h.app.editor.document.model(), &edited);
+        h.settle();
+        h.action("Section settings");
+        h.number("Depth", "-2");
+        assert_eq!(h.app.editor.document.model(), &edited);
+        h.frame(vec![escape()]);
+        assert!(h.app.plans.section_placement.is_none());
+        h.app.begin_section_settings(id).unwrap();
+        h.frame(vec![egui::Event::PointerGone]);
+        assert!(h.app.plans.section_placement.is_none());
+        h.app.begin_section_settings(id).unwrap();
+        let mut newer = h.app.editor.document.model().views[&id].parameters.clone();
+        newer.section.as_mut().unwrap().far_depth = 99.;
+        h.app
+            .editor
+            .command(
+                "Newer section definition",
+                Command::UpdateView {
+                    id,
+                    parameters: newer,
+                },
+            )
+            .unwrap();
+        let newest = h.app.editor.document.model().clone();
+        assert!(h.app.commit_section_placement(s.start, s.end).is_err());
+        assert_eq!(h.app.editor.document.model(), &newest);
+        h.frame(vec![]);
+        assert!(h.app.plans.section_placement.is_none());
+        h.settle();
+        for authority in [0, 1, 2] {
+            h.app.begin_section_settings(id).unwrap();
+            let d = h.app.plans.section_placement.as_mut().unwrap();
+            match authority {
+                0 => d.session = Id::new(),
+                1 => d.revision += 1,
+                _ => d.provider_signature.push(("obsolete".into(), Id::new())),
+            }
+            assert!(h.app.commit_section_placement(s.start, s.end).is_err());
+            h.frame(vec![]);
+            assert!(h.app.plans.section_placement.is_none());
+            assert_eq!(h.app.editor.document.model(), &newest);
+        }
+    }
+}
+
+#[test]
 fn section_elevation_bounds_use_building_wall_and_floor_extents() {
     let mut model = os_model::Model::new("section bounds");
     let level_id = *model.levels.keys().next().unwrap();
@@ -300,6 +456,7 @@ fn section_fills_desktop_mesh_precedes_contours_at_two_scales() {
         let material = os_model::Material::new(
             "core.material",
             os_model::MaterialParams {
+                cut_pattern: None,
                 name: "Section fill color".into(),
                 density_kg_m3: 800.,
                 color: [37, 83, 129],

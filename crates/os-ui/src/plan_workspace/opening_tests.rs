@@ -440,6 +440,7 @@ fn direct_plan_door_independent_toggles_preserve_model_and_regenerate_with_histo
                     let panel = os_model::Material::new(
                         "core.material",
                         os_model::MaterialParams {
+                            cut_pattern: None,
                             name: "Door panel".into(),
                             density_kg_m3: 650.,
                             color: [140, 90, 40],
@@ -448,6 +449,7 @@ fn direct_plan_door_independent_toggles_preserve_model_and_regenerate_with_histo
                     let frame = os_model::Material::new(
                         "core.material",
                         os_model::MaterialParams {
+                            cut_pattern: None,
                             name: "Door frame".into(),
                             density_kg_m3: 8000.,
                             color: [100, 110, 120],

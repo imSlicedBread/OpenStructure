@@ -60,6 +60,7 @@ fn add_populated_curtain(model: &mut Model) {
     let glass = Material::new(
         "core.material",
         MaterialParams {
+            cut_pattern: None,
             name: "Curtain glass".into(),
             density_kg_m3: 2500.0,
             color: [145, 190, 220],
@@ -68,6 +69,7 @@ fn add_populated_curtain(model: &mut Model) {
     let aluminum = Material::new(
         "core.material",
         MaterialParams {
+            cut_pattern: None,
             name: "Curtain frame".into(),
             density_kg_m3: 2700.0,
             color: [90, 100, 110],

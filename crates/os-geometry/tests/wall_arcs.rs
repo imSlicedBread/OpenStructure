@@ -29,6 +29,7 @@ fn aperture(sweep: f64, kind: OpeningKind) -> os_geometry::walls::NativeWall {
         let material = Material::new(
             "core.material",
             MaterialParams {
+                cut_pattern: None,
                 name: name.into(),
                 density_kg_m3: density,
                 color: [100, 120, 140],

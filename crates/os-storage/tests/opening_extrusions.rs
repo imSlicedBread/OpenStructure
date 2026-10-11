@@ -15,7 +15,7 @@ fn authored_extrusions_frozen_model_and_package_migration_preserve_old_geometry_
     migrate(&mut migrated, 66).unwrap();
     let model: Model = serde_json::from_value(migrated.clone()).unwrap();
     model.validate().unwrap();
-    assert_eq!(model.schema_version, 67);
+    assert_eq!(model.schema_version, os_model::SCHEMA_VERSION);
     assert_eq!(
         migrated["openings"].as_object().unwrap().len(),
         frozen["openings"].as_object().unwrap().len()
@@ -72,6 +72,7 @@ fn authored_extrusions_archive_package_exact_ids_material_dependencies_and_round
         let mat = Material::new(
             "core.material",
             MaterialParams {
+                cut_pattern: None,
                 name: format!("Solid finish {i}"),
                 density_kg_m3: 7800.,
                 color: [90, 100, i * 40],

@@ -53,6 +53,9 @@ pub fn remove_extrusions(value: &mut Value) {
 
 #[allow(dead_code)]
 pub fn remove_casework(value: &mut Value) {
+    if let Some(patterns) = value.as_object_mut().unwrap().remove("material_patterns") {
+        assert_eq!(patterns, serde_json::json!({}));
+    }
     for key in ["casework_types", "casework"] {
         if let Some(removed) = value.as_object_mut().unwrap().remove(key) {
             assert_eq!(
@@ -127,6 +130,7 @@ pub fn reverse_wall_paths(value: &mut Value) {
 }
 #[allow(dead_code)]
 pub fn apply_wall_paths(value: &mut Value) {
+    value["material_patterns"] = serde_json::json!({});
     value["railings"] = serde_json::json!({});
     value["railing_types"] = serde_json::json!({});
     value["ramps"] = serde_json::json!({});
@@ -282,6 +286,9 @@ pub fn apply_schema_38_defaults(model: &mut Value) {
 
 #[allow(dead_code)]
 pub fn reverse_schema_38_migration(model: &mut Value, original: &Value) {
+    if original.get("material_patterns").is_none() {
+        model.as_object_mut().unwrap().remove("material_patterns");
+    }
     if original["schema_version"].as_u64().is_some_and(|v| v < 54) {
         reverse_wall_paths(model);
     }
