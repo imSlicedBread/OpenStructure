@@ -267,6 +267,18 @@ fn authored_extrusions_owner_material_cross_view_sheet_pdf_save_ifc_and_type_dup
         );
         let material = mat.id();
         e.command("Material", Command::AddMaterial(mat)).unwrap();
+        let parameter = LengthParameter::new(
+            "core.length_parameter",
+            LengthParameterParams {
+                name: "Normal offset".into(),
+                unit: LengthUnit::Metres,
+                value: 0.15,
+                formula: Some("0.1m + 0.05m".into()),
+            },
+        );
+        let pid = parameter.id();
+        e.command("Driver", Command::AddLengthParameter(parameter))
+            .unwrap();
         let mut draft = OpeningTypeDraft::edit(&e, ty).unwrap();
         let mut s = OpeningExtrusion::new("Authored handle/grille");
         if kind == OpeningKind::Window {
@@ -279,10 +291,25 @@ fn authored_extrusions_owner_material_cross_view_sheet_pdf_save_ifc_and_type_dup
         }
         s.material = Some(material);
         s.normal_offset = 0.15;
+        s.bindings.normal_offset = Some(pid);
         let solid_id = s.id;
         let old_host = crate::opening_tools::host_mesh(e.document.model(), host).unwrap();
         draft.family.extrusions.push(s);
         draft.apply(&mut e).unwrap();
+        let old_scene = e.scene[&id].clone();
+        let mut parameters = e.document.model().length_parameters[&pid]
+            .parameters
+            .clone();
+        parameters.formula = Some("0.1m + 0.06m".into());
+        e.command(
+            "Driven offset",
+            Command::UpdateLengthParameter {
+                id: pid,
+                parameters,
+            },
+        )
+        .unwrap();
+        assert_ne!(e.scene[&id], old_scene);
         assert_eq!(
             crate::opening_tools::host_mesh(e.document.model(), host).unwrap(),
             old_host

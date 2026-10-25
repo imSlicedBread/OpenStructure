@@ -22,7 +22,7 @@ fn schema_42_dimension_anchors_frozen_migration_and_roundtrip() {
         .values_mut()
     {
         ty["parameters"]["window_operation"] = json!("Fixed");
-        ty["parameters"]["family"]["version"] = 7.into();
+        ty["parameters"]["family"]["version"] = 10.into();
         ty["parameters"]["family"]["extrusions"] = json!([]);
         ty["parameters"]["family"]["side_lite"] = Value::Null;
     }
@@ -46,17 +46,7 @@ fn schema_42_dimension_anchors_frozen_migration_and_roundtrip() {
         }
     }
     expected["schema_version"] = SCHEMA_VERSION.into();
-    for (key, data) in expected.as_object_mut().unwrap() {
-        if key == "project" {
-            data["header"]["schema_version"] = SCHEMA_VERSION.into();
-        } else if key != "extensions"
-            && let Some(map) = data.as_object_mut()
-        {
-            for entity in map.values_mut().filter(|v| v.get("header").is_some()) {
-                entity["header"]["schema_version"] = SCHEMA_VERSION.into();
-            }
-        }
-    }
+    common::current_native_headers(&mut expected);
     for dimension in expected["dimensions"].as_object_mut().unwrap().values_mut() {
         let p = &mut dimension["parameters"];
         for key in ["first", "second"] {

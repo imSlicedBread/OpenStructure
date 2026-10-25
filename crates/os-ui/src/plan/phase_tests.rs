@@ -480,8 +480,8 @@ fn phase_every_native_category_room_tags_and_stair_paper_strokes_follow_status()
         .insert(separator.id(), separator);
     model.rooms.insert(room.id(), room);
     model.room_tags.insert(tag.id(), tag);
-    // Six lifetimes exercise every native category against each filter. Geometry
-    // remains the same; room enclosure intentionally uses the full-model boundary.
+    // Six lifetimes exercise every native category against each filter. Room
+    // enclosure uses physical topology at the target phase, not graphic visibility.
     let lifetimes = [
         (0, None),
         (1, None),
@@ -525,10 +525,25 @@ fn phase_every_native_category_room_tags_and_stair_paper_strokes_follow_status()
             ] {
                 assert_eq!(count, usize::from(visible), "status {index}, {filter:?}");
             }
+            let mut physical_boundary_ids: std::collections::BTreeSet<_> =
+                [walls[0], walls[1], walls[3]].into_iter().collect();
+            if matches!(index, 0 | 1 | 3) {
+                physical_boundary_ids.insert(ids[5]);
+            }
+            let expected_room_segments = model
+                .room_boundary_segments_at_phase(level, phases[1])
+                .unwrap();
             assert_eq!(
-                s.room_segments,
-                model.room_boundary_segments(level).unwrap(),
-                "room topology is not rebuilt for phases"
+                s.room_segments, expected_room_segments,
+                "physical room topology is independent of {filter:?} graphics"
+            );
+            assert_eq!(
+                s.room_segments
+                    .iter()
+                    .map(|segment| segment.0)
+                    .collect::<std::collections::BTreeSet<_>>(),
+                physical_boundary_ids,
+                "lifecycle case {index}"
             );
             let c = s.context;
             let d = s.derive().unwrap();
@@ -618,4 +633,136 @@ fn phase_every_native_category_room_tags_and_stair_paper_strokes_follow_status()
                 .unwrap();
         }
     }
+}
+
+#[test]
+fn reflected_ceiling_resolves_room_boundaries_at_the_view_phase() {
+    let mut editor = Editor::new().unwrap();
+    let mut model = editor.document.model().clone();
+    let level = *model.levels.keys().next().unwrap();
+    let existing = model.existing_phase().unwrap();
+    let order = model.ordered_phases().last().unwrap().parameters.order + 1;
+    let renovation = new_phase("Renovation", order);
+    let target = renovation.id();
+    model.phases.insert(target, renovation);
+
+    let points = [
+        Point2::new(0.0, 0.0),
+        Point2::new(8.0, 0.0),
+        Point2::new(8.0, 3.0),
+        Point2::new(0.0, 3.0),
+    ];
+    let walls: Vec<_> = (0..4)
+        .map(|index| {
+            let wall = Wall::new(
+                os_walls::WALL_TYPE,
+                WallParams {
+                    name: format!("Room boundary {index}"),
+                    level,
+                    path: WallPath::Straight {
+                        start: points[index],
+                        end: points[(index + 1) % points.len()],
+                    },
+                    thickness: 0.2,
+                    height: 3.0,
+                    material: None,
+                },
+            );
+            model.element_lifecycles.insert(
+                wall.id(),
+                ElementLifecycle {
+                    created_in: existing,
+                    demolished_in: (index == 0).then_some(target),
+                },
+            );
+            model.walls.insert(wall.id(), wall.clone());
+            wall
+        })
+        .collect();
+    let seed = Point2::new(2.0, 1.0);
+    let room_faces =
+        os_geometry::rooms::derive_faces(&model.room_boundary_segments(level).unwrap()).unwrap();
+    let face = room_faces.assign_seed(seed).unwrap();
+    let room = Room::new(
+        "core.room",
+        RoomParams {
+            number: "1".into(),
+            name: "Phase room".into(),
+            level,
+            seed,
+            boundary_signature: face.key.as_signature().to_vec(),
+            floor_finish: None,
+            wall_finish: None,
+            ceiling_finish: None,
+            floor_material: None,
+            wall_material: None,
+            ceiling_material: None,
+        },
+    );
+    let room_id = room.id();
+    model.rooms.insert(room_id, room);
+    model.element_lifecycles.insert(
+        room_id,
+        ElementLifecycle {
+            created_in: existing,
+            demolished_in: None,
+        },
+    );
+    let ceiling = Ceiling::new(
+        "core.ceiling",
+        CeilingParams {
+            name: "Room ceiling".into(),
+            level,
+            material: None,
+            boundary_room: Some(room_id),
+            boundary: face.boundary.clone(),
+            holes: Vec::new(),
+            thickness: 0.12,
+            elevation_offset: 2.55,
+        },
+    );
+    let ceiling_id = ceiling.id();
+    model.ceilings.insert(ceiling_id, ceiling);
+    model.element_lifecycles.insert(
+        ceiling_id,
+        ElementLifecycle {
+            created_in: existing,
+            demolished_in: None,
+        },
+    );
+
+    editor.document = Document::from_model(model).unwrap();
+    let view = editor.create_floor_plan("Phase RCP", level).unwrap();
+    let mut parameters = editor.document.model().views[&view].parameters.clone();
+    let mut settings = PlanSettings::reflected_ceiling();
+    settings.target_phase = Some(existing);
+    parameters.plan = Some(settings);
+    editor
+        .command(
+            "Use existing phase",
+            Command::UpdateView {
+                id: view,
+                parameters,
+            },
+        )
+        .unwrap();
+    assert_eq!(editor.plan_snapshot(view).unwrap().ceilings.len(), 1);
+
+    let mut parameters = editor.document.model().views[&view].parameters.clone();
+    parameters.plan.as_mut().unwrap().target_phase = Some(target);
+    editor
+        .command(
+            "Use renovation phase",
+            Command::UpdateView {
+                id: view,
+                parameters,
+            },
+        )
+        .unwrap();
+    assert!(editor.plan_snapshot(view).unwrap().ceilings.is_empty());
+    assert!(
+        walls
+            .iter()
+            .all(|wall| editor.document.model().walls.contains_key(&wall.id()))
+    );
 }

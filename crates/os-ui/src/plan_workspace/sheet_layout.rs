@@ -71,6 +71,16 @@ impl Draft {
             width_mm: 100.0,
             height_mm: 65.0,
             scale_denominator: context.scale_denominator,
+            detail_number: (1..)
+                .map(|n| n.to_string())
+                .find(|n| {
+                    !self
+                        .parameters
+                        .viewports
+                        .iter()
+                        .any(|v| &v.detail_number == n)
+                })
+                .unwrap(),
             title_override: None,
         });
         self.selected = Some(id);
@@ -251,6 +261,49 @@ impl Draft {
 }
 
 impl DesktopApp {
+    fn move_sheet_viewport(&mut self, source: Id, target: Id, viewport: Id) -> Result<()> {
+        let mut from = Draft::new(&self.editor, source);
+        let mut to = Draft::new(&self.editor, target);
+        let index = from
+            .parameters
+            .viewports
+            .iter()
+            .position(|v| v.id == viewport)
+            .ok_or_else(|| Error::Invalid("placement missing".into()))?;
+        let mut placement = from.parameters.viewports.remove(index);
+        if to.parameters.viewports.iter().any(|v| {
+            v.detail_number
+                .trim()
+                .eq_ignore_ascii_case(placement.detail_number.trim())
+        }) {
+            placement.detail_number = (1..)
+                .map(|n| n.to_string())
+                .find(|n| {
+                    !to.parameters
+                        .viewports
+                        .iter()
+                        .any(|v| v.detail_number.trim().eq_ignore_ascii_case(n))
+                })
+                .unwrap();
+        }
+        to.parameters.viewports.push(placement);
+        // Keep the exact paper placement. User resolves overlaps on the destination
+        // first; moving never silently rearranges existing viewports.
+        to.validate(&self.editor)?;
+        self.editor.commands(
+            "Move sheet placement",
+            vec![
+                Command::UpdateSheet {
+                    id: source,
+                    parameters: from.parameters,
+                },
+                Command::UpdateSheet {
+                    id: target,
+                    parameters: to.parameters,
+                },
+            ],
+        )
+    }
     fn apply_sheet_draft(&mut self, draft: &Draft) -> Result<()> {
         os_core::ensure(
             draft.current(&self.editor, self.plans.active_sheet),
@@ -287,6 +340,7 @@ impl DesktopApp {
         let mut cancel = ui.input(|i| i.key_pressed(egui::Key::Escape));
         let mut apply = false;
         let mut navigate = None;
+        let mut move_to_sheet = None;
         let views: Vec<_> = self
             .editor
             .document
@@ -372,6 +426,31 @@ impl DesktopApp {
                     .retain(|v| Some(v.id) != draft.selected);
                 draft.selected = draft.parameters.viewports.first().map(|v| v.id);
             }
+            ui.add_enabled_ui(
+                !draft.dirty()
+                    && draft
+                        .parameters
+                        .viewports
+                        .iter()
+                        .any(|v| Some(v.id) == draft.selected),
+                |ui| {
+                    ui.menu_button("Move placement to sheet", |ui| {
+                        for target in self
+                            .editor
+                            .document
+                            .model()
+                            .sheets
+                            .values()
+                            .filter(|s| s.id() != sheet)
+                        {
+                            if ui.button(&target.parameters.number).clicked() {
+                                move_to_sheet = Some(target.id());
+                                ui.close();
+                            }
+                        }
+                    });
+                },
+            );
             if let Some(v) = draft
                 .parameters
                 .viewports
@@ -389,6 +468,7 @@ impl DesktopApp {
                     os_model::ViewKind::Section => "Edit source section",
                     os_model::ViewKind::Elevation => "Edit source elevation",
                     os_model::ViewKind::Facade => "Edit source facade",
+                    os_model::ViewKind::Drafting => "Edit source drafting view",
                     _ => "Edit source plan",
                 };
                 if ui.button(label).clicked() {
@@ -402,6 +482,8 @@ impl DesktopApp {
                 );
                 ui.label("Title");
                 let mut title = v.title_override.clone().unwrap_or_default();
+                ui.label("Detail number");
+                ui.text_edit_singleline(&mut v.detail_number);
                 if ui
                     .add(
                         egui::TextEdit::singleline(&mut title)
@@ -489,6 +571,7 @@ impl DesktopApp {
                     .char_limit(1024),
             );
         });
+        ui.add_enabled_ui(!draft.dirty(), |ui| self.drawing_issues_ui(ui));
         let page = draft
             .validate(&self.editor)
             .and_then(|()| self.sheet_page_for(&draft.parameters));
@@ -529,6 +612,11 @@ impl DesktopApp {
         draft.canvas(&response, &painter);
         if draft.dirty() {
             self.plans.pending_pdf = None;
+        }
+        if let Some(target) = move_to_sheet {
+            let result = self.move_sheet_viewport(sheet, target, draft.selected.unwrap());
+            self.report(result, "Placement moved; drawing references updated.");
+            cancel = true;
         }
         if apply {
             let result = self.apply_sheet_draft(&draft);

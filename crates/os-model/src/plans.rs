@@ -161,6 +161,9 @@ pub struct PlanSettings {
     pub range: PlanViewRange,
     pub basis: PlanViewBasis,
     pub crop: Option<PlanViewCrop>,
+    /// Optional annotation boundary in the same view plane; contains the model crop.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub annotation_crop: Option<PlanViewCrop>,
     /// Paper/model ratio 1:N, distinct from navigation zoom and screen DPI.
     pub scale_denominator: f64,
     pub visibility: PlanVisibility,
@@ -175,6 +178,7 @@ impl Default for PlanSettings {
             range: PlanViewRange::default(),
             basis: PlanViewBasis::default(),
             crop: None,
+            annotation_crop: None,
             scale_denominator: 100.0,
             visibility: PlanVisibility::default(),
         }
@@ -237,6 +241,33 @@ impl PlanSettings {
                     && (crop.max.x - crop.min.x).is_finite()
                     && (crop.max.y - crop.min.y).is_finite(),
                 "invalid plan crop",
+            )?;
+        }
+        if let Some(annotation) = self.annotation_crop {
+            ensure(
+                self.view_type == PlanViewType::FloorPlan,
+                "annotation crop is supported only on floor plans",
+            )?;
+            let model = self.crop.ok_or_else(|| {
+                os_core::Error::Invalid(
+                    "annotation crop requires a finite rectangular model crop".into(),
+                )
+            })?;
+            ensure(
+                annotation.min.is_finite()
+                    && annotation.max.is_finite()
+                    && annotation.max.x - annotation.min.x > 1e-9
+                    && annotation.max.y - annotation.min.y > 1e-9
+                    && (annotation.max.x - annotation.min.x).is_finite()
+                    && (annotation.max.y - annotation.min.y).is_finite(),
+                "annotation crop must be a finite rectangle with positive spans",
+            )?;
+            ensure(
+                annotation.min.x <= model.min.x
+                    && annotation.min.y <= model.min.y
+                    && annotation.max.x >= model.max.x
+                    && annotation.max.y >= model.max.y,
+                "annotation crop must contain the model crop; expand the annotation crop first",
             )?;
         }
         ensure(

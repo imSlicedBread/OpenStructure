@@ -21,11 +21,18 @@ and paper line weight plus the fixed 3 mm dash / 1.5 mm gap are retained in shee
 output. Unbound views keep their legacy appearance, and selection accents remain
 visible instead of being hidden by standards.
 
+Live [rule-based graphics](native-plan-graphics-rules.md) resolve after phase
+graphics and before explicit element overrides. Both survive template changes.
+Per-element stroke overrides are a separate view-scoped layer. They do not
+change or depend on a plan's template binding. See
+[per-element plan graphics](native-plan-element-overrides.md).
+
 This remains a bounded native-plan graphics slice, not a complete graphics
 system. Host-wall apertures use the wall category; door/window categories style
-their plan symbols. There are no element/filter overrides, apply-once or batch
-assignment, transfer between projects, hatches, monochrome output, or section
-graphics. Native-window and physical-print qualification are still outstanding.
+their plan symbols. Broader rule effects/libraries, apply-once or batch assignment,
+transfer between projects, hatches, monochrome output, and section graphics are
+not implemented. Native-window and physical-print qualification are still
+outstanding.
 
 Focused evidence includes the linked-template settings/history/reopen test,
 native wall/door/window/slab appearance mapping, a two-scale egui dash/phase

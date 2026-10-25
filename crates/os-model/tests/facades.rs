@@ -26,6 +26,7 @@ fn facade_settings_validate_world_basis_depth_version_and_strict_fields() {
     value["origin"]["z"] = 1.into();
     assert!(serde_json::from_value::<FacadeViewSettings>(value).is_err());
     let mut p = ViewParams {
+        drafting: None,
         name: "Facade".into(),
         kind: ViewKind::Facade,
         level: Some(Id::new()),

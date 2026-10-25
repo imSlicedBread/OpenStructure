@@ -17,6 +17,7 @@ pub(super) struct Draft {
     revision: u64,
     providers: Vec<(String, Id)>,
     drawing: Option<Id>,
+    camera: Option<(PlanCamera, egui::Rect)>,
     entity: Option<Id>,
     mode: Mode,
     original: Option<DetailLineParams>,
@@ -39,6 +40,7 @@ impl Draft {
             revision: editor.document.revision(),
             providers: plan_provider_signature(editor),
             drawing: None,
+            camera: None,
             entity: None,
             mode: Mode::Create,
             original: None,
@@ -52,7 +54,7 @@ impl Draft {
         active != Some(self.context.view_id)
             || editor.document.session_id() != self.session_id
             || editor.document.revision() != self.revision
-            || editor.native_plan_context(self.context.view_id).ok() != Some(self.context)
+            || editor.native_view_context(self.context.view_id).ok() != Some(self.context)
             || plan_provider_signature(editor) != self.providers
     }
 }
@@ -62,10 +64,20 @@ impl DesktopApp {
         let Some(context) = self
             .plans
             .active
-            .and_then(|id| self.editor.native_plan_context(id).ok())
+            .and_then(|id| self.editor.native_view_context(id).ok())
         else {
             return;
         };
+        if !matches!(
+            self.editor.document.model().views[&context.view_id]
+                .parameters
+                .kind,
+            os_model::ViewKind::Plan | os_model::ViewKind::Section | os_model::ViewKind::Drafting
+        ) {
+            return;
+        }
+        self.plans.text_notes.draft = None;
+        self.plans.section_dimension = None;
         self.cancel_plan_wall();
         self.cancel_aligned_dimension();
         self.cancel_opening_placement();
@@ -137,7 +149,7 @@ fn handles(
         .into_iter()
         .filter_map(|(mode, world)| {
             let plane = context.basis.world_to_plane(world).ok()?;
-            if !point_in_plan_crop(context, plane) {
+            if !point_in_annotation_crop(context, plane) {
                 return None;
             }
             let p = camera.project(plane, size).ok()?;
@@ -166,6 +178,7 @@ pub(super) fn input(
     let pointer = ctx.input(|i| i.pointer.interact_pos());
     if draft.as_ref().is_some_and(|d| {
         d.stale(editor, Some(context.view_id))
+            || d.camera.is_some_and(|saved| saved != (camera, rect))
             || d.drawing.is_some_and(|id| id != drawing.identity())
             || d.entity.is_some_and(|id| {
                 !drawing
@@ -220,6 +233,7 @@ pub(super) fn input(
             d.original = Some(line.parameters.clone());
             d.origin = Some(pos);
             d.drawing = Some(drawing.identity());
+            d.camera = Some((camera, rect));
             d.anchor = camera
                 .unproject(local(pos, rect), size)
                 .ok()
@@ -231,6 +245,7 @@ pub(super) fn input(
     let d = draft.as_mut()?;
     if response.contains_pointer() && ctx.input(|i| i.pointer.primary_pressed()) {
         *claimed = true;
+        d.camera = Some((camera, rect));
     }
     d.moved |= d
         .origin
@@ -283,7 +298,7 @@ pub(super) fn input(
             .candidate(context, query)
             .ok()?
             .map_or(plane, |c| c.point);
-        if !point_in_plan_crop(context, plane) {
+        if !point_in_annotation_crop(context, plane) {
             return None;
         }
         context.basis.plane_to_world(plane).ok()
@@ -353,7 +368,12 @@ pub(super) fn paint(
         * context.scale_denominator
         / 1000.0)
         .clamp(1.0, 8.0) as f32;
-    for line in drawing.detail_lines(context).unwrap_or_default() {
+    for line in drawing
+        .detail_lines(context)
+        .unwrap_or_default()
+        .iter()
+        .filter(|_| context.annotation_crop.is_none())
+    {
         if let (Some(a), Some(b)) = (screen(line.start), screen(line.end)) {
             painter.line_segment([a, b], egui::Stroke::new(width, egui::Color32::BLACK));
         }

@@ -3,6 +3,7 @@ use super::*;
 use crate::plan_gesture::WallGesture;
 use os_core::ensure;
 use os_model::{DoorSwing, Model, WindowPanePosition};
+mod assembly;
 mod split;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -26,6 +27,8 @@ pub(super) struct Draft {
     pub axis: Option<Point2>,
     pressed: bool,
     split_id: Id,
+    assembly: Option<super::wall_set_move::Draft>,
+    ids: BTreeSet<Id>,
 }
 
 pub(super) struct Candidate {
@@ -35,6 +38,9 @@ pub(super) struct Candidate {
 
 impl Draft {
     pub fn begin(app: &DesktopApp, mode: Mode) -> Result<Self> {
+        if app.selected_ids.len() > 1 && matches!(mode, Mode::Rotate | Mode::Mirror) {
+            return Self::begin_assembly(app, mode);
+        }
         ensure(
             app.selected_ids.len() == 1,
             "Select exactly one native wall",
@@ -53,6 +59,10 @@ impl Draft {
             .as_ref()
             .ok_or_else(|| Error::Invalid("Wait for the plan drawing".into()))?;
         let model = app.editor.document.model();
+        ensure(
+            model.group_instance_for_member(id).is_none(),
+            "Grouped walls are locked; use Duplicate group or Ungroup",
+        )?;
         let wall = model
             .walls
             .get(&id)
@@ -112,7 +122,7 @@ impl Draft {
             !app.editor.plugin_work_pending(),
             "Finish or cancel the pending plugin command",
         )?;
-        Self::provider_compatible(model, id, mode, installed)?;
+        Self::provider_compatible(model, id, mode, installed, 1)?;
         #[cfg(feature = "external-plugins")]
         let adapter = if installed {
             WallGesture::begin_edit_installed(&app.editor, view, id, WallEdit::Move)?
@@ -140,10 +150,22 @@ impl Draft {
             axis: None,
             pressed: false,
             split_id: Id::new(),
+            assembly: None,
+            ids: app.selected_ids.clone(),
         })
     }
 
-    fn provider_compatible(model: &Model, id: Id, mode: Mode, installed: bool) -> Result<()> {
+    fn provider_compatible(
+        model: &Model,
+        id: Id,
+        mode: Mode,
+        installed: bool,
+        count: usize,
+    ) -> Result<()> {
+        ensure(
+            !installed || count == 1,
+            "Wall assembly transforms require atomic native support; the installed Wall provider cannot submit this batch",
+        )?;
         ensure(
             !(installed && mode == Mode::Split),
             "Split requires the native Wall provider for an atomic transaction",
@@ -167,6 +189,9 @@ impl Draft {
     }
 
     pub fn current(&self, app: &DesktopApp) -> bool {
+        if let Some(assembly) = &self.assembly {
+            return assembly.current(app);
+        }
         self.adapter.current(&app.editor, app.plans.active)
             && app.plans.active_sheet.is_none()
             && app.selected == Some(self.id)
@@ -185,6 +210,9 @@ impl Draft {
 
     pub fn candidate(&self, point: Point2) -> Result<Candidate> {
         ensure(point.is_finite(), "Invalid transform point")?;
+        if self.assembly.is_some() {
+            return self.assembly_candidate(point);
+        }
         if self.mode == Mode::Split {
             return self.split_candidate(point);
         }
@@ -288,47 +316,7 @@ impl Draft {
             parameters: wall,
         }];
         if self.mode == Mode::Mirror {
-            if let Some(mut assignment) = self.original.wall_type_assignments.get(&self.id).copied()
-            {
-                assignment.flipped = !assignment.flipped;
-                commands.push(Command::AssignWallType {
-                    wall: self.id,
-                    assignment: Some(assignment),
-                });
-            }
-            for opening in self
-                .original
-                .openings
-                .values()
-                .filter(|o| o.parameters.host == self.id)
-            {
-                let resolved = self.original.resolve_opening(&opening.parameters)?;
-                let mut parameters = opening.parameters.clone();
-                // Reflection preserves endpoint identity and axial stations. Keep
-                // lite-side inheritance/pins: Start remains the reflected Start bay.
-                if resolved.kind == OpeningKind::Door {
-                    parameters.swing = match parameters.swing {
-                        DoorSwing::Left => DoorSwing::Right,
-                        DoorSwing::Right => DoorSwing::Left,
-                    };
-                } else if resolved.type_id.is_some() {
-                    match resolved.pane_position {
-                        WindowPanePosition::LeftFace => {
-                            parameters.pane_position_override = Some(WindowPanePosition::RightFace)
-                        }
-                        WindowPanePosition::RightFace => {
-                            parameters.pane_position_override = Some(WindowPanePosition::LeftFace)
-                        }
-                        WindowPanePosition::Center => continue,
-                    }
-                } else {
-                    continue;
-                }
-                commands.push(Command::UpdateOpening {
-                    id: opening.id(),
-                    parameters,
-                });
-            }
+            assembly::mirror_dependents(&self.original, self.id, &mut commands)?;
         }
         // Use precisely the document transaction validator on an isolated model.
         let mut candidate = Document::from_model(self.original.clone())?;
@@ -354,10 +342,13 @@ impl Draft {
         if candidate.model == self.original {
             return Ok(());
         }
+        if self.assembly.is_some() {
+            return self.commit_assembly(app, candidate);
+        }
         let parameters = candidate.model.walls[&self.id].parameters.clone();
         #[cfg(feature = "external-plugins")]
         if self.adapter.is_installed() {
-            Self::provider_compatible(&self.original, self.id, self.mode, true)?;
+            Self::provider_compatible(&self.original, self.id, self.mode, true, 1)?;
             let (draft, context, view) =
                 self.adapter
                     .installed_parameters(&app.editor, app.plans.active, parameters)?;
@@ -386,6 +377,12 @@ impl Draft {
         camera: PlanCamera,
         rect: egui::Rect,
     ) -> Result<()> {
+        if self.assembly.is_some() {
+            for &id in &self.ids {
+                self.paint_wall(candidate, painter, camera, rect, id)?;
+            }
+            return Ok(());
+        }
         self.paint_wall(candidate, painter, camera, rect, self.id)?;
         if self.mode == Mode::Split {
             self.paint_wall(candidate, painter, camera, rect, self.split_id)?;
@@ -441,8 +438,29 @@ impl Draft {
 #[test]
 fn wall_split_installed_provider_requires_native_atomic_batch() {
     let model = Model::new("Provider guard");
-    assert!(Draft::provider_compatible(&model, Id::new(), Mode::Split, true).is_err());
-    assert!(Draft::provider_compatible(&model, Id::new(), Mode::Split, false).is_ok());
+    assert!(Draft::provider_compatible(&model, Id::new(), Mode::Split, true, 1).is_err());
+    assert!(Draft::provider_compatible(&model, Id::new(), Mode::Split, false, 1).is_ok());
+}
+
+#[test]
+fn wall_assembly_transform_installed_provider_requires_atomic_batch() {
+    let model = Model::new("Provider guard");
+    for mode in [Mode::Rotate, Mode::Mirror] {
+        for count in [2, 64] {
+            let error =
+                Draft::provider_compatible(&model, Id::new(), mode, true, count).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("installed Wall provider cannot submit this batch")
+            );
+            assert!(Draft::provider_compatible(&model, Id::new(), mode, false, count).is_ok());
+        }
+        assert!(
+            Draft::provider_compatible(&model, Id::new(), mode, true, 1).is_ok(),
+            "compatible single-wall installed transforms keep their existing path"
+        );
+    }
 }
 
 /// Treat axes within 1e-8 radians as parallel (including antiparallel).
@@ -591,10 +609,13 @@ impl DesktopApp {
             .input(|i| i.pointer.interact_pos())
             .filter(|p| response.contains_pointer() && rect.contains(*p));
         let point = pointer.and_then(|p| {
-            camera
-                .unproject(
-                    Point2::new(f64::from(p.x - rect.left()), f64::from(p.y - rect.top())),
+            draft
+                .target(
+                    self.plans.drawing.as_ref()?,
+                    camera,
                     [f64::from(rect.width()), f64::from(rect.height())],
+                    Point2::new(f64::from(p.x - rect.left()), f64::from(p.y - rect.top())),
+                    self.plans.snaps,
                 )
                 .ok()
         });
@@ -618,6 +639,12 @@ impl DesktopApp {
         let prompt = match draft.mode {
             Mode::Split => "Split: click an interior station on the selected wall. Escape cancels.",
             Mode::Align => "Align centerlines: click a parallel reference wall. Escape cancels.",
+            Mode::Rotate if draft.assembly.is_some() && draft.axis.is_none() => {
+                "Rotate walls: click the pivot. Escape cancels."
+            }
+            Mode::Rotate if draft.assembly.is_some() => {
+                "Rotate walls: point toward the primary wall's new direction. Exact degrees: Snaps → Wall transforms."
+            }
             Mode::Rotate => {
                 "Rotate about midpoint: point toward the new end and release. Exact degrees: Snaps → Wall transforms."
             }
@@ -640,7 +667,8 @@ impl DesktopApp {
         if draft.pressed && ctx.input(|i| i.pointer.primary_released()) {
             draft.pressed = false;
             if let Some(point) = point {
-                if draft.mode == Mode::Mirror && draft.axis.is_none() {
+                if (draft.mode == Mode::Mirror || draft.assembly.is_some()) && draft.axis.is_none()
+                {
                     draft.axis = Some(point);
                 } else {
                     let result = draft.commit(self, point);

@@ -71,6 +71,35 @@ impl RoomParams {
 }
 
 impl Model {
+    /// Physical room boundaries at an explicit project phase, sorted by UUID.
+    /// Existing, new and temporary boundaries enclose space; demolished, future
+    /// and previously demolished boundaries do not. This deliberately does not
+    /// accept a graphic `PhaseFilter`: drawing visibility cannot change topology.
+    /// Invalid phase/lifecycle references or ordering are errors, not empty rooms.
+    pub fn room_boundary_segments_at_phase(
+        &self,
+        level: Id,
+        target: Id,
+    ) -> Result<Vec<(Id, Point2, Point2)>> {
+        self.validate_phases()?;
+        ensure(
+            self.phases.contains_key(&target),
+            "room boundary phase reference is missing",
+        )?;
+        let mut segments = Vec::new();
+        for segment in self.room_boundary_segments(level)? {
+            if matches!(
+                self.phase_status(segment.0, target)?,
+                crate::PhaseStatus::Existing
+                    | crate::PhaseStatus::New
+                    | crate::PhaseStatus::Temporary
+            ) {
+                segments.push(segment);
+            }
+        }
+        Ok(segments)
+    }
+
     /// Native same-level wall centerlines and room-separation lines, sorted by UUID. Pass directly to
     /// `os_geometry::rooms::derive_faces`. Crop, visibility, elevation, thickness
     /// and hosted apertures are deliberately absent from this derivation input.

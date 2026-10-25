@@ -144,7 +144,7 @@ mod tests {
             (0.15, Some(PlanRole::Projected)),
             (0.8, Some(PlanRole::Cut)),
             (-1.0, Some(PlanRole::Depth)),
-            (1.3, None),
+            (1.3, Some(PlanRole::Overhead)),
             (-3.0, None),
         ] {
             parameters.base_offset = offset;

@@ -164,6 +164,62 @@ fn phase_settings_reject_inflight_provider_output_and_keep_generic_graphics_unph
 }
 
 #[test]
+fn rule_edits_revoke_inflight_results_without_styling_generic_provider_lines() {
+    use os_model::*;
+    let (mut editor, view, id, _) = setup();
+    let prepared = editor
+        .prepare_provider_plan(view, vec![graphics(&editor, view, id)])
+        .unwrap();
+    let style = PlanStrokeStyle {
+        color: [255, 0, 0],
+        weight_mm: 1.5,
+        pattern: PlanLinePattern::Dashed,
+    };
+    let rules = [
+        PlanRuleCategory::Walls,
+        PlanRuleCategory::Doors,
+        PlanRuleCategory::Windows,
+        PlanRuleCategory::Slabs,
+    ]
+    .into_iter()
+    .map(|category| PlanGraphicsRule {
+        id: Id::new(),
+        name: "Match all native names".into(),
+        enabled: true,
+        category,
+        predicates: vec![PlanGraphicsPredicate::Text {
+            field: PlanRuleTextField::InstanceName,
+            op: PlanRuleTextOp::Contains,
+            value: String::new(),
+        }],
+        cut: (category != PlanRuleCategory::Slabs).then_some(style),
+        projected: Some(style),
+    })
+    .collect();
+    editor
+        .command(
+            "Native graphics rules",
+            os_document::Command::SetPlanGraphicsRules { view, rules },
+        )
+        .unwrap();
+    assert!(prepared.derive().unwrap().drawing(&editor, view).is_err());
+    let fresh = editor
+        .plan_with_provider_graphics(view, vec![graphics(&editor, view, id)])
+        .unwrap();
+    let drawing = fresh.drawing(&editor, view).unwrap();
+    let context = editor.native_plan_context(view).unwrap();
+    let line = drawing
+        .provider_lines(context)
+        .unwrap()
+        .iter()
+        .find(|line| line.entity == id)
+        .unwrap();
+    assert_eq!(drawing.line_appearance(context, line).unwrap(), None);
+    assert_eq!(line.start, Point2::new(2., 0.));
+    assert_eq!(line.end, Point2::new(8., 0.));
+}
+
+#[test]
 fn checked_provider_results_compose_clipped_lines_and_snaps_without_retransforming() {
     let (editor, view, id, missing) = setup();
     let before = editor.document.model().clone();

@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 
 fn context() -> PlanContext {
     PlanContext {
+        annotation_crop: None,
         session_id: Id::new(),
         model_revision: 0,
         view_id: Id::new(),
@@ -335,6 +336,7 @@ fn stale_context_and_invalid_candidates_cannot_be_consumed() {
             ..context
         },
         PlanContext {
+            annotation_crop: None,
             session_id: Id::new(),
             ..context
         },
@@ -824,6 +826,7 @@ fn concave_floor_fill_picking_and_crop_are_context_bound() {
     .to_vec();
     let floor = PlanFloorItem {
         entity: Id::new(),
+        role: PlanRole::Projected,
         area_m2: 5.0,
         triangles: os_geometry::floors::triangulate_floor(&boundary).unwrap(),
         vertices: boundary.clone(),
@@ -885,6 +888,7 @@ fn floor_openings_are_excluded_from_plan_fill_and_picking() {
         os_geometry::floor_holes::triangulate_floor_rings(&boundary, &holes).unwrap();
     let floor = PlanFloorItem {
         entity: Id::new(),
+        role: PlanRole::Projected,
         boundary,
         holes,
         vertices: triangulation.vertices,

@@ -111,6 +111,7 @@ fn material_pattern_dependencies_transfer_and_legacy_v6_defaults_are_strict() {
     );
     let mut legacy = valid_json();
     legacy["version"] = 6.into();
+    legacy["parameters"]["family"]["version"] = 7.into();
     legacy.as_object_mut().unwrap().remove("material_patterns");
     let imported = parse_opening_type_package(&serde_json::to_vec(&legacy).unwrap()).unwrap();
     assert!(imported.material_patterns.is_empty());
@@ -377,14 +378,19 @@ fn byte_and_path_limits_allow_exact_boundary_and_reject_one_byte_over() {
 #[test]
 fn rejects_corrupt_duplicate_escaped_duplicate_and_deep_json() {
     let raw = serde_json::to_string(&valid_json()).unwrap();
+    let version_field = format!("\"version\":{}", os_storage::OPENING_TYPE_PACKAGE_VERSION);
     for bytes in [
         Vec::new(),
         b"{broken".to_vec(),
         vec![0xff],
         b"null".to_vec(),
         format!("{raw} {{}}").into_bytes(),
-        raw.replacen("\"version\":7", "\"version\":7,\"version\":7", 1)
-            .into_bytes(),
+        raw.replacen(
+            &version_field,
+            &format!("{version_field},{version_field}"),
+            1,
+        )
+        .into_bytes(),
         raw.replacen(
             "\"density_kg_m3\":720.0",
             "\"density_kg_m3\":720.0,\"density_kg_m3\":720.0",

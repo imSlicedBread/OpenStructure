@@ -14,7 +14,9 @@ pub const MAX_SHEET_MARKS: usize = 100_000;
 pub const MAX_SHEET_POINTS: usize = 1_000_000;
 const MAX_PDF_BYTES: usize = 64 * 1024 * 1024;
 const MM_TO_PT: f64 = 72.0 / 25.4;
+mod annotations;
 mod tables;
+pub use annotations::{AnnotationGraphic, AnnotationKind, annotation_graphics};
 pub use tables::{PaperTable, append_schedule_table};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -281,31 +283,37 @@ impl SheetPage {
     /// Write a single vector PDF page using the PDF-standard Helvetica font.
     /// Non-WinAnsi text is rejected rather than silently transliterated.
     pub fn to_pdf(&self) -> Result<Vec<u8>> {
-        self.validate()?;
-        let content = self.content_stream()?;
+        Self::ordered_pdf(std::slice::from_ref(self))
+    }
+
+    /// A bounded, ordered vector document with one page tree and shared font.
+    pub fn ordered_pdf(pages: &[Self]) -> Result<Vec<u8>> {
         ensure(
-            content.len() <= MAX_PDF_BYTES,
-            "sheet PDF exceeds output limit",
+            !pages.is_empty() && pages.len() <= 100,
+            "issue requires 1-100 pages",
         )?;
-        let width = self.width_mm * MM_TO_PT;
-        let height = self.height_mm * MM_TO_PT;
-        let objects = [
+        let kids = (0..pages.len())
+            .map(|i| format!("{} 0 R", 4 + i * 2))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let mut objects = vec![
             b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
-            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
-            format!(
-                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {:.6} {:.6}] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>",
-                width, height
-            )
-            .into_bytes(),
-            {
-                let mut stream = format!("<< /Length {} >>\nstream\n", content.len()).into_bytes();
-                stream.extend_from_slice(&content);
-                stream.extend_from_slice(b"endstream");
-                stream
-            },
+            format!("<< /Type /Pages /Kids [{kids}] /Count {} >>", pages.len()).into_bytes(),
             b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>"
                 .to_vec(),
         ];
+        let mut total = 0usize;
+        for (i, page) in pages.iter().enumerate() {
+            page.validate()?;
+            let content = page.content_stream()?;
+            total = total.saturating_add(content.len());
+            ensure(total <= MAX_PDF_BYTES, "issue PDF exceeds output limit")?;
+            objects.push(format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {:.6} {:.6}] /Resources << /Font << /F1 3 0 R >> >> /Contents {} 0 R >>",page.width_mm * MM_TO_PT,page.height_mm * MM_TO_PT,5+i*2).into_bytes());
+            let mut stream = format!("<< /Length {} >>\nstream\n", content.len()).into_bytes();
+            stream.extend_from_slice(&content);
+            stream.extend_from_slice(b"endstream");
+            objects.push(stream);
+        }
         let mut output = b"%PDF-1.4\n%OpenStructure\n".to_vec();
         let mut offsets = Vec::with_capacity(objects.len() + 1);
         offsets.push(0usize);
@@ -405,6 +413,22 @@ pub fn compose_sheet_views(
     paper: PaperSheetInfo<'_>,
     views: &[(&str, PaperViewport, PlanContext, &PlanDrawing)],
 ) -> Result<SheetPage> {
+    compose_sheet_views_checked(paper, views, false)
+}
+
+/// Checks visible geometry before viewport clipping. Source crops remain intentional.
+pub fn compose_issue_sheet_views(
+    paper: PaperSheetInfo<'_>,
+    views: &[(&str, PaperViewport, PlanContext, &PlanDrawing)],
+) -> Result<SheetPage> {
+    compose_sheet_views_checked(paper, views, true)
+}
+
+fn compose_sheet_views_checked(
+    paper: PaperSheetInfo<'_>,
+    views: &[(&str, PaperViewport, PlanContext, &PlanDrawing)],
+    strict: bool,
+) -> Result<SheetPage> {
     ensure(
         (1..=64).contains(&views.len()),
         "sheet requires one to 64 viewports",
@@ -412,7 +436,7 @@ pub fn compose_sheet_views(
     let mut marks = Vec::new();
     for (index, (title, viewport, context, drawing)) in views.iter().enumerate() {
         let rect = viewport.paper_rect()?;
-        if views.len() == 1 {
+        if views.len() == 1 && !strict {
             // Preserve the original single-viewport renderer contract. The
             // reserved title-block layout applies to the new combined-sheet
             // composition; existing callers may intentionally use the full page.
@@ -447,13 +471,58 @@ pub fn compose_sheet_views(
             drawing,
             index,
             views.len(),
+            strict,
         )?;
         marks.extend(page.marks);
         ensure(marks.len() <= MAX_SHEET_MARKS, "sheet mark budget exceeded")?;
     }
+    if strict {
+        for mark in &marks {
+            if matches!(mark.kind, PaperMarkKind::Text { .. }) {
+                ensure_mark_fits(
+                    mark,
+                    mark.clip.unwrap_or(PaperRect {
+                        min_mm: Point2::new(8.0, paper.height_mm - 48.0),
+                        max_mm: Point2::new(paper.width_mm - 8.0, paper.height_mm - 8.0),
+                    }),
+                )?;
+            }
+        }
+    }
     SheetPage::new(paper.width_mm, paper.height_mm, marks)
 }
 
+fn ensure_mark_fits(mark: &PaperMark, rect: PaperRect) -> Result<()> {
+    let fits = match &mark.kind {
+        PaperMarkKind::Path {
+            points_mm, stroke, ..
+        } => {
+            let half = stroke.as_ref().map_or(0.0, |s| s.width_mm / 2.0);
+            points_mm.iter().all(|p| {
+                rect.contains(Point2::new(p.x - half, p.y - half))
+                    && rect.contains(Point2::new(p.x + half, p.y + half))
+            })
+        }
+        PaperMarkKind::Text {
+            baseline_mm,
+            text,
+            size_mm,
+            ..
+        } => {
+            rect.contains(Point2::new(baseline_mm.x, baseline_mm.y - size_mm))
+                && rect.contains(Point2::new(
+                    baseline_mm.x + text.chars().count() as f64 * size_mm * 1.05,
+                    baseline_mm.y + size_mm * 0.5,
+                ))
+        }
+    };
+    ensure(
+        fits,
+        "issue blocked: drawing or text clips/overflows its allocated paper area",
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
 fn compose_view_marks(
     paper: PaperSheetInfo<'_>,
     viewport_title: &str,
@@ -462,6 +531,7 @@ fn compose_view_marks(
     drawing: &PlanDrawing,
     index: usize,
     count: usize,
+    strict: bool,
 ) -> Result<SheetPage> {
     ensure(
         !paper.number.trim().is_empty()
@@ -488,7 +558,14 @@ fn compose_view_marks(
             unavailable.len()
         ),
     )?;
-    let model_bounds = intersect_crop(context.crop, Some(viewport.model_bounds()?));
+    let model_bounds = if strict {
+        Some(context.crop.unwrap_or(PlanCrop {
+            min: Point2::new(-1e9, -1e9),
+            max: Point2::new(1e9, 1e9),
+        }))
+    } else {
+        intersect_crop(context.crop, Some(viewport.model_bounds()?))
+    };
     let mut marks = Vec::new();
     let clip = Some(viewport_rect);
     if let Some(bounds) = model_bounds {
@@ -588,7 +665,7 @@ fn compose_view_marks(
                 bounds,
                 viewport,
                 clip,
-                drawing.appearance(context, floor.entity, PlanRole::Projected)?,
+                drawing.appearance(context, floor.entity, floor.role)?,
             )?;
         }
         for ceiling in drawing.ceilings(context)? {
@@ -598,7 +675,7 @@ fn compose_view_marks(
                 bounds,
                 viewport,
                 clip,
-                drawing.appearance(context, ceiling.entity, PlanRole::Projected)?,
+                drawing.appearance(context, ceiling.entity, ceiling.role)?,
             )?;
         }
         for room in drawing.rooms(context)? {
@@ -625,6 +702,7 @@ fn compose_view_marks(
             }
         }
         for tag in drawing.room_tags(context)? {
+            // Other annotation adapters below use the same checked context.
             if bounds_contains(bounds, tag.anchor) {
                 push_text(
                     &mut marks,
@@ -637,19 +715,128 @@ fn compose_view_marks(
                 )?;
             }
         }
-        for tag in drawing.opening_tags(context)? {
+        for note in drawing
+            .text_notes(context)?
+            .iter()
+            .filter(|_| context.annotation_crop.is_none())
+        {
+            let layout = note.layout(viewport.scale_denominator)?;
+            let a = viewport.model_to_paper(Point2::new(bounds.min.x, bounds.max.y))?;
+            let b = viewport.model_to_paper(Point2::new(bounds.max.x, bounds.min.y))?;
+            let note_rect = PaperRect {
+                min_mm: Point2::new(
+                    a.x.max(viewport_rect.min_mm.x),
+                    a.y.max(viewport_rect.min_mm.y),
+                ),
+                max_mm: Point2::new(
+                    b.x.min(viewport_rect.max_mm.x),
+                    b.y.min(viewport_rect.max_mm.y),
+                ),
+            };
+            if note_rect.min_mm.x >= note_rect.max_mm.x || note_rect.min_mm.y >= note_rect.max_mm.y
+            {
+                continue;
+            }
+            let note_clip = Some(note_rect);
+            let cell = note.parameters.text_height_mm * viewport.scale_denominator / 1000.;
+            for (anchor, character) in layout.glyphs {
+                if anchor.x + cell < bounds.min.x
+                    || anchor.x > bounds.max.x
+                    || anchor.y + cell < bounds.min.y
+                    || anchor.y > bounds.max.y
+                {
+                    continue;
+                }
+                marks.push(PaperMark {
+                    clip: note_clip,
+                    kind: PaperMarkKind::Text {
+                        baseline_mm: viewport.model_to_paper(anchor)?,
+                        text: character.to_string(),
+                        size_mm: note.parameters.text_height_mm,
+                        color: PaperColor::BLACK,
+                    },
+                });
+            }
+            for (a, b) in layout.leader {
+                if let Some((a, b)) = clip_segment(a, b, bounds) {
+                    push_line(
+                        &mut marks,
+                        a,
+                        b,
+                        PaperStroke {
+                            color: PaperColor::BLACK,
+                            width_mm: 0.25,
+                            dashed: false,
+                        },
+                        viewport,
+                        note_clip,
+                    )?;
+                }
+            }
+        }
+        for callout in drawing.callouts(context)? {
+            let corners = callout.corners();
+            for i in 0..4 {
+                if let Some((a, b)) = clip_segment(corners[i], corners[(i + 1) % 4], bounds) {
+                    push_line(
+                        &mut marks,
+                        a,
+                        b,
+                        PaperStroke {
+                            color: PaperColor::BLACK,
+                            width_mm: 0.25,
+                            dashed: true,
+                        },
+                        viewport,
+                        clip,
+                    )?;
+                }
+            }
+            if bounds_contains(bounds, callout.anchor()) {
+                push_text(
+                    &mut marks,
+                    callout.anchor(),
+                    &callout.label,
+                    2.5,
+                    viewport,
+                    clip,
+                    viewport_color,
+                )?;
+            }
+        }
+        for tag in drawing
+            .opening_tags(context)?
+            .iter()
+            .filter(|_| context.annotation_crop.is_none())
+        {
             append_opening_tag(&mut marks, tag, bounds, viewport)?;
         }
-        for dimension in drawing.dimensions(context)? {
+        for dimension in drawing
+            .dimensions(context)?
+            .iter()
+            .filter(|_| context.annotation_crop.is_none())
+        {
             append_dimension(&mut marks, dimension, bounds, viewport, clip)?;
         }
-        for dimension in drawing.angular_dimensions(context)? {
+        for dimension in drawing
+            .angular_dimensions(context)?
+            .iter()
+            .filter(|_| context.annotation_crop.is_none())
+        {
             append_angular_dimension(&mut marks, dimension, context, bounds, viewport, clip)?;
         }
-        for dimension in drawing.arc_length_dimensions(context)? {
+        for dimension in drawing
+            .arc_length_dimensions(context)?
+            .iter()
+            .filter(|_| context.annotation_crop.is_none())
+        {
             append_arc_length_dimension(&mut marks, dimension, context, bounds, viewport, clip)?;
         }
-        for line in drawing.detail_lines(context)? {
+        for line in drawing
+            .detail_lines(context)?
+            .iter()
+            .filter(|_| context.annotation_crop.is_none())
+        {
             if let Some((start, end)) = clip_segment(line.start, line.end, bounds) {
                 push_line(
                     &mut marks,
@@ -666,6 +853,18 @@ fn compose_view_marks(
             }
         }
     }
+    if let Some(bounds) = context.annotation_crop {
+        let bounds = if strict {
+            Some(bounds)
+        } else {
+            intersect_crop(Some(bounds), Some(viewport.model_bounds()?))
+        };
+        if let Some(bounds) = bounds {
+            for graphic in annotation_graphics(context, drawing, viewport, bounds)? {
+                marks.extend(graphic.marks);
+            }
+        }
+    }
     // Larger layouts own their captions inside each viewport, not in an
     // unbounded horizontal row in the page title block. Reserve a 7 mm footer
     // without changing the viewport's model mapping or persisted frame.
@@ -673,6 +872,18 @@ fn compose_view_marks(
         min_mm: Point2::new(viewport_rect.min_mm.x, viewport_rect.max_mm.y - 7.0),
         max_mm: viewport_rect.max_mm,
     });
+    if strict {
+        let content = PaperRect {
+            min_mm: viewport_rect.min_mm,
+            max_mm: Point2::new(
+                viewport_rect.max_mm.x,
+                viewport_rect.max_mm.y - if count > 2 { 7.0 } else { 0.0 },
+            ),
+        };
+        for mark in &marks {
+            ensure_mark_fits(mark, content)?;
+        }
+    }
     if let Some(caption) = caption {
         let content = PaperRect {
             max_mm: Point2::new(viewport_rect.max_mm.x, caption.min_mm.y),
@@ -701,7 +912,7 @@ fn compose_view_marks(
         max_mm: Point2::new(paper.width_mm - 8.0, paper.height_mm - 8.0),
     };
     if index == 0 {
-        if count > 2 {
+        if count > 2 || strict {
             ensure(
                 paper.name.chars().count() as f64 * 4.0 * 1.05 <= paper.width_mm - 161.0,
                 "sheet name overflows title block; shorten the sheet name",
@@ -1021,9 +1232,10 @@ fn style_for_role(role: PlanRole) -> PaperStroke {
         width_mm: match role {
             PlanRole::Cut => 0.35,
             PlanRole::Projected => 0.18,
+            PlanRole::Overhead => 0.18,
             PlanRole::Depth => 0.12,
         },
-        dashed: false,
+        dashed: role == PlanRole::Overhead,
     }
 }
 
@@ -1218,20 +1430,22 @@ fn append_floor(
         green: 245,
         blue: 245,
     };
-    for triangle in &floor.triangles {
-        let points = triangle.map(|index| floor.vertices[index as usize]);
-        let clipped = clip_polygon(&points, bounds);
-        if clipped.len() >= 3 {
-            marks.push(path_mark(
-                clipped
-                    .into_iter()
-                    .map(|point| viewport.model_to_paper(point))
-                    .collect::<Result<Vec<_>>>()?,
-                true,
-                None,
-                Some(fill),
-                clip,
-            ));
+    if floor.role != PlanRole::Overhead {
+        for triangle in &floor.triangles {
+            let points = triangle.map(|index| floor.vertices[index as usize]);
+            let clipped = clip_polygon(&points, bounds);
+            if clipped.len() >= 3 {
+                marks.push(path_mark(
+                    clipped
+                        .into_iter()
+                        .map(|point| viewport.model_to_paper(point))
+                        .collect::<Result<Vec<_>>>()?,
+                    true,
+                    None,
+                    Some(fill),
+                    clip,
+                ));
+            }
         }
     }
     let stroke = appearance.map_or(
@@ -1629,6 +1843,146 @@ mod tests {
     use std::collections::BTreeMap;
 
     #[test]
+    fn issue_preflight_rejects_viewport_clipping_stroke_edges_and_title_cell_overflow() {
+        let context = PlanContext {
+            annotation_crop: None,
+            session_id: Id::new(),
+            model_revision: 1,
+            view_id: Id::new(),
+            settings_revision: 0,
+            basis: HorizontalBasis::default(),
+            range: PlanRange::default(),
+            crop: None,
+            scale_denominator: 100.0,
+            show_walls: true,
+            show_extensions: false,
+        };
+        let viewport = PaperViewport {
+            center_mm: Point2::new(110.0, 100.0),
+            width_mm: 100.0,
+            height_mm: 80.0,
+            model_center_m: Point2::default(),
+            scale_denominator: 100.0,
+        };
+        let paper = PaperSheetInfo {
+            width_mm: 420.0,
+            height_mm: 297.0,
+            number: "A101",
+            name: "Issue",
+        };
+        let drawing = PlanDrawing::from_prisms(context, &BTreeMap::new(), vec![])
+            .unwrap()
+            .with_grids(vec![PlanGrid {
+                entity: Id::new(),
+                name: "A".into(),
+                start: Point2::new(-20.0, 0.0),
+                end: Point2::new(20.0, 0.0),
+            }])
+            .unwrap();
+        assert!(compose_sheet_views(paper, &[("Plan", viewport, context, &drawing)]).is_ok());
+        assert!(
+            compose_issue_sheet_views(paper, &[("Plan", viewport, context, &drawing)])
+                .unwrap_err()
+                .to_string()
+                .contains("overflow")
+        );
+        let cropped = PlanContext {
+            crop: Some(PlanCrop {
+                min: Point2::new(-2.0, -2.0),
+                max: Point2::new(2.0, 2.0),
+            }),
+            ..context
+        };
+        let drawing = PlanDrawing::from_prisms(cropped, &BTreeMap::new(), vec![])
+            .unwrap()
+            .with_grids(vec![PlanGrid {
+                entity: Id::new(),
+                name: "A".into(),
+                start: Point2::new(-20.0, 0.0),
+                end: Point2::new(20.0, 0.0),
+            }])
+            .unwrap();
+        assert!(
+            compose_issue_sheet_views(paper, &[("Plan", viewport, cropped, &drawing)]).is_ok(),
+            "intentional source crop is retained"
+        );
+        let empty = PlanDrawing::from_prisms(context, &BTreeMap::new(), vec![]).unwrap();
+        let long = "N".repeat(70);
+        let bad = PaperSheetInfo {
+            name: &long,
+            ..paper
+        };
+        for views in [
+            vec![("Plan", viewport, context, &empty)],
+            vec![
+                ("Plan", viewport, context, &empty),
+                (
+                    "Other",
+                    PaperViewport {
+                        center_mm: Point2::new(310.0, 100.0),
+                        ..viewport
+                    },
+                    context,
+                    &empty,
+                ),
+            ],
+        ] {
+            assert!(
+                compose_issue_sheet_views(bad, &views)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("title block")
+            );
+        }
+        let rect = viewport.paper_rect().unwrap();
+        let stroke = PaperMark {
+            clip: Some(rect),
+            kind: PaperMarkKind::Path {
+                points_mm: vec![rect.min_mm, rect.max_mm],
+                closed: false,
+                stroke: Some(PaperStroke {
+                    color: PaperColor::BLACK,
+                    width_mm: 0.25,
+                    dashed: false,
+                }),
+                fill: None,
+            },
+        };
+        assert!(ensure_mark_fits(&stroke, rect).is_err());
+    }
+
+    #[test]
+    fn ordered_issue_pdf_has_valid_offsets_and_preserves_page_order() {
+        let page = |text: &str| {
+            SheetPage::new(
+                420.0,
+                297.0,
+                vec![PaperMark {
+                    clip: None,
+                    kind: PaperMarkKind::Text {
+                        baseline_mm: Point2::new(20.0, 30.0),
+                        text: text.into(),
+                        size_mm: 4.0,
+                        color: PaperColor::BLACK,
+                    },
+                }],
+            )
+            .unwrap()
+        };
+        let bytes = SheetPage::ordered_pdf(&[page("Second"), page("First")]).unwrap();
+        let pdf = String::from_utf8(bytes.clone()).unwrap();
+        assert!(pdf.contains("/Kids [4 0 R 6 0 R] /Count 2"));
+        assert!(pdf.find("<5365636F6E64> Tj").unwrap() < pdf.find("<4669727374> Tj").unwrap());
+        let xref = pdf.find("xref\n").unwrap();
+        for (i, line) in pdf[xref..].lines().skip(3).take(7).enumerate() {
+            let offset = line[..10].parse::<usize>().unwrap();
+            assert!(pdf[offset..].starts_with(&format!("{} 0 obj", i + 1)));
+        }
+        assert!(SheetPage::ordered_pdf(&[]).is_err());
+        assert!(SheetPage::ordered_pdf(&vec![page("A"); 101]).is_err());
+    }
+
+    #[test]
     fn vector_sheet_floor_fill_and_outlines_keep_the_slab_opening() {
         let boundary = vec![
             Point2::new(0., 0.),
@@ -1646,6 +2000,7 @@ mod tests {
             os_geometry::floor_holes::triangulate_floor_rings(&boundary, &holes).unwrap();
         let floor = PlanFloorItem {
             entity: Id::new(),
+            role: PlanRole::Projected,
             boundary,
             holes,
             vertices: triangulation.vertices,
@@ -1907,6 +2262,7 @@ mod tests {
     #[test]
     fn plan_composition_reuses_checked_drawings_clips_to_viewport_and_rejects_stale_or_missing() {
         let context = PlanContext {
+            annotation_crop: None,
             session_id: Id::new(),
             model_revision: 3,
             view_id: Id::new(),
@@ -2008,6 +2364,7 @@ mod tests {
     #[test]
     fn two_drawings_have_independent_scales_clips_and_one_page_frame() {
         let context = PlanContext {
+            annotation_crop: None,
             session_id: Id::new(),
             model_revision: 1,
             view_id: Id::new(),
@@ -2173,6 +2530,7 @@ mod tests {
     #[test]
     fn multi_view_captions_and_estimated_text_extents_stay_in_allocated_bounds() {
         let context = PlanContext {
+            annotation_crop: None,
             session_id: Id::new(),
             model_revision: 0,
             view_id: Id::new(),

@@ -36,7 +36,7 @@ fn schedule_phase_filters_cover_all_six_statuses_and_five_filters() {
 }
 
 #[test]
-fn schedule_phase_construction_strict_wire_room_exclusion_and_uuid_references() {
+fn schedule_phase_construction_strict_wire_and_uuid_references() {
     let mut model = Model::new("Schedules");
     for category in [
         ScheduleCategory::Door,
@@ -46,16 +46,13 @@ fn schedule_phase_construction_strict_wire_room_exclusion_and_uuid_references() 
     ] {
         let legacy = ScheduleParams::new("Legacy", category);
         assert_eq!(legacy.phase, SchedulePhase::LegacyUnphased);
+        legacy.validate().unwrap();
         let mut params = ScheduleParams::new_for_model("New", category, &model).unwrap();
         assert_eq!(
             params.phase,
-            if category == ScheduleCategory::RoomFinish {
-                SchedulePhase::LegacyUnphased
-            } else {
-                SchedulePhase::PhaseAware {
-                    target: model.latest_phase(),
-                    filter: PhaseFilter::ShowAll,
-                }
+            SchedulePhase::PhaseAware {
+                target: model.latest_phase(),
+                filter: PhaseFilter::ShowAll,
             }
         );
         let mut wire = serde_json::to_value(&params).unwrap();
@@ -66,10 +63,7 @@ fn schedule_phase_construction_strict_wire_room_exclusion_and_uuid_references() 
             filter: PhaseFilter::ShowNew,
         };
         assert!(params.phase.resolve(&model).is_err());
-        assert_eq!(
-            params.validate().is_ok(),
-            category != ScheduleCategory::RoomFinish
-        );
+        params.validate().unwrap();
     }
     let pinned = ScheduleParams::new_for_model("Pinned", ScheduleCategory::All, &model)
         .unwrap()
@@ -94,5 +88,48 @@ fn schedule_phase_construction_strict_wire_room_exclusion_and_uuid_references() 
         ScheduleParams::new_for_model("Missing phases", ScheduleCategory::Door, &model).is_err()
     );
     assert!(latest.resolve(&model).is_err());
-    assert!(ScheduleParams::new_for_model("Rooms", ScheduleCategory::RoomFinish, &model).is_ok());
+    assert!(ScheduleParams::new_for_model("Rooms", ScheduleCategory::RoomFinish, &model).is_err());
+}
+
+#[test]
+fn room_finish_phases_preserve_wire_shape_and_reporting_limits() {
+    use os_model::{
+        Schedule, ScheduleFilter, ScheduleGroupField, ScheduleTextField, ScheduleTextOperator,
+    };
+
+    let mut model = Model::new("Room finishes");
+    let legacy = ScheduleParams::new("Rooms", ScheduleCategory::RoomFinish);
+    let aware =
+        ScheduleParams::new_for_model("Rooms", ScheduleCategory::RoomFinish, &model).unwrap();
+    for params in [legacy, aware] {
+        params.validate().unwrap();
+        let wire = serde_json::to_value(&params).unwrap();
+        assert_eq!(
+            serde_json::from_value::<ScheduleParams>(wire).unwrap(),
+            params
+        );
+        let mut grouped = params.clone();
+        grouped.group_by.push(ScheduleGroupField::Level);
+        assert!(grouped.validate().is_err());
+        let mut filtered = params.clone();
+        filtered.filters.push(ScheduleFilter::Text {
+            field: ScheduleTextField::Name,
+            operator: ScheduleTextOperator::Contains,
+            value: "Office".into(),
+        });
+        assert!(filtered.validate().is_err());
+        let schedule = Schedule::new("core.schedule", params);
+        model.schedules.clear();
+        model.schedules.insert(schedule.id(), schedule);
+        model.validate().unwrap();
+    }
+    let schedule = model.schedules.values_mut().next().unwrap();
+    schedule.parameters.phase = SchedulePhase::PhaseAware {
+        target: Some(Id::new()),
+        filter: PhaseFilter::ShowAll,
+    };
+    assert!(
+        model.validate().is_err(),
+        "RoomFinish pins are checked model references"
+    );
 }

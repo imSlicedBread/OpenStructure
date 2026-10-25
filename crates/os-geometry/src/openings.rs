@@ -228,6 +228,14 @@ pub fn authored_solids(
             mesh.triangles.len()
         ];
         let mut primary = primary_bay(p)?;
+        let leaf = match solid.attachment {
+            OpeningAttachment::ActiveLeaf | OpeningAttachment::InactiveLeaf => {
+                let pair = door_pair(p)?
+                    .ok_or_else(|| os_core::Error::Invalid("expected paired door".into()))?;
+                Some(pair[usize::from(solid.attachment == OpeningAttachment::InactiveLeaf)].clone())
+            }
+            _ => None,
+        };
         // Two-bay geometry uses the parent's effective depth, capped by the
         // narrowest bay. Recomputing from the wider primary moves face-aligned panes.
         primary.family.depth = depth(p, wall);
@@ -246,12 +254,51 @@ pub fn authored_solids(
         } else {
             p.height - bottom - p.family.frame_width
         };
+        let moving = if matches!(
+            solid.attachment,
+            OpeningAttachment::MovingSash
+                | OpeningAttachment::StartSash
+                | OpeningAttachment::EndSash
+        ) {
+            let bay = sash_bay(p)?;
+            let (_, tracks) = sash_tracks(p, &bay, wall);
+            let index = usize::from(solid.attachment == OpeningAttachment::EndSash);
+            Some((bay, tracks[index], index))
+        } else {
+            None
+        };
         for v in &mut mesh.vertices {
             let normal = v.z + solid.normal_offset;
             let (xy, z) = if solid.attachment == OpeningAttachment::OpeningFixed {
                 (
                     world(wall, p.offset + v.x * p.width + solid.position.x, normal),
                     elevation + p.sill + v.y * p.height + solid.position.y,
+                )
+            } else if let Some((bay, track, index)) = &moving {
+                // Apply the pose to the entire extrusion, including its exact
+                // depth and normal offset, in the same frame as the sash rails.
+                let point = sash_point(
+                    p,
+                    bay,
+                    wall,
+                    *index,
+                    bay.offset + track.start + v.x * (track.end - track.start) + solid.position.x,
+                    track.normal + normal,
+                );
+                (
+                    world(wall, point.x, point.y),
+                    elevation + bay.sill + v.y * bay.height + solid.position.y,
+                )
+            } else if let Some(leaf) = &leaf {
+                let u = v.x + solid.position.x / leaf.width;
+                let center = component_point(leaf, wall, u);
+                let start = component_point(leaf, wall, 0.);
+                let end = component_point(leaf, wall, 1.);
+                let dx = (end.x - start.x) / leaf.width;
+                let dy = (end.y - start.y) / leaf.width;
+                (
+                    world(wall, center.x - dy * normal, center.y + dx * normal),
+                    elevation + leaf.sill + v.y * leaf.height + solid.position.y,
                 )
             } else {
                 let x = a + v.x * (b - a) + solid.position.x;
@@ -393,9 +440,22 @@ pub fn sash_point(
     y: f64,
 ) -> Point2 {
     if parent.supports_open_state(wall) {
+        if matches!(
+            parent.window_operation,
+            WindowOperation::PairedCasement { .. }
+        ) {
+            let angle = parent.casement_pair_angles()[track.min(1)];
+            let pivot = bay.offset + if track == 0 { 0. } else { bay.width };
+            let center = pane_offset(parent, wall);
+            let (sin, cos) = (angle * if track == 0 { 1. } else { -1. })
+                .to_radians()
+                .sin_cos();
+            let (u, v) = (x - pivot, y - center);
+            return Point2::new(pivot + u * cos - v * sin, center + u * sin + v * cos);
+        }
         match parent.open_state {
             os_model::OpeningState::SlidingFraction(f) if track == 0 => {
-                let rail = 0.05_f64.min(bay.width * 0.1).min(bay.height * 0.1);
+                let rail = os_model::OpeningFamily::sash_rail_width(bay.width, bay.height);
                 return Point2::new(x + f * (bay.width - rail) / 2., y);
             }
             os_model::OpeningState::CasementAngle(a) if a != 0. => {
@@ -424,8 +484,255 @@ pub fn sash_bay(p: &ResolvedOpening) -> Result<ResolvedOpening> {
     Ok(bay)
 }
 
-/// Static construction representation in the parent's pane envelope. Derive
-/// rails from the effective clear bay, including narrow legal instance pins.
+/// Transient interaction geometry derived from the same components as the solids.
+#[derive(Clone, Copy, Debug)]
+pub enum PoseMotion {
+    Angular { pivot: Point2, sense: f64 },
+    Sliding { axis: Point2, travel: f64 },
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct OpeningPoseHandle {
+    pub point: Point2,
+    pub motion: PoseMotion,
+    pub value: f64,
+}
+
+/// Stable production leaf identity, independent of hinge side or host direction.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PoseLeaf {
+    #[default]
+    Active,
+    Inactive,
+    StartSash,
+    EndSash,
+}
+
+pub fn pose_handle(p: &ResolvedOpening, wall: &WallParams) -> Result<OpeningPoseHandle> {
+    pose_handle_for_leaf(
+        p,
+        wall,
+        if matches!(p.window_operation, WindowOperation::PairedCasement { .. }) {
+            PoseLeaf::StartSash
+        } else {
+            PoseLeaf::Active
+        },
+    )
+}
+
+pub fn pose_handle_for_leaf(
+    p: &ResolvedOpening,
+    wall: &WallParams,
+    leaf: PoseLeaf,
+) -> Result<OpeningPoseHandle> {
+    os_core::ensure(
+        p.supports_open_state(wall),
+        "pose handles require a rectangular door or operable window on a straight host",
+    )?;
+    p.validate_host(wall)?;
+    let to_world = |point: Point2| world(wall, point.x, point.y);
+    if p.kind == OpeningKind::Door {
+        let primary = if let Some(leaves) = door_pair(p)? {
+            // Clear resolved leaves keep their identity and effective angles.
+            // Do not revalidate a derived leaf's inherited accessory definitions
+            // as a standalone Single family; the authored parent was validated.
+            leaves[if leaf == PoseLeaf::Active { 0 } else { 1 }].clone()
+        } else {
+            os_core::ensure(leaf == PoseLeaf::Active, "opening has no inactive leaf")?;
+            primary_bay(p)?
+        };
+        let free = 1. - primary.family.frame_width / primary.width;
+        let sense = (if primary.hinge == DoorHinge::Start {
+            1.
+        } else {
+            -1.
+        }) * (if primary.swing == DoorSwing::Left {
+            1.
+        } else {
+            -1.
+        });
+        return Ok(OpeningPoseHandle {
+            point: to_world(component_point(&primary, wall, free)),
+            motion: PoseMotion::Angular {
+                pivot: to_world(component_point(&primary, wall, 0.)),
+                sense,
+            },
+            value: primary.door_angle(wall),
+        });
+    }
+    let paired = matches!(p.window_operation, WindowOperation::PairedCasement { .. });
+    os_core::ensure(
+        if paired {
+            matches!(leaf, PoseLeaf::StartSash | PoseLeaf::EndSash)
+        } else {
+            leaf == PoseLeaf::Active
+        },
+        "invalid sash identity",
+    )?;
+    let index = usize::from(leaf == PoseLeaf::EndSash);
+    let bay = sash_bay(p)?;
+    let (_, tracks) = sash_tracks(p, &bay, wall);
+    let track = tracks[index];
+    let point = to_world(sash_point(
+        p,
+        &bay,
+        wall,
+        index,
+        bay.offset + if index == 1 { track.start } else { track.end },
+        track.normal,
+    ));
+    let (motion, value) = match p.window_operation {
+        WindowOperation::PairedCasement { .. } => (
+            PoseMotion::Angular {
+                pivot: to_world(Point2::new(
+                    bay.offset + if index == 0 { 0. } else { bay.width },
+                    pane_offset(p, wall),
+                )),
+                sense: if index == 0 { 1. } else { -1. },
+            },
+            p.casement_pair_angles()[index],
+        ),
+        WindowOperation::Casement => (
+            PoseMotion::Angular {
+                pivot: to_world(Point2::new(bay.offset, pane_offset(p, wall))),
+                sense: 1.,
+            },
+            if let os_model::OpeningState::CasementAngle(v) = p.open_state {
+                v
+            } else {
+                0.
+            },
+        ),
+        WindowOperation::Sliding => (
+            PoseMotion::Sliding {
+                axis: wall.path.tangent(0.),
+                travel: bay.width - track.end,
+            },
+            if let os_model::OpeningState::SlidingFraction(v) = p.open_state {
+                v
+            } else {
+                0.
+            },
+        ),
+        WindowOperation::Fixed => unreachable!("checked supports_open_state"),
+    };
+    Ok(OpeningPoseHandle {
+        point,
+        motion,
+        value,
+    })
+}
+
+#[derive(Clone, Copy)]
+pub struct SashTrack {
+    pub start: f64,
+    pub end: f64,
+    pub normal: f64,
+    pub depth: f64,
+}
+
+/// Shared physical sash dimensions/centres. Depth always comes from the parent
+/// opening, including a narrow side lite and the effective host/pane position.
+pub fn sash_tracks(
+    parent: &ResolvedOpening,
+    bay: &ResolvedOpening,
+    wall: &WallParams,
+) -> (f64, Vec<SashTrack>) {
+    let d = depth(parent, wall);
+    let center = pane_offset(parent, wall);
+    let rail = os_model::OpeningFamily::sash_rail_width(bay.width, bay.height);
+    let tracks = if let WindowOperation::PairedCasement {
+        start_fraction,
+        mullion_width,
+    } = parent.window_operation
+    {
+        let meeting = (bay.width - mullion_width) * start_fraction;
+        vec![
+            SashTrack {
+                start: 0.,
+                end: meeting,
+                normal: center,
+                depth: d,
+            },
+            SashTrack {
+                start: meeting + mullion_width,
+                end: bay.width,
+                normal: center,
+                depth: d,
+            },
+        ]
+    } else if parent.window_operation == WindowOperation::Sliding {
+        vec![
+            SashTrack {
+                start: 0.,
+                end: (bay.width + rail) / 2.,
+                normal: center - d * 0.275,
+                depth: d * 0.45,
+            },
+            SashTrack {
+                start: (bay.width - rail) / 2.,
+                end: bay.width,
+                normal: center + d * 0.275,
+                depth: d * 0.45,
+            },
+        ]
+    } else {
+        vec![SashTrack {
+            start: 0.,
+            end: bay.width,
+            normal: center,
+            depth: d,
+        }]
+    };
+    (rail, tracks)
+}
+
+/// Plan rails use the same tracks and rigid pose evaluator as solids/accessories.
+pub fn paired_casement_plan_lines(
+    p: &ResolvedOpening,
+    wall: &WallParams,
+) -> Result<Vec<(Point2, Point2)>> {
+    let bay = sash_bay(p)?;
+    let (_, tracks) = sash_tracks(p, &bay, wall);
+    os_core::ensure(
+        matches!(p.window_operation, WindowOperation::PairedCasement { .. }),
+        "expected paired casement",
+    )?;
+    let mut lines = Vec::new();
+    for (index, track) in tracks.iter().enumerate() {
+        let point = |x, y| sash_point(p, &bay, wall, index, bay.offset + x, y);
+        let low = track.normal - track.depth / 2.;
+        let high = track.normal + track.depth / 2.;
+        let corners = [
+            point(track.start, low),
+            point(track.end, low),
+            point(track.end, high),
+            point(track.start, high),
+        ];
+        for i in 0..4 {
+            lines.push((corners[i], corners[(i + 1) % 4]));
+        }
+        lines.push((
+            point(track.start, track.normal),
+            point(track.end, track.normal),
+        ));
+    }
+    let center = frame_offset(p, wall);
+    let half = frame_thickness(p, wall) / 2.;
+    let a = bay.offset + tracks[0].end;
+    let b = bay.offset + tracks[1].start;
+    let corners = [
+        Point2::new(a, center - half),
+        Point2::new(b, center - half),
+        Point2::new(b, center + half),
+        Point2::new(a, center + half),
+    ];
+    for i in 0..4 {
+        lines.push((corners[i], corners[(i + 1) % 4]));
+    }
+    Ok(lines)
+}
+
 /// Separate sliding tracks overlap in elevation but never in volume.
 fn closed_sash_solids(
     parent: &ResolvedOpening,
@@ -433,24 +740,52 @@ fn closed_sash_solids(
     wall: &WallParams,
     elevation: f64,
 ) -> Result<Vec<Mesh>> {
-    let d = depth(parent, wall);
-    let center = pane_offset(parent, wall);
-    let rail = 0.05_f64.min(bay.width * 0.1).min(bay.height * 0.1);
-    let tracks = if parent.window_operation == WindowOperation::Sliding {
-        vec![
-            (0., (bay.width + rail) / 2., center - d * 0.275, d * 0.45),
-            (
-                (bay.width - rail) / 2.,
-                bay.width,
-                center + d * 0.275,
-                d * 0.45,
-            ),
-        ]
-    } else {
-        vec![(0., bay.width, center, d)]
-    };
+    let (rail, tracks) = sash_tracks(parent, bay, wall);
     let mut solids = Vec::new();
-    for (track, (start, end, y, thickness)) in tracks.into_iter().enumerate() {
+    if matches!(
+        parent.window_operation,
+        WindowOperation::PairedCasement { .. }
+    ) {
+        let profile = rect_profile(
+            tracks[0].end / bay.width,
+            0.,
+            tracks[1].start / bay.width,
+            1.,
+        );
+        let d = frame_thickness(parent, wall);
+        let mut mullion = extrude_floor(&profile, d / 2., d)?;
+        assign_material(&mut mullion, parent.family.frame_material);
+        for v in &mut mullion.vertices {
+            let xy = world(
+                wall,
+                bay.offset + v.x * bay.width,
+                frame_offset(parent, wall) + v.z,
+            );
+            *v = crate::Vec3::new(xy.x, xy.y, elevation + bay.sill + v.y * bay.height);
+        }
+        for t in &mut mullion.triangles {
+            t.swap(1, 2);
+        }
+        solids.push(mullion);
+    }
+    for (
+        track,
+        SashTrack {
+            start,
+            end,
+            normal: y,
+            depth: thickness,
+        },
+    ) in tracks.into_iter().enumerate()
+    {
+        let rail = if matches!(
+            parent.window_operation,
+            WindowOperation::PairedCasement { .. }
+        ) {
+            os_model::OpeningFamily::sash_rail_width(end - start, bay.height)
+        } else {
+            rail
+        };
         let x0 = start / bay.width;
         let x1 = end / bay.width;
         let rx = rail / bay.width;
@@ -1157,6 +1492,264 @@ mod tests {
     }
 
     #[test]
+    fn pose_handle_analytic_clear_bays_tracks_frames_and_all_door_handings() {
+        for lite in [
+            None,
+            Some(os_model::LiteSide::Start),
+            Some(os_model::LiteSide::End),
+        ] {
+            for frame in [0., 0.04] {
+                for operation in [
+                    WindowOperation::Fixed,
+                    WindowOperation::Casement,
+                    WindowOperation::Sliding,
+                ] {
+                    for hinge in [DoorHinge::Start, DoorHinge::End] {
+                        for swing in [DoorSwing::Left, DoorSwing::Right] {
+                            let (mut p, wall) = sash_fixture();
+                            p.kind = if operation == WindowOperation::Fixed {
+                                OpeningKind::Door
+                            } else {
+                                OpeningKind::Window
+                            };
+                            p.sill = if p.kind == OpeningKind::Door { 0. } else { 0.8 };
+                            p.window_operation = operation;
+                            p.hinge = if p.kind == OpeningKind::Door {
+                                hinge
+                            } else {
+                                DoorHinge::Start
+                            };
+                            p.swing = if p.kind == OpeningKind::Door {
+                                swing
+                            } else {
+                                DoorSwing::Left
+                            };
+                            p.family.frame_width = frame;
+                            p.family.side_lite = lite.map(|side| os_model::SideLite {
+                                side,
+                                width_fraction: 0.2,
+                                mullion_width: 0.04,
+                                material: None,
+                            });
+                            let state = |v| match operation {
+                                WindowOperation::Fixed => os_model::OpeningState::DoorAngle(v),
+                                WindowOperation::Casement => {
+                                    os_model::OpeningState::CasementAngle(v)
+                                }
+                                WindowOperation::Sliding => {
+                                    os_model::OpeningState::SlidingFraction(v)
+                                }
+                            };
+                            p.open_state = state(0.);
+                            let closed = pose_handle(&p, &wall).unwrap();
+                            for value in if operation == WindowOperation::Sliding {
+                                [0., 0.37, 1.]
+                            } else {
+                                [0., 37., 90.]
+                            } {
+                                p.open_state = state(value);
+                                let posed = pose_handle(&p, &wall).unwrap();
+                                match closed.motion {
+                                    PoseMotion::Angular { pivot, sense } => {
+                                        let expected_sense = if operation
+                                            == WindowOperation::Casement
+                                        {
+                                            1.
+                                        } else {
+                                            (if hinge == DoorHinge::Start { 1. } else { -1. })
+                                                * (if swing == DoorSwing::Left { 1. } else { -1. })
+                                        };
+                                        assert_eq!(sense, expected_sense);
+                                        let (sin, cos) =
+                                            (value * expected_sense).to_radians().sin_cos();
+                                        let (x, y) =
+                                            (closed.point.x - pivot.x, closed.point.y - pivot.y);
+                                        let expected = Point2::new(
+                                            pivot.x + x * cos - y * sin,
+                                            pivot.y + x * sin + y * cos,
+                                        );
+                                        assert!(posed.point.distance(expected) < 1e-10);
+                                        if p.kind == OpeningKind::Door {
+                                            let primary = primary_bay(&p).unwrap();
+                                            assert!(
+                                                (closed.point.distance(pivot)
+                                                    - (primary.width - primary.family.frame_width))
+                                                    .abs()
+                                                    < 1e-10
+                                            );
+                                        }
+                                    }
+                                    PoseMotion::Sliding { axis, travel } => {
+                                        let bay = sash_bay(&p).unwrap();
+                                        let expected_travel = (bay.width
+                                            - os_model::OpeningFamily::sash_rail_width(
+                                                bay.width, bay.height,
+                                            ))
+                                            / 2.;
+                                        assert!((travel - expected_travel).abs() < 1e-12);
+                                        assert!(
+                                            posed.point.distance(Point2::new(
+                                                closed.point.x + axis.x * value * travel,
+                                                closed.point.y + axis.y * value * travel
+                                            )) < 1e-10
+                                        );
+                                        assert!(travel < p.width / 2., "never use nominal width");
+                                    }
+                                }
+                                assert_eq!(posed.value, value);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let (mut p, mut wall) = sash_fixture();
+        assert!(pose_handle(&p, &wall).is_err(), "Fixed window");
+        p.kind = OpeningKind::Door;
+        p.sill = 0.;
+        p.family.door_leaves = os_model::DoorLeaves::Paired {
+            active_fraction: 0.5,
+        };
+        assert!(pose_handle(&p, &wall).is_ok(), "paired door active leaf");
+        p.family.door_leaves = os_model::DoorLeaves::Single;
+        wall.path = os_model::WallPath::CircularArc {
+            center: Point2::default(),
+            radius: 6.,
+            start_angle_rad: 0.,
+            signed_sweep_rad: 1.4,
+        };
+        assert!(pose_handle(&p, &wall).is_err(), "curved host");
+    }
+
+    #[test]
+    fn paired_pose_handles_match_resolved_panel_edges_and_leaf_identity() {
+        for fraction in [0.5, 0.65] {
+            for reversed in [false, true] {
+                for hinge in [DoorHinge::Start, DoorHinge::End] {
+                    for swing in [DoorSwing::Left, DoorSwing::Right] {
+                        for lite in [
+                            None,
+                            Some(os_model::LiteSide::Start),
+                            Some(os_model::LiteSide::End),
+                        ] {
+                            for frame in [0., 0.04] {
+                                let (mut p, mut wall) = sash_fixture();
+                                if reversed {
+                                    wall.path = os_model::WallPath::Straight {
+                                        start: wall.end(),
+                                        end: wall.start(),
+                                    };
+                                }
+                                p.kind = OpeningKind::Door;
+                                p.sill = 0.;
+                                p.hinge = hinge;
+                                p.swing = swing;
+                                p.family.frame_width = frame;
+                                p.family.door_leaves = os_model::DoorLeaves::Paired {
+                                    active_fraction: fraction,
+                                };
+                                p.family.side_lite = lite.map(|side| os_model::SideLite {
+                                    side,
+                                    width_fraction: 0.2,
+                                    mullion_width: 0.04,
+                                    material: None,
+                                });
+                                for state in [
+                                    os_model::OpeningState::Default,
+                                    os_model::OpeningState::DoorAngle(0.),
+                                    os_model::OpeningState::DoorPairAngles {
+                                        active_degrees: 27.,
+                                        inactive_degrees: 63.,
+                                    },
+                                ] {
+                                    p.open_state = state;
+                                    let expected_angles = match state {
+                                        os_model::OpeningState::Default => [90., 90.],
+                                        os_model::OpeningState::DoorAngle(a) => [a, a],
+                                        os_model::OpeningState::DoorPairAngles {
+                                            active_degrees,
+                                            inactive_degrees,
+                                        } => [active_degrees, inactive_degrees],
+                                        _ => unreachable!(),
+                                    };
+                                    let leaves = door_pair(&p).unwrap().unwrap();
+                                    let panels = paired_panels(&p, &wall, 0.).unwrap();
+                                    for (index, leaf) in [PoseLeaf::Active, PoseLeaf::Inactive]
+                                        .into_iter()
+                                        .enumerate()
+                                    {
+                                        let h = pose_handle_for_leaf(&p, &wall, leaf).unwrap();
+                                        assert_eq!(h.value, expected_angles[index]);
+                                        let PoseMotion::Angular { pivot, sense } = h.motion else {
+                                            panic!("angular pair")
+                                        };
+                                        let expected_hinge = if index == 0 {
+                                            hinge
+                                        } else if hinge == DoorHinge::Start {
+                                            DoorHinge::End
+                                        } else {
+                                            DoorHinge::Start
+                                        };
+                                        let expected_sense =
+                                            (if expected_hinge == DoorHinge::Start {
+                                                1.
+                                            } else {
+                                                -1.
+                                            }) * (if swing == DoorSwing::Left { 1. } else { -1. });
+                                        assert_eq!(sense, expected_sense);
+                                        assert!(
+                                            (h.point.distance(pivot) - leaves[index].width).abs()
+                                                < 1e-10
+                                        );
+                                        let panel = &panels[index];
+                                        assert!(
+                                            panel.vertices.iter().any(|a| panel
+                                                .vertices
+                                                .iter()
+                                                .any(|b| (a.z - b.z).abs() < 1e-9
+                                                    && Point2::new(
+                                                        (a.x + b.x) / 2.,
+                                                        (a.y + b.y) / 2.
+                                                    )
+                                                    .distance(h.point)
+                                                        < 1e-9)),
+                                            "handle lies on selected production panel free edge"
+                                        );
+                                        let mut closed = p.clone();
+                                        closed.open_state = os_model::OpeningState::DoorAngle(0.);
+                                        let origin =
+                                            pose_handle_for_leaf(&closed, &wall, leaf).unwrap();
+                                        let (sin, cos) =
+                                            (expected_angles[index] * sense).to_radians().sin_cos();
+                                        let x = origin.point.x - pivot.x;
+                                        let y = origin.point.y - pivot.y;
+                                        assert!(
+                                            h.point.distance(Point2::new(
+                                                pivot.x + x * cos - y * sin,
+                                                pivot.y + x * sin + y * cos
+                                            )) < 1e-9
+                                        );
+                                    }
+                                    if state == os_model::OpeningState::DoorAngle(0.) {
+                                        let a = pose_handle_for_leaf(&p, &wall, PoseLeaf::Active)
+                                            .unwrap();
+                                        let b = pose_handle_for_leaf(&p, &wall, PoseLeaf::Inactive)
+                                            .unwrap();
+                                        assert!(
+                                            a.point.distance(b.point) < 1e-9,
+                                            "closed free edges meet"
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn opening_state_door_default_exact_prism_and_rigid_intermediate_poses() {
         for hinge in [DoorHinge::Start, DoorHinge::End] {
             for swing in [DoorSwing::Left, DoorSwing::Right] {
@@ -1359,6 +1952,93 @@ mod tests {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn paired_casements_have_independent_outward_poses_and_a_fixed_mullion() {
+        for reversed in [false, true] {
+            for pane_position in [
+                WindowPanePosition::Center,
+                WindowPanePosition::LeftFace,
+                WindowPanePosition::RightFace,
+            ] {
+                let (mut p, mut wall) = sash_fixture();
+                if reversed {
+                    wall.path = os_model::WallPath::Straight {
+                        start: wall.end(),
+                        end: wall.start(),
+                    };
+                }
+                p.window_operation = WindowOperation::PairedCasement {
+                    start_fraction: 0.6,
+                    mullion_width: 0.04,
+                };
+                p.pane_position = pane_position;
+                p.family.frame_width = 0.04;
+
+                let bay = sash_bay(&p).unwrap();
+                let (_, tracks) = sash_tracks(&p, &bay, &wall);
+                assert_eq!(tracks.len(), 2);
+                assert!((tracks[1].start - tracks[0].end - 0.04).abs() < 1e-12);
+
+                let closed_handles = [
+                    pose_handle_for_leaf(&p, &wall, PoseLeaf::StartSash).unwrap(),
+                    pose_handle_for_leaf(&p, &wall, PoseLeaf::EndSash).unwrap(),
+                ];
+                assert_eq!(closed_handles.map(|handle| handle.value), [0., 0.]);
+                for (handle, expected_sense) in closed_handles.iter().zip([1., -1.]) {
+                    let PoseMotion::Angular { pivot, sense } = handle.motion else {
+                        panic!("paired casements rotate about their jambs")
+                    };
+                    assert_eq!(sense, expected_sense);
+                    assert!(handle.point.distance(pivot) > 0.1);
+                }
+
+                let closed = component_solids(&p, &wall, 0.).unwrap();
+                assert_eq!(
+                    closed.len(),
+                    15,
+                    "mullion, ten sash parts and four frame bars"
+                );
+                for solid in &closed {
+                    solid.validate().unwrap();
+                    assert!(solid.signed_volume() > 0.);
+                }
+                assert_eq!(paired_casement_plan_lines(&p, &wall).unwrap().len(), 14);
+
+                p.open_state = os_model::OpeningState::CasementPairAngles {
+                    start_degrees: 27.,
+                    end_degrees: 63.,
+                };
+                let open = component_solids(&p, &wall, 0.).unwrap();
+                assert_eq!(open.len(), closed.len());
+                assert_eq!(open[0], closed[0], "the fixed mullion stays unchanged");
+                for index in 1..=10 {
+                    assert_ne!(open[index], closed[index], "sash part {index} rotates");
+                }
+                for index in 11..closed.len() {
+                    assert_eq!(open[index], closed[index], "outer frame stays fixed");
+                }
+                let open_handles = [
+                    pose_handle_for_leaf(&p, &wall, PoseLeaf::StartSash).unwrap(),
+                    pose_handle_for_leaf(&p, &wall, PoseLeaf::EndSash).unwrap(),
+                ];
+                assert_eq!(open_handles.map(|handle| handle.value), [27., 63.]);
+                let open_lines = paired_casement_plan_lines(&p, &wall).unwrap();
+                assert_eq!(open_lines.len(), 14);
+                assert_ne!(
+                    open_lines,
+                    paired_casement_plan_lines(
+                        &ResolvedOpening {
+                            open_state: Default::default(),
+                            ..p.clone()
+                        },
+                        &wall,
+                    )
+                    .unwrap()
+                );
             }
         }
     }

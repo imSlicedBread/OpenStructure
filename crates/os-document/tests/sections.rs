@@ -9,6 +9,7 @@ fn editing_native_wall_geometry_invalidates_linked_section_view() {
     let section = View::new(
         "core.view",
         ViewParams {
+            drafting: None,
             facade: None,
             elevation: None,
             name: "Section A".into(),

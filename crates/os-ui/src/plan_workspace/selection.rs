@@ -142,6 +142,9 @@ impl State {
 
 impl DesktopApp {
     pub(super) fn select_area(&mut self, ids: BTreeSet<Id>) {
+        let ids: BTreeSet<_> = super::groups::hits(self.editor.document.model(), ids)
+            .into_iter()
+            .collect();
         // Property editors have a target only for a single-element selection.
         self.select((ids.len() == 1).then(|| *ids.first().expect("one selected item")));
         self.selected_ids = ids;
@@ -249,7 +252,13 @@ fn candidates(
             || model.columns.contains_key(&item.entity)
             || model.casework.contains_key(&item.entity)
         {
-            add(item.entity, item.footprint.vertices());
+            if item.footprint.role == os_geometry::plan::PlanRole::Overhead {
+                for (start, end) in item.outline() {
+                    add(item.entity, &[start, end]);
+                }
+            } else {
+                add(item.entity, item.footprint.vertices());
+            }
         }
     }
     // Native doors and windows are semantic line groups, not filled PlanItems.
@@ -269,8 +278,21 @@ fn candidates(
         {
             continue;
         }
-        for triangle in &floor.triangles {
-            add(floor.entity, &triangle.map(|i| floor.vertices[i as usize]));
+        if floor.role == os_geometry::plan::PlanRole::Overhead {
+            for ring in std::iter::once(&floor.boundary).chain(floor.holes.iter()) {
+                for (start, end) in ring
+                    .iter()
+                    .copied()
+                    .zip(ring.iter().copied().cycle().skip(1))
+                    .take(ring.len())
+                {
+                    add(floor.entity, &[start, end]);
+                }
+            }
+        } else {
+            for triangle in &floor.triangles {
+                add(floor.entity, &triangle.map(|i| floor.vertices[i as usize]));
+            }
         }
     }
     for room in drawing.rooms(context).unwrap_or_default() {
@@ -280,6 +302,21 @@ fn candidates(
         if let Ok(triangles) = os_geometry::floors::triangulate_floor(&room.boundary) {
             for triangle in triangles {
                 add(room.entity, &triangle.map(|i| room.boundary[i as usize]));
+            }
+        }
+    }
+    // Tag bounds are screen-space annotations, independent of model footprints.
+    for tag in drawing.opening_tags(context).unwrap_or_default() {
+        if let Ok(Some(bounds)) = tag.bounds(context, camera, size) {
+            let points = bounds.map(|p| canvas.min + egui::vec2(p.x as f32, p.y as f32));
+            let rect = egui::Rect::from_two_pos(points[0], points[1]).intersect(clip);
+            if rect.is_positive() {
+                out.entry(tag.entity).or_default().push(vec![
+                    rect.left_top(),
+                    rect.right_top(),
+                    rect.right_bottom(),
+                    rect.left_bottom(),
+                ]);
             }
         }
     }

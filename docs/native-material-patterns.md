@@ -2,8 +2,9 @@
 
 Schema 69→70 adds project-owned `MaterialPattern` definitions and an optional
 pattern reference on each material. Existing materials migrate to no pattern
-and retain solid cut fills. Native full-model providers now require API 51 / model
-schema 70; generic plugin API 2 and container 2 are unchanged. See
+and retain solid cut fills. This increment introduced native API 51 / model
+schema 70; current providers require API 55 / schema 74. Generic plugin API 2
+and container 2 are unchanged. See
 [`file-format.md`](file-format.md) and [`plugin-api.md`](plugin-api.md).
 
 The first bounded pattern is one parallel line family. Angle is measured in the

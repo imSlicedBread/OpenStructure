@@ -69,6 +69,8 @@ fn frozen_nineteen_migrates_without_inventing_joins_and_rejects_ambiguity() {
     expected["columns"] = json!({});
     expected["plan_graphics_templates"] = json!({});
     expected["plan_graphics"] = json!({});
+    expected["plan_element_graphics_overrides"] = json!({});
+    expected["plan_graphics_rules"] = json!({});
     expected["stairs"] = json!({});
     expected["roofs"] = json!({});
     expected["phases"] = value["phases"].clone();

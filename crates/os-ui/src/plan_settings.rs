@@ -1,7 +1,11 @@
 //! Revision-bound settings drafts: incomplete text never mutates the document.
 use super::*;
 use os_model::{PlanSettings, PlanViewBasis, PlanViewCrop, PlanViewRange, PlanVisibility};
+mod element_overrides;
 mod graphics;
+#[cfg(test)]
+mod rule_tests;
+mod rules;
 
 const LABELS: [&str; 12] = [
     "Top offset (m)",
@@ -26,10 +30,14 @@ pub(super) struct PlanDraft {
     level: Option<Id>,
     values: [String; 12],
     crop: bool,
+    annotation_crop: bool,
+    annotation_values: [String; 4],
     visibility: PlanVisibility,
     target_phase: Option<Id>,
     phase_filter: os_model::PhaseFilter,
     graphics: graphics::GraphicsDraft,
+    element_overrides: element_overrides::ElementOverridesDraft,
+    rules: rules::RulesDraft,
     error: Option<String>,
 }
 impl PlanDraft {
@@ -74,11 +82,21 @@ impl PlanDraft {
             ]
             .map(|v| v.to_string()),
             crop: s.crop.is_some(),
+            annotation_crop: s.annotation_crop.is_some(),
+            annotation_values: {
+                let c = s.annotation_crop.unwrap_or(crop);
+                [c.min.x, c.min.y, c.max.x, c.max.y].map(|v| v.to_string())
+            },
             visibility: s.visibility,
             target_phase: s.target_phase,
             phase_filter: s.phase_filter,
             graphics: graphics::GraphicsDraft::begin(editor.document.model(), id),
+            element_overrides: element_overrides::ElementOverridesDraft::begin(
+                editor.document.model(),
+                id,
+            ),
             error: None,
+            rules: rules::RulesDraft::begin(editor.document.model(), id),
         })
     }
     fn apply(&self, editor: &mut Editor, active: Option<Id>) -> Result<()> {
@@ -108,6 +126,20 @@ impl PlanDraft {
             )?;
         }
         let s = PlanSettings {
+            annotation_crop: if self.annotation_crop {
+                let mut a = [0.; 4];
+                for (i, value) in self.annotation_values.iter().enumerate() {
+                    a[i] = value.trim().parse().map_err(|_| {
+                        Error::Invalid("Annotation crop coordinates need finite numbers".into())
+                    })?;
+                }
+                Some(PlanViewCrop {
+                    min: Point2::new(a[0], a[1]),
+                    max: Point2::new(a[2], a[3]),
+                })
+            } else {
+                None
+            },
             view_type: editor.document.model().views[&self.view]
                 .parameters
                 .plan
@@ -138,6 +170,15 @@ impl PlanDraft {
         parameters.level = Some(level);
         parameters.plan = Some(s);
         let mut commands = self.graphics.commands(editor.document.model(), self.view);
+        if let Some(command) = self
+            .element_overrides
+            .command(editor.document.model(), self.view)
+        {
+            commands.push(command);
+        }
+        if let Some(command) = self.rules.command(editor.document.model(), self.view) {
+            commands.push(command);
+        }
         commands.push(Command::UpdateView {
             id: self.view,
             parameters,
@@ -218,6 +259,14 @@ impl DesktopApp {
                 ui.collapsing("Graphics templates (saved standards)", |ui| {
                     draft.graphics.ui(ui, self.editor.document.model(), draft.view);
                 });
+                ui.collapsing("Per-element graphics overrides", |ui| {
+                    draft
+                        .element_overrides
+                        .ui(ui, self.editor.document.model(), draft.view);
+                });
+                if self.editor.document.model().plan_graphics_rules_compatible(draft.view) {
+                    ui.collapsing("Rule-based graphics", |ui| draft.rules.ui(ui));
+                }
                 ui.checkbox(&mut draft.visibility.walls,"Show native walls");
                 ui.checkbox(&mut draft.visibility.doors,"Show doors");
                 ui.checkbox(&mut draft.visibility.windows,"Show windows");
@@ -232,6 +281,22 @@ impl DesktopApp {
                         }
                     });
                     ui.label("Crop coordinates use the rotated view plane, in metres.");
+                }
+                if view_type == Some(os_model::PlanViewType::FloorPlan) {
+                    let enabled = ui.checkbox(&mut draft.annotation_crop, "Enable annotation crop");
+                    if enabled.changed() && draft.annotation_crop {
+                        draft.annotation_values = std::array::from_fn(|i| draft.values[i + 8].clone());
+                    }
+                    if draft.annotation_crop {
+                        ui.label("Requires a model crop. Expand these bounds to place annotations outside it.");
+                        egui::Grid::new("annotation_crop_fields").num_columns(2).show(ui, |ui| {
+                            for (i, label) in ["Annotation min X (m)", "Annotation min Y (m)", "Annotation max X (m)", "Annotation max Y (m)"].iter().enumerate() {
+                                ui.label(*label);
+                                ui.add(egui::TextEdit::singleline(&mut draft.annotation_values[i]).desired_width(220.));
+                                ui.end_row();
+                            }
+                        });
+                    }
                 }
             });
             if let Some(error) = &draft.error { ui.colored_label(theme::ERROR,error); }
@@ -264,6 +329,38 @@ impl DesktopApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn annotation_crop_staged_settings_validate_atomically_and_disable() {
+        let mut editor = Editor::new().unwrap();
+        let level = *editor.document.model().levels.keys().next().unwrap();
+        let view = editor.create_floor_plan("Annotations", level).unwrap();
+        let before = editor.document.model().clone();
+        let mut draft = PlanDraft::begin(&editor, view).unwrap();
+        draft.annotation_crop = true;
+        draft.annotation_values = ["-2", "-2", "2", "2"].map(str::to_owned);
+        assert!(draft.apply(&mut editor, Some(view)).is_err());
+        assert_eq!(editor.document.model(), &before);
+        draft.crop = true;
+        draft.values[8..12].clone_from_slice(&["-1", "-1", "1", "1"].map(str::to_owned));
+        draft.apply(&mut editor, Some(view)).unwrap();
+        let changed = editor.document.model().clone();
+        let mut draft = PlanDraft::begin(&editor, view).unwrap();
+        draft.values[10] = "3".into();
+        assert!(draft.apply(&mut editor, Some(view)).is_err());
+        assert_eq!(editor.document.model(), &changed);
+        draft.annotation_crop = false;
+        draft.apply(&mut editor, Some(view)).unwrap();
+        assert!(
+            editor.document.model().views[&view]
+                .parameters
+                .plan
+                .unwrap()
+                .annotation_crop
+                .is_none()
+        );
+        editor.undo().unwrap();
+        assert_eq!(editor.document.model(), &changed);
+    }
     #[test]
     fn plan_draft_is_atomic_and_rejects_invalid_and_stale_values() {
         let mut editor = Editor::new().unwrap();
@@ -507,6 +604,7 @@ mod tests {
             let expected = match line.role {
                 os_geometry::plan::PlanRole::Cut => Some(door_cut_style),
                 os_geometry::plan::PlanRole::Projected => Some(door_style),
+                os_geometry::plan::PlanRole::Overhead => None,
                 os_geometry::plan::PlanRole::Depth => None,
             };
             drawing.appearance(context, line.entity, line.role).unwrap() == expected
@@ -515,6 +613,7 @@ mod tests {
             let expected = match line.role {
                 os_geometry::plan::PlanRole::Cut => Some(window_cut_style),
                 os_geometry::plan::PlanRole::Projected => Some(window_style),
+                os_geometry::plan::PlanRole::Overhead => None,
                 os_geometry::plan::PlanRole::Depth => None,
             };
             drawing.appearance(context, line.entity, line.role).unwrap() == expected
@@ -528,6 +627,100 @@ mod tests {
                 weight_mm: 0.25,
                 dashed: false,
             })
+        );
+
+        let element_override = os_model::PlanElementGraphicsOverride {
+            cut: Some(os_model::PlanStrokeStyle {
+                color: [220, 30, 50],
+                weight_mm: 0.95,
+                pattern: os_model::PlanLinePattern::Dashed,
+            }),
+            projected: Some(os_model::PlanStrokeStyle {
+                color: [20, 150, 70],
+                weight_mm: 0.42,
+                pattern: os_model::PlanLinePattern::Solid,
+            }),
+        };
+        let mut element_edit = PlanDraft::begin(&editor, first).unwrap();
+        element_edit
+            .element_overrides
+            .overrides
+            .insert(door_id, element_override);
+        element_edit.apply(&mut editor, Some(first)).unwrap();
+        let overridden = editor.native_drawing(first).unwrap();
+        let overridden_context = editor.native_plan_context(first).unwrap();
+        let overridden_lines = overridden.provider_lines(overridden_context).unwrap();
+        let door_override_cut = os_render::plan::PlanStroke {
+            color: [220, 30, 50],
+            weight_mm: 0.95,
+            dashed: true,
+        };
+        let door_override_projected = os_render::plan::PlanStroke {
+            color: [20, 150, 70],
+            weight_mm: 0.42,
+            dashed: false,
+        };
+        assert!(
+            overridden_lines
+                .iter()
+                .filter(|line| line.entity == door_id)
+                .all(|line| {
+                    let expected = match line.role {
+                        os_geometry::plan::PlanRole::Cut => Some(door_override_cut),
+                        os_geometry::plan::PlanRole::Projected
+                        | os_geometry::plan::PlanRole::Overhead
+                        | os_geometry::plan::PlanRole::Depth => Some(door_override_projected),
+                    };
+                    overridden
+                        .appearance(overridden_context, door_id, line.role)
+                        .unwrap()
+                        == expected
+                })
+        );
+        let other_view = editor.native_drawing(second).unwrap();
+        let other_context = editor.native_plan_context(second).unwrap();
+        let other_door_lines: Vec<_> = other_view
+            .provider_lines(other_context)
+            .unwrap()
+            .into_iter()
+            .filter(|line| line.entity == door_id)
+            .collect();
+        assert!(!other_door_lines.is_empty());
+        assert!(
+            other_door_lines.iter().all(|line| {
+                let expected = match line.role {
+                    os_geometry::plan::PlanRole::Cut => Some(os_render::plan::PlanStroke {
+                        color: [35, 65, 88],
+                        weight_mm: 0.75,
+                        dashed: false,
+                    }),
+                    os_geometry::plan::PlanRole::Projected => Some(os_render::plan::PlanStroke {
+                        color: [35, 65, 88],
+                        weight_mm: 0.65,
+                        dashed: false,
+                    }),
+                    os_geometry::plan::PlanRole::Overhead => None,
+                    os_geometry::plan::PlanRole::Depth => None,
+                };
+                other_view
+                    .appearance(other_context, door_id, line.role)
+                    .unwrap()
+                    == expected
+            }),
+            "element overrides are isolated to their authored view"
+        );
+        editor.undo().unwrap();
+        assert!(
+            !editor
+                .document
+                .model()
+                .plan_element_graphics_overrides
+                .contains_key(&first)
+        );
+        editor.redo().unwrap();
+        assert_eq!(
+            editor.document.model().plan_element_graphics_overrides[&first][&door_id],
+            element_override
         );
 
         let mut edit = PlanDraft::begin(&editor, first).unwrap();
@@ -604,6 +797,10 @@ mod tests {
                 .cut
                 .weight_mm,
             0.95
+        );
+        assert_eq!(
+            editor.document.model().plan_element_graphics_overrides[&first][&door_id],
+            element_override
         );
         assert_eq!(
             editor.document.model().plan_graphics[&second].template,

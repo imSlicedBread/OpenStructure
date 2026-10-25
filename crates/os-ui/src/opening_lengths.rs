@@ -94,11 +94,15 @@ impl DesktopApp {
         let mut close = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
         egui::Modal::new(egui::Id::new("project_length_parameters")).show(ctx, |ui| {
             ui.set_width(560.);
-            ui.heading("Project Length parameters");
-            ui.small("Values are in metres. Bind dimensions in Manage opening type. Instance overrides remain pinned.");
+            ui.heading("Project parameters · Length / Scalar");
+            ui.small("Lengths use metres. Formulas: 0.02m * 2, + - * /, parentheses, @{UUID}. Instance overrides remain pinned.");
             ui.horizontal(|ui| {
+                if ui.add_enabled(draft.parameters.len()<os_model::MAX_LENGTH_PARAMETERS,egui::Button::new("New Scalar")).clicked() {
+                    let p=LengthParameter::new("core.length_parameter",LengthParameterParams {name:"New Scalar".into(),unit:LengthUnit::Scalar,value:1.,formula:None});
+                    draft.selected=Some(p.id());draft.parameters.insert(p.id(),p);
+                }
                 if ui.add_enabled(draft.parameters.len() < os_model::MAX_LENGTH_PARAMETERS, egui::Button::new("New Length")).clicked() {
-                    let p = LengthParameter::new("core.length_parameter", LengthParameterParams { name: "New Length".into(), unit: LengthUnit::Metres, value: 1. });
+                    let p = LengthParameter::new("core.length_parameter", LengthParameterParams { formula: None, name: "New Length".into(), unit: LengthUnit::Metres, value: 1. });
                     draft.selected = Some(p.id());
                     draft.parameters.insert(p.id(), p);
                 }
@@ -112,36 +116,55 @@ impl DesktopApp {
                     }
                     if ui.button("Delete Length").clicked() {
                         let uses = self.editor.document.model().length_parameter_uses(id);
-                        if uses.is_empty() {
+                        let dependents=draft.parameters.values().filter(|p|p.parameters.formula.as_ref().and_then(|f|os_model::ParameterExpression::parse(f).ok()).is_some_and(|e|e.references().contains(&id))).count();
+                        if uses.is_empty() && dependents==0 {
                             draft.parameters.remove(&id);
                             draft.selected = None;
                             draft.error = None;
                         } else {
-                            draft.error = Some(format!("Cannot delete: {} dimension binding(s). Unbind the affected types first.", uses.len()));
+                            draft.error = Some(format!("Cannot delete: {} property binding(s), {dependents} formula dependent(s). Remove references first.", uses.len()));
                         }
                     }
                 }
             });
             egui::ScrollArea::vertical().max_height((ctx.content_rect().height()-220.).max(140.)).show(ui, |ui| {
                 for (id, p) in &draft.parameters {
-                    if ui.selectable_label(draft.selected == Some(*id), format!("{} · {:.3} m · {}", p.parameters.name, p.parameters.value, id)).clicked() { draft.selected = Some(*id); }
+                    if ui.selectable_label(draft.selected == Some(*id), format!("{} · {} · {}", p.parameters.name, p.parameters.source_label(), id)).clicked() { draft.selected = Some(*id); }
                 }
                 if let Some(id) = draft.selected && let Some(p) = draft.parameters.get_mut(&id) {
                     ui.separator();
                     ui.label("Name");
                     ui.add(egui::TextEdit::singleline(&mut p.parameters.name).char_limit(256));
-                    ui.horizontal(|ui| { ui.label("Length (m)"); ui.add(egui::DragValue::new(&mut p.parameters.value).speed(0.01)); });
+                    ui.horizontal(|ui| {
+                        ui.selectable_value(&mut p.parameters.unit,LengthUnit::Metres,"Length (m)");
+                        ui.selectable_value(&mut p.parameters.unit,LengthUnit::Scalar,"Scalar");
+                    });
+                    let mut formula=p.parameters.formula.is_some();
+                    if ui.checkbox(&mut formula,"Formula").changed() {
+                        p.parameters.formula=formula.then(||format!("{}{}",p.parameters.value,if p.parameters.unit==LengthUnit::Metres {"m"}else{""}));
+                    }
+                    if let Some(formula)=&mut p.parameters.formula {ui.add(egui::TextEdit::multiline(formula).desired_rows(2).char_limit(os_model::MAX_FORMULA_BYTES));}
+                    else {ui.horizontal(|ui| { ui.label("Literal value"); ui.add(egui::DragValue::new(&mut p.parameters.value).speed(0.01)); });}
                     ui.small(format!("Identity: {id}"));
                     let model = self.editor.document.model();
                     let uses = model.length_parameter_uses(id);
-                    ui.label(format!("Affected dimension bindings: {}", uses.len()));
+                    ui.label(format!("Direct property bindings: {}", uses.len()));
                     for (ty, dimension) in uses {
                         let instances = model.openings.values().filter(|o| o.parameters.type_id() == Some(ty)).count();
                         ui.small(format!("{} · {dimension} · {instances} placed instance(s) · {ty}", model.opening_types[&ty].parameters.name));
                     }
                 }
+                if let Some(id)=draft.selected {
+                    for p in draft.parameters.values() {
+                        if p.parameters.formula.as_ref().and_then(|f|os_model::ParameterExpression::parse(f).ok()).is_some_and(|e|e.references().contains(&id)) {ui.small(format!("Formula dependent: {} · {}",p.parameters.name,p.id()));}
+                    }
+                }
+            });
                 match draft.preview(&self.editor) {
                     Ok(candidate) => {
+                        if let Ok(values)=os_model::evaluate_parameters(&candidate.length_parameters) {
+                            if let Some(id)=draft.selected && let Some(value)=values.get(&id) {ui.label(format!("Evaluated: {} {:?}",value.value,value.unit));}
+                        }
                         let model = self.editor.document.model();
                         let types = candidate.opening_types.keys().filter(|id| candidate.resolve_opening_type(**id).ok() != model.resolve_opening_type(**id).ok()).count();
                         let instances = candidate.openings.values().filter(|o| candidate.resolve_opening(&o.parameters).ok() != model.openings.get(&o.id()).and_then(|old| model.resolve_opening(&old.parameters).ok())).count();
@@ -149,7 +172,6 @@ impl DesktopApp {
                     }
                     Err(error) => { ui.colored_label(theme::ERROR, format!("Preview rejected: {error}")); }
                 }
-            });
             if let Some(error) = &draft.error { ui.colored_label(theme::ERROR, error); }
             ui.horizontal(|ui| {
                 if ui.button("Cancel Length edits").clicked() { close = true; }

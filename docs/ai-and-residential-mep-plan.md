@@ -24,7 +24,7 @@ editable using ordinary modeling tools.
 
 ## Existing foundation and missing pieces
 
-The current working tree has model schema 43, stable entity IDs, rooms, walls,
+At this roadmap's 2026-09-27 baseline, the working tree had model schema 43, stable entity IDs, rooms, walls,
 openings, floors, columns, roofs, stairs, ceilings, and reflected ceiling plans.
 Document edits use validated atomic command batches with undo/redo. Background
 worker and stale-result patterns already exist. Native storage supports schema

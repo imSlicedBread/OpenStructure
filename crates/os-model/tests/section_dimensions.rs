@@ -111,6 +111,7 @@ fn section_opening_references_follow_effective_sizes_station_and_project_height(
     let view = View::new(
         "core.view",
         ViewParams {
+            drafting: None,
             name: "Elevation".into(),
             kind: ViewKind::Section,
             level: Some(level),

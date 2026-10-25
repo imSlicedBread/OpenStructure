@@ -18,6 +18,7 @@ fn fixture() -> (Document, Sheet, Id) {
         width_mm: 300.0,
         height_mm: 200.0,
         scale_denominator: 100.0,
+        detail_number: "1".into(),
         title_override: Some("Ground plan".into()),
     });
     (

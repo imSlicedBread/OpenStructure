@@ -1,7 +1,10 @@
 use super::*;
 use os_core::Point2;
 use os_document::Command;
-use os_model::{RoomSeparationLine, RoomSeparationLineParams, Schedule, Wall};
+use os_model::{
+    ElementLifecycle, PhaseFilter, RoomSeparationLine, RoomSeparationLineParams, Schedule,
+    SchedulePhase, Wall, new_phase,
+};
 
 pub(crate) fn fixture() -> (DesktopApp, Id, Id, Id, Id) {
     let mut app = DesktopApp::new().unwrap();
@@ -66,6 +69,106 @@ pub(crate) fn fixture() -> (DesktopApp, Id, Id, Id, Id) {
     app.opening_schedule.session = Some(app.editor.document.session_id());
     app.opening_schedule.selected = Some(schedule_id);
     (app, rooms[0], schedule_id, view, partition)
+}
+
+#[test]
+fn phased_room_finish_rows_use_target_topology_and_demolished_rooms_previous_area() {
+    let (mut app, first_room, _, _, partition) = fixture();
+    let model = app.editor.document.model();
+    let level = model.rooms[&first_room].parameters.level;
+    let prior_phase = model.latest_phase().unwrap();
+    let order = model.ordered_phases().last().unwrap().parameters.order + 1;
+    let second_room = *model.rooms.keys().find(|id| **id != first_room).unwrap();
+    let renovation = new_phase("Renovation", order);
+    let target = renovation.id();
+    app.editor
+        .commands(
+            "Demolish partition and rooms",
+            vec![
+                Command::AddPhase(renovation),
+                Command::SetElementLifecycle {
+                    element: first_room,
+                    lifecycle: ElementLifecycle {
+                        created_in: prior_phase,
+                        demolished_in: Some(target),
+                    },
+                },
+                Command::SetElementLifecycle {
+                    element: second_room,
+                    lifecycle: ElementLifecycle {
+                        created_in: prior_phase,
+                        demolished_in: Some(target),
+                    },
+                },
+                Command::SetElementLifecycle {
+                    element: partition,
+                    lifecycle: ElementLifecycle {
+                        created_in: prior_phase,
+                        demolished_in: Some(target),
+                    },
+                },
+            ],
+        )
+        .unwrap();
+
+    let segments = app
+        .editor
+        .document
+        .model()
+        .room_boundary_segments_at_phase(level, target)
+        .unwrap();
+    let faces = derive_faces(&segments).unwrap();
+    let seed = Point2::new(2.0, 1.0);
+    let signature = faces.assign_seed(seed).unwrap().key.as_signature().to_vec();
+    let undo_entries = app.editor.document.history_stats().undo_entries;
+    let replacement = crate::room_tools::create_at_in_phase(
+        &mut app.editor,
+        level,
+        seed,
+        signature,
+        Some(target),
+    )
+    .unwrap();
+    assert_eq!(
+        app.editor.document.history_stats().undo_entries,
+        undo_entries + 1
+    );
+
+    let definition = |filter| {
+        let mut definition =
+            ScheduleParams::new("Phased Room Finishes", ScheduleCategory::RoomFinish);
+        definition.phase = SchedulePhase::PhaseAware {
+            target: Some(target),
+            filter,
+        };
+        definition
+    };
+    let demolished = rows(
+        app.editor.document.model(),
+        &definition(PhaseFilter::ShowDemolished),
+    )
+    .unwrap();
+    assert_eq!(demolished.len(), 2);
+    assert!(demolished.iter().all(|row| row.area == Some(12.0)));
+    assert!(demolished.iter().all(|row| row.id != replacement));
+
+    let new_rooms = rows(
+        app.editor.document.model(),
+        &definition(PhaseFilter::ShowNew),
+    )
+    .unwrap();
+    assert_eq!(new_rooms.len(), 1);
+    assert_eq!(new_rooms[0].id, replacement);
+    assert_eq!(new_rooms[0].area, Some(24.0));
+
+    let all = rows(
+        app.editor.document.model(),
+        &definition(PhaseFilter::ShowAll),
+    )
+    .unwrap();
+    assert_eq!(all.len(), 3);
+    assert_eq!(all.iter().filter(|row| row.area == Some(12.0)).count(), 2);
+    assert_eq!(all.iter().filter(|row| row.area == Some(24.0)).count(), 1);
 }
 
 pub(crate) fn move_partition(app: &mut DesktopApp, partition: Id) {

@@ -16,6 +16,16 @@ fn schema_52_face_migration_changes_only_headers_and_roundtrips_live_and_orphan_
     let mut expected = original;
     common::apply_wall_paths(&mut expected);
     expected["schema_version"] = SCHEMA_VERSION.into();
+    expected["sheet_sets"] = json!({});
+    expected["drawing_issues"] = json!({});
+    expected["plan_callouts"] = json!({});
+    expected["section_callouts"] = json!({});
+    expected["text_notes"] = json!({});
+    expected["plan_hidden_openings"] = json!({});
+    expected["plan_element_graphics_overrides"] = json!({});
+    expected["plan_graphics_rules"] = json!({});
+    expected["group_definitions"] = json!({});
+    expected["group_instances"] = json!({});
     for (key, data) in expected.as_object_mut().unwrap() {
         if key == "project" {
             data["header"]["schema_version"] = SCHEMA_VERSION.into();

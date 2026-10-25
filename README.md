@@ -11,13 +11,15 @@ The project aims to provide a practical alternative for parametric building desi
 OpenStructure has a 13-package Rust workspace with a native egui/eframe desktop,
 typed semantic model, atomic edits and bounded snapshot undo/redo, versioned
 `.osb` storage, restricted IFC4 exchange, and a depth-buffered 3D viewport with
-matching entity selection. The current native model is schema 70.
+matching entity selection. The current native model is schema 83, with ordered
+live floor-plan graphics rules for walls, doors, windows and slabs.
 
 Native authoring now includes straight and circular walls, bounded straight-wall
 joins, hosted doors and windows, floors, ceilings, roofs, stairs, columns,
 straight-run ramps, stair-hosted railings, casework, rooms, architectural grids,
 and partial curtain systems. Plan and split views support snapping, selection,
-dimensions, tags, sections, schedules, and basic sheet/vector-PDF output. These
+dimensions, tags, linked enlarged-plan callouts, sections, schedules, and basic
+sheet/vector-PDF output. These
 are development slices, not a production BIM or drawing system; the
 [coverage ledger](docs/2d-coverage.md) records the exact supported scope.
 
@@ -42,7 +44,7 @@ The [B/C development baseline](docs/bc-baseline-audit.md) is verified on Windows
 The optional `external-plugins` build supports explicit directory installation,
 a minimal plugin manager, a bounded Wasm runtime, descriptor-driven tools,
 background commands/geometry, cancellation/stale-result protection, and staged
-project opening. Native full-model plugins require API 51/schema 70; generic API
+project opening. Native full-model plugins require API 63/schema 83; generic API
 2/container 2 remain unchanged. Independently built [Rust Wall](examples/rust-wall/README.md)
 and [Rust column](examples/rust-column/README.md) examples exercise authoring,
 geometry, history, native storage and missing-provider preservation without
@@ -59,7 +61,7 @@ installs or automatically executes a plugin from that file.
 Typed opening properties independently inherit, pin or reset dimensions.
 Selected jamb handles resize with the opposite jamb fixed; the center grip
 still moves the whole opening. Drafts do not mutate the model or 3D scene.
-Native full-model plugins require API 51/schema 70; generic API 2/container 2
+Native full-model plugins require API 63/schema 83; generic API 2/container 2
 remain unchanged.
 Schema 35 adds independent floor/wall/ceiling project material assignments to rooms,
 live material-name-plus-code schedule cells, and subdued floor RGB fills in resolved
@@ -283,3 +285,11 @@ replacement. A failed open preserves the current document.
 ## Name and legal note
 
 OpenStructure is a working project name pending trademark clearance.
+
+Native [section-detail callouts](docs/native-section-callouts.md) create an enlarged
+Section and stable station/elevation marker in one undo step, with independent
+crop/scale and live sheet references (schema 75 / native API 56).
+
+View-owned [detail drafting and plain notes](docs/native-detail-drafting.md) now
+support configured Plans and Sections, with paper-unit text, one straight leader,
+and shared canvas/sheet/vector-PDF placement (schema 76 / native API 57).

@@ -43,6 +43,16 @@ impl State {
             .viewports
             .iter()
             .map(|v| v.view)
+            .chain(
+                editor
+                    .document
+                    .model()
+                    .sheet_sets
+                    .values()
+                    .flat_map(|set| &set.sheets)
+                    .filter_map(|id| editor.document.model().sheets.get(id))
+                    .flat_map(|s| s.parameters.viewports.iter().map(|v| v.view)),
+            )
             .filter(|id| Some(*id) != active)
             .collect();
         Some(Key {
@@ -224,6 +234,7 @@ mod tests {
             .clone();
         let mut duplicate = parameters.viewports[0].clone();
         duplicate.id = Id::new();
+        duplicate.detail_number = super::super::next_sheet_detail_number(&parameters.viewports);
         parameters.viewports.push(duplicate);
         let key = State::key(&app.editor, Some(sheet), None, Some(&parameters)).unwrap();
         assert_eq!(
@@ -329,6 +340,7 @@ mod tests {
         let mut vp = parameters.viewports[0].clone();
         vp.id = Id::new();
         vp.view = plan;
+        vp.detail_number = super::super::next_sheet_detail_number(&parameters.viewports);
         parameters.viewports.push(vp);
         app.editor.document = os_document::Document::from_model(model).unwrap();
         let context = app.editor.native_view_context(plan).unwrap();

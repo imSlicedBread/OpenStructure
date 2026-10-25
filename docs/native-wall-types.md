@@ -56,7 +56,7 @@ invalidate dependent walls and views. Explicit butt/corner/tee joins use the
 resolved compound profile and require compatible joined profiles; arbitrary
 layer termination and compound-profile junction design remain unresolved.
 
-The current built-in native Wall plugin path uses API 37 / model schema 56. The older
+The current built-in native Wall plugin path uses API 55 / model schema 74. The older
 single-Solid wall export and IFC wall export reject assigned compound walls
 instead of silently flattening or losing their layer data. API-2 generic DTO
 contracts and envelopes are unchanged; this feature does not grant arbitrary

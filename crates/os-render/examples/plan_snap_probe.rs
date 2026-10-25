@@ -29,6 +29,7 @@ fn main() {
 
 fn run(name: &str, count: usize, dense: bool, intersections: bool) {
     let context = PlanContext {
+        annotation_crop: None,
         session_id: Id::new(),
         model_revision: 0,
         view_id: Id::new(),

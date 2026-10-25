@@ -144,7 +144,15 @@ fn authored_extrusions_closed_volume_material_pose_reversal_and_all_projection_i
     p.kind = OpeningKind::Window;
     p.open_state = OpeningState::Default;
     p.window_operation = WindowOperation::Sliding;
+    // Opening-fixed accessories are now valid on operable windows and do not
+    // follow sash travel. PrimaryPanel retains its historical Fixed-only scope.
+    let fixed = authored_solids(&p, &wall, 0.).unwrap();
+    p.open_state = OpeningState::SlidingFraction(1.);
+    assert_eq!(fixed, authored_solids(&p, &wall, 0.).unwrap());
+    assert!(component_solids(&p, &wall, 0.).is_ok());
+    p.family.extrusions[0].attachment = OpeningAttachment::PrimaryPanel;
     assert!(component_solids(&p, &wall, 0.).is_err());
+    p.open_state = OpeningState::Default;
     p.window_operation = WindowOperation::Fixed;
     wall.path = WallPath::CircularArc {
         center: Point2::new(0., 0.),

@@ -22,6 +22,7 @@ fn shared_lengths_parameter_only_changes_reach_canvas_tags_sheet_and_scene() {
         let p = LengthParameter::new(
             "core.length_parameter",
             LengthParameterParams {
+                formula: Some("0.3m * 3".into()),
                 name: "Width".into(),
                 unit: LengthUnit::Metres,
                 value: 0.9,
@@ -68,6 +69,7 @@ fn shared_lengths_parameter_only_changes_reach_canvas_tags_sheet_and_scene() {
                 Command::UpdateLengthParameter {
                     id: pid,
                     parameters: LengthParameterParams {
+                        formula: Some("1m + 0.1m".into()),
                         name: "Width".into(),
                         unit: LengthUnit::Metres,
                         value: 1.1,
@@ -80,6 +82,20 @@ fn shared_lengths_parameter_only_changes_reach_canvas_tags_sheet_and_scene() {
         assert_ne!(label, before_label);
         assert!(label.contains("1.100 × 1.200"));
         assert_ne!(h.app.editor.scene[&opening], before);
+        let schedule = Schedule::new(
+            "core.schedule",
+            ScheduleParams::new("Formula schedule", ScheduleCategory::Window),
+        );
+        let schedule_id = schedule.id();
+        h.app
+            .editor
+            .command("Schedule", Command::AddSchedule(schedule))
+            .unwrap();
+        let table =
+            crate::opening_schedule::paper_table(h.app.editor.document.model(), schedule_id)
+                .unwrap();
+        assert!(table.rows.iter().flatten().any(|v| v == "1.100"));
+        h.settle_plan();
         let page = h.app.sheet_page().unwrap();
         assert!(page.marks().iter().any(|m| matches!(&m.kind, os_render::sheet::PaperMarkKind::Text { text, .. } if text == &label)));
     }

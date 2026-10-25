@@ -2,7 +2,8 @@
 use super::*;
 use os_core::ensure;
 use os_model::{
-    OpeningDefinition, OpeningKind, OpeningType, OpeningTypeParams, WindowPanePosition,
+    OpeningDefinition, OpeningKind, OpeningState, OpeningType, OpeningTypeParams,
+    WindowPanePosition,
 };
 
 const TYPE_FIELDS: [&str; 4] = [
@@ -29,7 +30,7 @@ pub(super) struct OpeningTypeDraft {
     editing_lengths: bool,
     editing: bool,
     duplicate: bool,
-    reset_paired_poses: bool,
+    reset_incompatible_poses: bool,
     source_opening: Option<Id>,
     values: [String; 4],
     error: Option<String>,
@@ -94,7 +95,7 @@ impl OpeningTypeDraft {
             editing_lengths: false,
             editing: false,
             duplicate: false,
-            reset_paired_poses: false,
+            reset_incompatible_poses: false,
             source_opening,
             values: [
                 width.to_string(),
@@ -132,7 +133,7 @@ impl OpeningTypeDraft {
             editing_lengths: false,
             editing: true,
             duplicate: false,
-            reset_paired_poses: false,
+            reset_incompatible_poses: false,
             source_opening: None,
             values: [
                 p.width.to_string(),
@@ -176,6 +177,41 @@ impl OpeningTypeDraft {
         })
     }
 
+    fn state_compatible_with_type(&self, state: OpeningState) -> bool {
+        match state {
+            OpeningState::Default => true,
+            OpeningState::DoorAngle(_) => self.kind == OpeningKind::Door,
+            OpeningState::DoorPairAngles { .. } => {
+                self.kind == OpeningKind::Door
+                    && matches!(self.family.door_leaves, os_model::DoorLeaves::Paired { .. })
+            }
+            OpeningState::SlidingFraction(_) => {
+                self.kind == OpeningKind::Window
+                    && self.window_operation == os_model::WindowOperation::Sliding
+            }
+            OpeningState::CasementAngle(_) => {
+                self.kind == OpeningKind::Window
+                    && self.window_operation == os_model::WindowOperation::Casement
+            }
+            OpeningState::CasementPairAngles { .. } => {
+                self.kind == OpeningKind::Window
+                    && matches!(
+                        self.window_operation,
+                        os_model::WindowOperation::PairedCasement { .. }
+                    )
+            }
+        }
+    }
+
+    fn has_incompatible_poses(&self, editor: &Editor) -> bool {
+        self.editing
+            && !self.duplicate
+            && editor.document.model().openings.values().any(|opening| {
+                opening.parameters.type_id() == Some(self.id)
+                    && !self.state_compatible_with_type(opening.parameters.open_state)
+            })
+    }
+
     #[cfg(test)]
     pub(super) fn profile_for_test(&self) -> &[os_core::Point2] {
         &self.family.profile
@@ -207,6 +243,28 @@ impl OpeningTypeDraft {
         if self.editing
             && let Some(original) = editor.document.model().opening_types.get(&self.id)
         {
+            for solid in &mut parameters.family.extrusions {
+                if let Some(old) = original
+                    .parameters
+                    .family
+                    .extrusions
+                    .iter()
+                    .find(|s| s.id == solid.id)
+                {
+                    if solid.bindings.x.is_some() {
+                        solid.position.x = old.position.x;
+                    }
+                    if solid.bindings.y.is_some() {
+                        solid.position.y = old.position.y;
+                    }
+                    if solid.bindings.depth.is_some() {
+                        solid.depth = old.depth;
+                    }
+                    if solid.bindings.normal_offset.is_some() {
+                        solid.normal_offset = old.normal_offset;
+                    }
+                }
+            }
             if self.bindings.width.is_some() {
                 parameters.width = original.parameters.width;
             }
@@ -218,7 +276,7 @@ impl OpeningTypeDraft {
             }
         }
         let mut commands = Vec::new();
-        if self.reset_paired_poses && self.editing && !self.duplicate {
+        if self.reset_incompatible_poses && self.editing && !self.duplicate {
             for opening in editor
                 .document
                 .model()
@@ -226,10 +284,7 @@ impl OpeningTypeDraft {
                 .values()
                 .filter(|o| o.parameters.type_id() == Some(self.id))
             {
-                if matches!(
-                    opening.parameters.open_state,
-                    os_model::OpeningState::DoorPairAngles { .. }
-                ) {
+                if !self.state_compatible_with_type(opening.parameters.open_state) {
                     let mut parameters = opening.parameters.clone();
                     parameters.open_state = os_model::OpeningState::Default;
                     commands.push(Command::UpdateOpening {
@@ -305,6 +360,10 @@ mod family_editor;
 #[cfg(test)]
 #[path = "opening_extrusion_tests.rs"]
 mod extrusion_tests;
+
+#[cfg(test)]
+#[path = "moving_sash_accessory_tests.rs"]
+mod moving_sash_accessory_tests;
 
 #[cfg(test)]
 #[path = "opening_profile_tests.rs"]
@@ -424,9 +483,11 @@ impl DesktopApp {
         .enumerate()
         {
             if let Some(id) = binding
-                && let Some(p) = self.editor.document.model().length_parameters.get(&id)
+                && let Ok(values) =
+                    os_model::evaluate_parameters(&self.editor.document.model().length_parameters)
+                && let Some(p) = values.get(&id)
             {
-                draft.values[index] = p.parameters.value.to_string();
+                draft.values[index] = p.value.to_string();
             }
         }
         let instances = self
@@ -478,12 +539,13 @@ impl DesktopApp {
                         .selected_text(binding.and_then(|id| self.editor.document.model().length_parameters.get(&id)).map_or("Type literal".into(), |p| format!("{} · {}", p.parameters.name, p.id())))
                         .show_ui(ui, |ui| {
                             ui.selectable_value(binding, None, "Type literal (freeze on unbind)");
-                            for p in self.editor.document.model().length_parameters.values() {
+                            for p in self.editor.document.model().length_parameters.values().filter(|p|p.parameters.unit==os_model::LengthUnit::Metres) {
                                 ui.selectable_value(binding, Some(p.id()), format!("{} · {:.3} m · {}", p.parameters.name, p.parameters.value, p.id()));
                             }
                         });
-                    if let Some(id) = *binding && let Some(p) = self.editor.document.model().length_parameters.get(&id) {
-                        draft.values[index] = p.parameters.value.to_string();
+                    if let Some(id) = *binding && let Ok(values) = os_model::evaluate_parameters(&self.editor.document.model().length_parameters)
+                && let Some(p) = values.get(&id) {
+                        draft.values[index] = p.value.to_string();
                     }
                     ui.label(format!("Effective value: {} m", draft.values[index]));
                 }
@@ -536,10 +598,6 @@ impl DesktopApp {
                     });
                     ui.small("Clear widths scale with the primary bay after frame, side lite and mullion. Hinge selects the active jamb.");
                 }
-                if draft.editing && self.editor.document.model().openings.values().any(|o| o.parameters.type_id() == Some(draft.id) && matches!(o.parameters.open_state, os_model::OpeningState::DoorPairAngles { .. })) {
-                    ui.checkbox(&mut draft.reset_paired_poses, "Reset paired poses to Default");
-                    ui.small("Apply resets all paired-angle instances of this type in the same transaction. Required before switching to Single.");
-                }
             }
             if draft.kind == OpeningKind::Window {
                 ui.horizontal(|ui| {
@@ -552,7 +610,19 @@ impl DesktopApp {
                         ui.selectable_value(&mut draft.window_operation, operation, format!("{operation:?}"));
                     }
                 });
-                ui.small("Closed 3D sashes on straight hosts with rectangular profiles. On curved hosts or custom nonrectangular profiles, operation affects only the plan symbol. No open-state controls.");
+                let is_pair = matches!(draft.window_operation, os_model::WindowOperation::PairedCasement { .. });
+                if ui.selectable_label(is_pair, "Paired casement").clicked() && !is_pair {
+                    draft.window_operation = os_model::WindowOperation::PairedCasement { start_fraction: 0.5, mullion_width: 0.05 };
+                }
+                if let os_model::WindowOperation::PairedCasement { start_fraction, mullion_width } = &mut draft.window_operation {
+                    ui.horizontal(|ui| {
+                        ui.label("Start sash width fraction");
+                        ui.add(egui::DragValue::new(start_fraction).speed(0.01).range(0.01..=0.99));
+                        ui.label("Center mullion (m)");
+                        ui.add(egui::DragValue::new(mullion_width).speed(0.001).range(0.001..=0.3));
+                    });
+                }
+                ui.small("Paired casements require rectangular profiles on straight hosts. Edit each sash angle in instance Properties or Adjust opening pose.");
                 ui.label("Pane position");
                 ui.horizontal(|ui| {
                     for (position, label) in [
@@ -564,6 +634,13 @@ impl DesktopApp {
                     }
                 });
                 ui.small("Left/right follow the wall's start → end direction. Face positions align the pane's outside surface with the wall face.");
+            }
+            if draft.has_incompatible_poses(&self.editor) {
+                ui.checkbox(
+                    &mut draft.reset_incompatible_poses,
+                    "Reset incompatible opening poses to Default",
+                );
+                ui.small("Apply resets only instances whose saved pose does not match the new type or operation, in the same transaction.");
             }
             draft.profile_editor(ui, &self.editor, self.plans.active);
             }
@@ -698,7 +775,7 @@ mod tests {
         assert!(draft.apply(&mut editor).is_err());
         assert_eq!(editor.document.model(), &before);
         assert_eq!(editor.document.history_stats(), history);
-        draft.reset_paired_poses = true;
+        draft.reset_incompatible_poses = true;
         let preview = draft.preview_model(&editor).unwrap();
         assert_eq!(editor.document.model(), &before);
         assert_eq!(
@@ -745,6 +822,79 @@ mod tests {
                 .window_operation,
             os_model::WindowOperation::Sliding
         );
+    }
+
+    #[test]
+    fn changing_window_operation_requires_explicit_reset_of_incompatible_instance_pose() {
+        let mut editor = Editor::new().unwrap();
+        let mut draft = OpeningTypeDraft::new(&editor, OpeningKind::Window, None, None);
+        draft.window_operation = os_model::WindowOperation::Casement;
+        let type_id = draft.apply(&mut editor).unwrap();
+        let level = *editor.document.model().levels.keys().next().unwrap();
+        let wall = Wall::new(os_walls::WALL_TYPE, default_wall(level));
+        let host = wall.id();
+        let opening = Opening::new(
+            "core.opening",
+            os_model::OpeningParams {
+                open_state: os_model::OpeningState::CasementAngle(42.),
+                name: "Operable window".into(),
+                host,
+                offset: 1.,
+                definition: OpeningDefinition::Typed { type_id },
+                width_override: None,
+                height_override: None,
+                sill_override: None,
+                pane_position_override: None,
+                lite_side_override: None,
+                hinge: Default::default(),
+                swing: Default::default(),
+            },
+        );
+        let opening_id = opening.id();
+        editor
+            .document
+            .execute(
+                "Fixture",
+                vec![Command::AddWall(wall), Command::AddOpening(opening)],
+            )
+            .unwrap();
+        editor.regenerate().unwrap();
+        let before = editor.document.model().clone();
+        let history = editor.document.history_stats();
+
+        let mut draft = OpeningTypeDraft::edit(&editor, type_id).unwrap();
+        draft.window_operation = os_model::WindowOperation::PairedCasement {
+            start_fraction: 0.6,
+            mullion_width: 0.04,
+        };
+        assert!(draft.apply(&mut editor).is_err());
+        assert_eq!(editor.document.model(), &before);
+        assert_eq!(editor.document.history_stats(), history);
+
+        draft.reset_incompatible_poses = true;
+        let preview = draft.preview_model(&editor).unwrap();
+        assert_eq!(editor.document.model(), &before);
+        assert_eq!(
+            preview.openings[&opening_id].parameters.open_state,
+            os_model::OpeningState::Default
+        );
+        draft.apply(&mut editor).unwrap();
+        let after = editor.document.model().clone();
+        assert_eq!(
+            after.opening_types[&type_id].parameters.window_operation,
+            os_model::WindowOperation::PairedCasement {
+                start_fraction: 0.6,
+                mullion_width: 0.04,
+            }
+        );
+        assert_eq!(
+            editor.document.history_stats().undo_entries,
+            history.undo_entries + 1
+        );
+        editor.undo().unwrap();
+        assert_eq!(editor.document.model(), &before);
+        editor.redo().unwrap();
+        assert_eq!(editor.document.model(), &after);
     }
 
     #[test]

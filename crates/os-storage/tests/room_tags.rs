@@ -46,6 +46,8 @@ fn room_tag_frozen_schema_twelve_migration_preserves_all_data_except_versions_an
     common::apply_schema_38_defaults(&mut expected);
     expected["plan_graphics_templates"] = json!({});
     expected["plan_graphics"] = json!({});
+    expected["plan_element_graphics_overrides"] = json!({});
+    expected["plan_graphics_rules"] = json!({});
     expected["project"]["header"]["schema_version"] = json!(SCHEMA_VERSION);
     for collection in [
         "sites",

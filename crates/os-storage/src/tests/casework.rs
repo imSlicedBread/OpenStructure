@@ -9,6 +9,22 @@ fn schema_61_without_casework() -> Value {
     let object = value.as_object_mut().unwrap();
     object.remove("casework_types");
     object.remove("casework");
+    object.remove("plan_callouts");
+    object.remove("section_callouts");
+    object.remove("text_notes");
+    object.remove("plan_hidden_openings");
+    object.remove("group_definitions");
+    object.remove("group_instances");
+    object.remove("plan_graphics_rules");
+    if let Some(sheets) = object.get_mut("sheets").and_then(Value::as_object_mut) {
+        for sheet in sheets.values_mut() {
+            if let Some(viewports) = sheet["parameters"]["viewports"].as_array_mut() {
+                for viewport in viewports {
+                    viewport.as_object_mut().unwrap().remove("detail_number");
+                }
+            }
+        }
+    }
     object.insert("schema_version".into(), json!(61));
     fn set_headers(value: &mut Value) {
         match value {

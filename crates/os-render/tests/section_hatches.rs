@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 
 fn context() -> PlanContext {
     PlanContext {
+        annotation_crop: None,
         session_id: Id::new(),
         model_revision: 1,
         view_id: Id::new(),

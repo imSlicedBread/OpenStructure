@@ -28,6 +28,16 @@ fn schema_seventeen_migration_is_explicit_and_atomic() {
     expected["columns"] = json!({});
     expected["casework_types"] = json!({});
     expected["casework"] = json!({});
+    expected["sheet_sets"] = json!({});
+    expected["drawing_issues"] = json!({});
+    expected["plan_callouts"] = json!({});
+    expected["section_callouts"] = json!({});
+    expected["text_notes"] = json!({});
+    expected["plan_hidden_openings"] = json!({});
+    expected["group_definitions"] = json!({});
+    expected["group_instances"] = json!({});
+    expected["plan_element_graphics_overrides"] = json!({});
+    expected["plan_graphics_rules"] = json!({});
     expected["plan_graphics_templates"] = json!({});
     expected["plan_graphics"] = json!({});
     expected["stairs"] = json!({});

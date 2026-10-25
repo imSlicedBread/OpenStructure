@@ -250,12 +250,12 @@ impl DesktopApp {
                     });
                 }
             });
+            phase_controls(
+                ui,
+                &mut draft.parameters.phase,
+                self.editor.document.model(),
+            );
             if draft.parameters.category != ScheduleCategory::RoomFinish {
-                phase_controls(
-                    ui,
-                    &mut draft.parameters.phase,
-                    self.editor.document.model(),
-                );
                 ui.label("Group counts · up to two keys, in order");
                 ui.horizontal_wrapped(|ui| {
                     for key in os_model::ScheduleGroupField::ALL {

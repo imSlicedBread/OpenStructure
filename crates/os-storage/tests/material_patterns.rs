@@ -5,6 +5,16 @@ use os_storage::{StorageBackend, ZipJsonStorage, migrate};
 #[test]
 fn material_patterns_schema69_migration_roundtrip_and_atomic_ambiguity_rejection() {
     let mut old = serde_json::to_value(Model::new("Legacy")).unwrap();
+    old.as_object_mut().unwrap().remove("plan_callouts");
+    old.as_object_mut().unwrap().remove("section_callouts");
+    old.as_object_mut().unwrap().remove("text_notes");
+    old.as_object_mut().unwrap().remove("plan_hidden_openings");
+    old.as_object_mut().unwrap().remove("group_definitions");
+    old.as_object_mut().unwrap().remove("group_instances");
+    old.as_object_mut().unwrap().remove("plan_graphics_rules");
+    old.as_object_mut().unwrap().remove("sheet_sets");
+    old.as_object_mut().unwrap().remove("drawing_issues");
+    old.as_object_mut().unwrap().remove("material_patterns");
     old["schema_version"] = 69.into();
     for (name, value) in old.as_object_mut().unwrap() {
         if name == "project" {
@@ -26,6 +36,10 @@ fn material_patterns_schema69_migration_roundtrip_and_atomic_ambiguity_rejection
     );
     old["materials"][material.id().to_string()] = serde_json::to_value(&material).unwrap();
     old["materials"][material.id().to_string()]["header"]["schema_version"] = 69.into();
+    old["materials"][material.id().to_string()]["parameters"]
+        .as_object_mut()
+        .unwrap()
+        .remove("cut_pattern");
     for field in ["patterns", "reference"] {
         let mut bad = old.clone();
         if field == "patterns" {

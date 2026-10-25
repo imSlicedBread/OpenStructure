@@ -83,6 +83,7 @@ fn schema_fourteen_migrates_to_fifteen_and_preserves_unconfigured_views() {
     expected["columns"] = json!({});
     expected["plan_graphics_templates"] = json!({});
     expected["plan_graphics"] = json!({});
+    expected["plan_graphics_rules"] = json!({});
     expected["stairs"] = json!({});
     expected["roofs"] = json!({});
     expected["schema_version"] = json!(SCHEMA_VERSION);
@@ -153,6 +154,7 @@ fn linked_section_definition_is_transactional_and_survives_save_reopen() {
     let mut document = Document::new("Section view").unwrap();
     let level = *document.model().levels.keys().next().unwrap();
     let parameters = ViewParams {
+        drafting: None,
         facade: None,
         elevation: None,
         name: "Section A".into(),

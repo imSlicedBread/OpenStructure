@@ -1329,6 +1329,24 @@ pub(super) fn plan_symbol(
                 }
             }
         }
+        OpeningKind::Window
+            if matches!(
+                p.window_operation,
+                os_model::WindowOperation::PairedCasement { .. }
+            ) =>
+        {
+            if !spans.is_empty() {
+                pairs.extend(os_geometry::openings::paired_casement_plan_lines(p, wall)?);
+                if let Some(bays) = bays {
+                    for y in [-half * 0.5, pane_offset(p, wall), half * 0.5] {
+                        pairs.push((
+                            Point2::new(p.offset + bays.lite.0, y),
+                            Point2::new(p.offset + bays.lite.1, y),
+                        ));
+                    }
+                }
+            }
+        }
         OpeningKind::Window => {
             let spans = if spans.is_empty() {
                 spans
@@ -1551,7 +1569,7 @@ pub(super) fn plan_symbol(
             let at = |t: f64, y: f64| Point2::new(x0 + t * (x1 - x0), y * half);
             let marks_start = pairs.len();
             match p.window_operation {
-                WindowOperation::Fixed => {}
+                WindowOperation::Fixed | WindowOperation::PairedCasement { .. } => {}
                 WindowOperation::Sliding => pairs.extend([
                     (at(0., -0.35), at(0.6, -0.35)),
                     (at(0.6, -0.35), at(0.6, 0.)),
@@ -1825,16 +1843,24 @@ impl OpeningDraft {
                 os_model::DoorLeaves::Paired { .. }
             ),
             inactive_state_value: match params.open_state {
+                os_model::OpeningState::CasementPairAngles { end_degrees, .. } => end_degrees,
                 os_model::OpeningState::DoorPairAngles {
                     inactive_degrees, ..
                 } => inactive_degrees,
                 os_model::OpeningState::DoorAngle(v) => v,
-                _ => 90.,
+                _ => {
+                    if resolved.kind == OpeningKind::Window {
+                        0.
+                    } else {
+                        90.
+                    }
+                }
             }
             .to_string(),
             state_operation: resolved.window_operation,
             state_override: params.open_state != os_model::OpeningState::Default,
             state_value: match params.open_state {
+                os_model::OpeningState::CasementPairAngles { start_degrees, .. } => start_degrees,
                 os_model::OpeningState::DoorPairAngles { active_degrees, .. } => active_degrees,
                 os_model::OpeningState::Default => {
                     if resolved.kind == OpeningKind::Door {
@@ -1925,6 +1951,18 @@ impl OpeningDraft {
                         }
                     } else {
                         os_model::OpeningState::DoorAngle(value)
+                    }
+                } else if matches!(
+                    self.state_operation,
+                    os_model::WindowOperation::PairedCasement { .. }
+                ) {
+                    os_model::OpeningState::CasementPairAngles {
+                        start_degrees: value,
+                        end_degrees: self
+                            .inactive_state_value
+                            .trim()
+                            .parse()
+                            .map_err(|_| Error::Invalid("End sash angle needs a number".into()))?,
                     }
                 } else if self.state_operation == os_model::WindowOperation::Sliding {
                     os_model::OpeningState::SlidingFraction(value)
@@ -2290,15 +2328,16 @@ impl DesktopApp {
                             ui.radio_value(&mut draft.state_override, false, "Default pose");
                             ui.radio_value(&mut draft.state_override, true, "Override pose");
                         });
-                        let label = if draft.paired { "Active leaf angle (0–90°)" }
+                        let pair_sashes = matches!(draft.state_operation, os_model::WindowOperation::PairedCasement { .. });
+                        let label = if pair_sashes { "Start sash angle (0-90 degrees)" } else if draft.paired { "Active leaf angle (0–90°)" }
                             else if draft.kind == OpeningKind::Door { "Door angle (0–90°)" }
                             else if draft.state_operation == os_model::WindowOperation::Sliding { "Sliding fraction (0–1)" }
                             else { "Casement angle (0–90°)" };
                         ui.label(label);
                         ui.add_enabled(draft.state_override, egui::TextEdit::singleline(&mut draft.state_value)
                             .char_limit(64).desired_width(170.0));
-                        if draft.paired {
-                            ui.label("Inactive leaf angle (0–90°)");
+                        if draft.paired || pair_sashes {
+                            ui.label(if pair_sashes { "End sash angle (0-90 degrees)" } else { "Inactive leaf angle (0-90 degrees)" });
                             ui.add_enabled(draft.state_override, egui::TextEdit::singleline(&mut draft.inactive_state_value).char_limit(64).desired_width(170.0));
                             if ui.button("Reset paired poses to Default").clicked() {
                                 draft.state_override = false;
@@ -2306,9 +2345,9 @@ impl DesktopApp {
                         }
                     });
                     if !draft.state_supported {
-                        ui.label("Pose unavailable: requires a straight host and rectangular door or Sliding/Casement window. Stored pose is retained; current geometry is preserved.");
+                        ui.label("Pose unavailable: requires a straight host and rectangular door or Sliding/Casement/Paired Casement window. Stored pose is retained; current geometry is preserved.");
                     } else {
-                        ui.label("Default: doors 90°, windows closed. Sliding Start sash travels toward End; Casement hinges at Start toward the left of the host.");
+                        ui.label("Default: doors 90°, windows closed. Sliding Start sash travels toward End; Casements hinge at both jambs and open outward.");
                     }
                 });
                 egui::Grid::new("opening_fields").num_columns(2).show(ui, |ui| {

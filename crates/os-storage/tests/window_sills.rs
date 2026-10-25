@@ -31,6 +31,14 @@ fn schema_28_window_sills_preserve_identity_geometry_extensions_and_reopen() {
     }
     // Reversing only the declared additions must restore every original field.
     let mut reversed = migrated;
+    reversed
+        .as_object_mut()
+        .unwrap()
+        .remove("plan_element_graphics_overrides");
+    reversed
+        .as_object_mut()
+        .unwrap()
+        .remove("plan_graphics_rules");
     reversed.as_object_mut().unwrap().remove("opening_tags");
     reversed["schema_version"] = json!(28);
     for (key, data) in reversed.as_object_mut().unwrap() {

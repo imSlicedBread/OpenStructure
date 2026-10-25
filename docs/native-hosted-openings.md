@@ -1,5 +1,264 @@
 # Native hosted doors and windows
 
+## Direct linked-elevation head and sill handles
+
+Linked Elevations now offer an explicit **Move opening** button for one selected,
+visible native rectangular opening on a straight host. Body dragging preserves
+the grab offset and dimensions: doors move horizontally, windows horizontally
+and vertically. Only changed typed-window sill is pinned; existing width/height
+pins and all other instance properties are retained. Exact no-op preserves
+serialized parameters/history. Resize grips win their hit disks; canvas pan
+remains available. Full disposable previews and guarded single-command release
+share the existing validation and stale-context contracts. See
+[Move opening](native-elevations.md#move-opening) for scope and test coverage.
+The prior full-suite 547 passed / 18 failed / 5 ignored result predates jamb
+handles and this move tool; no full-suite rerun is claimed here.
+Move validation on E: (offline/locked, incremental=false): default-feature
+`elevation_` filter **21/21 passed**, all-feature os-ui compile check passed,
+and scoped rustfmt check passed. This includes four move test functions and
+the existing jamb/head/sill regression tests.
+
+Linked Elevations also expose Start/End jamb grips on visible nominal vertical
+edges (10 logical px hit, 6 px visual), suppressed where grip hit areas overlap.
+Horizontal drag keeps the opposite jamb and height/sill fixed; Start edits
+offset+width and End edits width only. Typed edits pin only changed width; legacy
+edits retain their existing definition. Exact return-to-origin is a no-op.
+Visible other jambs and wall ends use the existing snap preferences and 12 px
+tolerance. Invalid host fit, overlap, clearance locks or component geometry
+reject the candidate without correction. The guarded disposable preview and
+atomic release path are shared with head/sill edits. Both-DPI jamb tests are in
+`elevation_resize_tests.rs`. On 2026-10-23 the all-feature `elevation_` filter
+passed 17/17 and `plan_workspace::elevations::tests` passed 11/11. An earlier
+full serial `os-ui` run on the head/sill-only baseline had 18 failures among 570
+tests; it was not rerun after adding jamb handles. See the
+[validation record](native-elevations.md#start-and-end-jamb-handles).
+
+In a linked wall Elevation, select one visible native opening and drag its head
+handle to change height while keeping sill fixed. Windows also expose a sill
+handle that keeps head fixed; doors remain level-bound. The disposable preview
+rebuilds the host aperture, component geometry and elevation dimensions without
+changing the document or 3D. Valid release commits one `UpdateOpening`, preserving
+identity and untouched properties. Typed edits pin only changed dimensions;
+returning to the starting geometry preserves exact inheritance/pins and history.
+
+Visible nominal head/sill and host base/top elevations support 12-logical-pixel
+snapping under the shared controls, including midpoint-only snapping. The edited
+opening and cropped references are excluded. Invalid candidates and stale or
+canceled drags leave the opening unchanged; canvas body dragging still pans.
+This requires a straight host and rectangular aperture. Schema/storage/plugin
+contracts are unchanged. See [interaction, guards, tests and remaining limits](native-elevations.md#direct-head-and-sill-handles).
+
+## Direct plan pose handles (schema 80 / API 61, unchanged)
+
+Select one visible opening in an authored FloorPlan and choose **Adjust opening
+pose** at the upper-right of the canvas. A single transient handle replaces center/jamb
+and flip controls: the free door/casement edge or the moving Start sash edge.
+Drag for a disposable preview and release to apply one **UpdateOpening** and exit
+the mode. Escape exits without an edit. Numeric pose entry and **Reset to
+Default** remain in Properties. The handle is not an exported mark or a semantic
+pick/snap target.
+
+The bounded scope is rectangular Single/Paired doors and Casement/Sliding windows on
+straight native hosts, following `supports_open_state`. Production primary-bay,
+frame, pane/track and side-lite geometry determines the pivot, free edge and
+travel; nominal width is never substituted. Door hinge/swing, reversed or rotated
+hosts, dimension pins and supported moving accessories retain their existing
+meaning. Angular drag accumulates unwrapped signed changes between pointer
+samples, so crossing the opposite ray does not jump between clamped endpoints.
+It uses a captured grab offset; Sliding
+projects displacement onto its movement axis. Angles clamp to 0–90° and travel
+to 0–1. Shift quantizes to 15° or 0.1. Endpoint/intersection snaps are not used.
+Acquisition and release too close to an angular pivot are rejected.
+
+Only `open_state` changes. Returning to the initial effective pose preserves the
+original representation, including `Default`, without adding history. Each
+candidate validates the disposable model and production component/accessory
+meshes. Preview replaces only that opening's plan symbol; model, cached drawing,
+apertures, dimensions, schedules, materials, history and 3D remain untouched until
+commit. Committed state follows existing plan/cross-view/sheet/PDF regeneration.
+
+The Rehost snapshot guard binds selection/opening, document session/revision,
+view/settings, provider activation/signature and drawing identity. Camera,
+canvas and pointer-to-handle offset are captured at press. Escape, focus/pointer
+loss, hidden/stale selection, competing tools/modals and camera/layout changes
+cancel without a pose edit. Pointer ownership survives cancellation through
+release. Category, phase, instance hiding, range, crop and canvas visibility
+govern eligibility.
+
+For paired doors, **Active leaf** and **Inactive leaf** select the free-edge handle
+before acquisition, including when both leaves are closed and their free edges
+coincide. Active/inactive identity follows the production clear leaf geometry
+through hinge reversal, frame deductions and either side lite. The selection is
+captured at press; switching leaves discards the drag and requires a fresh press.
+The selector stays within the canvas without changing its bounds. Releasing onto
+it cancels the pending pose edit. The acquisition radius remains 10 logical px.
+
+Only the chosen effective angle changes. A changed `Default` or shared
+`DoorAngle` becomes `DoorPairAngles`, preserving the other leaf's effective angle.
+Returning to the original pose retains the exact original state representation
+and creates no history. Existing ActiveLeaf/InactiveLeaf accessories retain their
+identities and follow committed geometry. Model, host aperture, dimension pins,
+materials and 3D stay unchanged during preview; one guarded release regenerates
+committed geometry. No schema, native API, package or provider protocol changes.
+
+Paired-leaf acceptance adds equal/unequal leaf geometry, closed-pair selection,
+both display profiles, independent/default/shared states, accessorized preview,
+undo/redo/reopen, Shift quantization, angular crossings/retracing, hit radius and
+split canvas ownership. The cancellation and visibility matrices now exercise
+paired doors alongside existing single doors and operable windows. Paired
+windows, curved/profiled pairs, dual-leaf dragging, collision solving, animation,
+family constraints and IFC changes remain outside this increment.
+
+Evidence: `os-ui/src/plan_workspace/opening_pose_tests.rs` uses real egui events at
+1280×800/100% and 1000×650/150% for rotated/reversed hosts and handing,
+frames/lites/pins/accessories, painted preview versus committed symbols, solid
+edge agreement, Default/explicit/no-op, endpoints/intermediate values, grab
+offset, Shift, opposite-ray crossings in both directions and retracing,
+stale/cancel/invalid input, eligibility and one-step
+undo/redo/reopen. `pose_handle_analytic_clear_bays_tracks_frames_and_all_door_handings`
+in `os-geometry/src/openings.rs` independently checks angular and sliding math
+with and without frames and either side lite.
+
+M01.10 remains partial. Curved/profiled paired-leaf handles, multi-selection,
+animation, collision/clash solving, persisted constraints, native-window visual
+acceptance and physical-print qualification are excluded. This increment changes
+no schema, native/generic API, family/package, container or issue-bundle version
+and makes no Revit-parity claim.
+
+Paired-leaf validation (2026-10-24, E: checkout):
+
+- Build environment: `CARGO_TARGET_DIR=E:\fkey labs second drive\OpenStructure\target-overhead`,
+  `CARGO_INCREMENTAL=0`; `TEMP` and `TMP` point to that target directory's `tmp`.
+- `cargo test --offline --locked -p os-geometry --lib openings::tests -- --test-threads=1`:
+  **12 passed**, including paired handle/panel-edge agreement and Single/Casement/Sliding regressions.
+- `cargo test --offline --locked -p os-geometry --test paired_leaf_accessories -- --test-threads=1`:
+  **1 passed**, including both leaf attachments, handings, host directions and side lites.
+- Coordinator rerun: `cargo test --offline --locked -p os-ui --lib paired_pose_ -- --test-threads=1`:
+  **4 passed**, including both DPI profiles, selector cancellation, preview isolation,
+  independent leaf angles, one-step history, save/reopen and accessory motion.
+- `rustfmt --check --edition 2024 --config skip_children=true` for the geometry
+  pose and UI pose/test files: passed.
+- `cargo clippy --offline --locked -p os-geometry -p os-ui --lib -- -D warnings
+  -A clippy::suspicious-assignment-formatting -A clippy::collapsible-if
+  -A clippy::large-enum-variant -A clippy::manual-checked-ops`: passed. These are
+  four unrelated existing lint classes.
+- Scoped `git diff --check`: passed. Workspace-wide tests were not rerun.
+- Pointer acceptance compares the committed free edge with the requested pose to
+  **0.001 logical px**. A 37-degree inactive-leaf target produced 37.000106 degrees
+  through f32 egui pointer coordinates; imposing an absolute 0.0001-degree
+  tolerance incorrectly rejected that subpixel-equivalent result. The untouched
+  leaf angle, instance fields, no-op representation and history remain exact checks.
+
+Validation (2026-10-11):
+
+- `cargo test -p os-ui --lib plan_workspace::opening_tests --locked --offline -- --test-threads=1`:
+  final feature-enabled run: 86 passed, 13 failed, 0 ignored (165.62 seconds).
+  All five pose tests passed; the 13 failures exactly match the isolated baseline
+  below, including failure locations and canvas coordinates.
+- `cargo test -p os-ui --lib opening_pose_tests --locked --offline -- --test-threads=1`:
+  5 passed, including continuous-angle retracing, endpoint release and unchanged
+  canvas bounds at both DPI profiles.
+- `cargo test -p os-ui --lib pose_handles_unwrap_opposite_ray_both_directions_handing_and_shift --locked --offline -- --test-threads=1`:
+  1 passed independently.
+- `cargo test -p os-geometry --lib pose_handle_analytic_clear_bays_tracks_frames_and_all_door_handings --locked --offline`:
+  1 passed.
+- `cargo check -p os-ui --all-features --locked --offline`: passed.
+- `cargo clippy -p os-ui -p os-geometry --all-targets --all-features --locked --offline --no-deps -- -D warnings`:
+  blocked by six existing warnings in text-note/section-drafting tests,
+  `opening_lengths.rs`, the drafting snapshot enum in `plan.rs`, and the
+  annotation-crop block in `plan_workspace.rs`; none in the pose code.
+
+Baseline: the existing opening suite independently
+reproduced 13 failures with pose validation, input and the canvas action disabled
+in a temporary build. Those hooks were restored after that build. The command
+was `cargo test -p os-ui --lib plan_workspace::opening_tests --locked --offline -- --test-threads=1 --skip opening_pose_tests`:
+81 passed, 13 failed. Only the five new pose tests were excluded from this
+baseline; no existing assertions or fixtures were changed. Runs use workspace
+`TEMP`/`TMP` for archive tests and execute serially to avoid Windows linker locks.
+
+The baseline failures are listed below relative to `plan_workspace::opening_tests`.
+Seven fail because fixture points fall outside the 150% canvas; six cannot find
+the expected painted controls or spacing labels.
+
+- `arc_opening_tests::arc_window_flip_fields_geometry_and_history_both_dpis`
+- `draw_opening_width_invalid_release_and_stale_press_ownership`
+- `opening_jamb_hidden_crop_and_host_level_visibility`
+- `opening_jamb_preview_aperture_and_single_update_history`
+- `opening_jamb_rejects_effective_frame_fit_and_start_side_overlap`
+- `opening_rehost_preview_commit_history_and_both_host_regeneration`
+- `opening_spacing_tests::clearance_lock_spacing_ui_geometry_history_unlock_and_neighbor_guard`
+- `opening_spacing_tests::opening_spacing_arc_cancel_invalid_and_stale_context`
+- `opening_spacing_tests::opening_spacing_arc_exact_station_graphic_commit_and_history`
+- `opening_spacing_tests::opening_spacing_editor_stale_context_and_changed_reference`
+- `opening_spacing_tests::opening_spacing_exact_preserved_fields_history_all_profiles_and_references`
+- `placement_orientation_tests::copied_orientation_is_relative_preserves_source_and_double_toggle_keeps_nullable_pins`
+- `placement_width_tests::exact_width_type_change_repeat_and_snapped_center`
+
+Schema 77 / family 10 adds bounded Length/Scalar project formulas for shared
+type dimensions and authored extrusion X/Y/depth/normal offset. Instance pins,
+host restrictions and stable solid ownership remain in force. See
+[typed parameter formulas](native-parameter-formulas.md) for migration, editor,
+package and cross-view evidence and remaining M02/M03 scope.
+
+## Paired-leaf accessories (schema 73 / family 9)
+
+The Solids editor offers **Active leaf** and **Inactive leaf** for rectangular
+paired doors on straight hosts. Each profile uses its leaf's clear width after
+outer frame and side-lite insets and the clear door height. X runs from hinge
+to free edge; positive normal follows that directed axis's left normal. Exact
+position, depth and normal offset follow the existing independent leaf poses.
+Changing handedness swaps host ends while preserving active/inactive identity.
+Opening-fixed solids remain stationary. PrimaryPanel remains single-leaf only;
+changing Single/Paired requires explicit accessory reassignment before Apply.
+
+The 16-solid budget, material provenance and opening-owner picking are retained.
+Draft preview never mutates the model or live scene; Apply preflights all instances,
+including hidden and dimension-pinned placements, as one undoable type edit.
+Plan, 3D, section, elevation, facade and linked sheet/PDF share the resulting geometry.
+Schema 72→73 and package 8→9 advance family 8→9 without changing old attachment
+values, identities or poses. New leaf attachments or paired accessory definitions
+disguised as legacy wires are rejected. Native transport requires API 54/schema 73;
+container 2 and generic API 2 stay unchanged.
+
+No curved hosts, nonrectangular parents/cuts, nested families, voids, formulas,
+hardware catalog or clash solving are added. IFC still rejects authored solids.
+Focused checks and exact commands: [paired-leaf validation](paired-leaf-validation.md).
+
+## Moving-sash accessories (schema 72 / family 8)
+
+The Solids editor now offers **Moving sash** for rectangular Casement windows
+and **Moving Start sash** for rectangular Sliding windows on straight hosts.
+The normalized profile uses the clear sash frame after frame and side-lite
+insets. Casement accessories rotate about the same Start hinge as the sash;
+Sliding accessories use track 0's width, normal centre and committed travel.
+The entire solid, including metric depth and normal offset, follows that pose.
+Parent effective depth and pane position remain authoritative with narrow lites
+and dimension pins. Opening-fixed accessories stay stationary; `PrimaryPanel`
+retains its existing single-door / Fixed-window meaning and is not silently
+converted when changing operation. An incompatible attachment blocks Apply.
+
+Accessories remain type-owned; committed opening state remains instance-owned.
+The existing 16-solid budget, profile/depth/offset bounds, all-instance preflight,
+single undo transaction and draft Escape/session/revision guards are unchanged.
+A hidden invalid placement blocks the whole type update. Opening UUIDs, pins,
+apertures and nominal schedule dimensions are unchanged. Shared production solids
+feed 3D/section/elevation/facade and plan contours feed linked sheet/vector PDF,
+retaining solid/material provenance and opening-owner picking.
+
+Schema 71→72 and package 7→8 explicitly advance family 7→8 without changing old
+attachment values. New attachment/operation semantics in old-version payloads
+are rejected. That increment required API 53/schema 72; container 2 and
+generic API 2 are unchanged. Family 9 adds paired leaves above. End-sash attachments, curved hosts,
+nonrectangular parents and IFC family export remain unsupported. This is bounded
+accessory authoring, not Revit parity or general constrained family modelling.
+
+Focused validation: 12 new tests, including 864 analytic poses and both-DPI egui
+acceptance; the all-feature opening UI regression selection passed 241 tests.
+Model/document/geometry/storage checks, native API gates, warning-denied Clippy
+and changed-file formatting passed. Exact commands/results, changed files and
+limits are in [moving-sash validation](moving-sash-validation.md). Full-workspace
+validation is intentionally reserved for the coordinator.
+
 ## Authored additive profile solids (schema 67 / family 7)
 
 In the opening type editor choose **Solids…**. Add, duplicate, rename or delete up
@@ -17,10 +276,10 @@ actual hinge-to-free-edge direction, swing and committed angle. Positive normal
 is the directed panel's left normal. The parent effective depth is shared with
 two-bay pane geometry, including narrow lites and instance size overrides.
 
-This additive increment supports single rectangular doors and Fixed rectangular
-windows on straight native hosts. Paired leaves, sliding/casement windows, curved
-hosts and nonrectangular parent panels are explicitly rejected when additions are
-present. Additions neither enlarge the host cut nor change nominal schedule
+The initial family-7 increment supports single rectangular doors and Fixed
+rectangular windows on straight native hosts; family 8 adds the moving-sash scope
+above and family 9 adds paired leaves. Curved hosts and nonrectangular parent panels are explicitly
+rejected when additions are present. Additions neither enlarge the host cut nor change nominal schedule
 dimensions. They are independent solids, not Boolean unions; touching/overlap is
 not a constraint or clash-solving system. No nested families, void operations,
 revolves, sweeps, lofts, formulas or constrained sketches are introduced.
@@ -142,7 +401,7 @@ unchanged. Parameter-only edits invalidate dependent types, openings, hosts,
 drawings, tags, schedules and sheets; preview leaves the live scene unchanged.
 
 Native persistence uses schema 56 and full-model plugin API 37 at that feature
-milestone; current persistence is schema 58/API 39. Generic API 2
+milestone; current persistence is schema 74/API 55. Generic API 2
 stays unchanged. Package v4 preserves referenced shared parameters with visible
 copy/remap previews. IFC export rejects these semantics explicitly. Formulas,
 reporting parameters, other categories, arbitrary instance bindings and package
@@ -383,7 +642,7 @@ opening instance parameters.
 
 Schema 51→52 adds the required type field and advances all native headers.
 `.osot` v3 persists the enum; v1/v2 packages import as Fixed. Native full-model
-plugins require API 33/schema 52, while generic API 2 and container 2 are
+plugins required API 33/schema 52 at that milestone, while generic API 2 and container 2 are
 unchanged. Focused model, package, migration, and plan-symbol tests cover the
 default, compatibility, distinct marks and rotated hosts. The original symbol-only
 3D limitation is superseded for eligible windows below.
@@ -467,8 +726,8 @@ Schema 49→50 strictly advances each opening family from version 4 to 5 and
 adds required nullable `side_lite`; existing families migrate to null, preserving
 their previous single-panel geometry. Migration validates the whole copy before
 adoption and advances all native headers. At schema 50, native full-model
-plugins used API 31/schema 50; schema 51 used API 32. Current plugins require
-API 33/schema 52. Current native full-model plugins use API 39/schema 58.
+plugins used API 31/schema 50; schema 51 used API 32. Current native full-model plugins require
+API 56/schema 75.
 Generic API 2 and container 2 are unchanged. `.osot` package
 version 2 carries the optional lite material dependency; version 3 adds window
 operation metadata; version-1 packages import as single-panel version-5 families.
@@ -740,7 +999,7 @@ opening width. On straight hosts the wall void remains rectangular. The type edi
 dragging, inserting/removing vertices, numeric vertex edits, reset-to-rectangle,
 depth edits, plus draft 3D and plan previews through the production evaluators.
 Invalid/self-intersecting profiles cannot apply; shared type changes validate all
-placed instances and commit once. Native full-model plugins use API 6 / schema 24.
+placed instances and commit once. That milestone used native full-model API 6 / schema 24.
 
 Schema 24→25 advances `OpeningFamily` to version 2 with optional frame width and
 depth. Existing schema-24 families migrate with frame width zero, retaining their
@@ -767,8 +1026,8 @@ cut. Generated rectangular frame rails are currently supported only with a
 rectangular host cut; incompatible edits are rejected before transaction commit.
 Profiled cuts cannot be represented by the legacy vertical rectangular `Solid`
 API, so those consumers return an explicit unsupported-geometry error instead
-of exporting a false rectangle. Current native full-model plugins use API 39 /
-schema 58.
+of exporting a false rectangle. Current native full-model plugins use API 55 /
+schema 74.
 
 Linear plan dimensions may reference either jamb of a native door or window,
 including circular-arc hosts. Arc jamb anchors follow the analytic centerline;
@@ -1570,6 +1829,41 @@ circular-arc native hosts; other path types remain unsupported.
 Door/window category visibility is implemented separately above; general
 view/detail visibility across other model categories and full Revit workflows
 remain open.
+
+## Paired casement windows (schema 83→84)
+
+Typed rectangular windows can use the `PairedCasement` operation. The type owns
+the Start sash width fraction and center-mullion width; the instance stores
+independent Start and End angles from 0–90 degrees. Both sashes hinge at their
+outside jambs and open toward the wall's local positive normal. A fixed center
+mullion remains in place. Plan symbols, generated solids, sash accessories and
+pose handles use the same derived sash geometry.
+
+On an eligible straight native host, select the window and choose **Adjust
+opening pose** to select either sash and drag its free edge. The preview is
+temporary; release commits one `UpdateOpening` transaction, and undo/redo acts
+on both angles as one instance value. The opening UUID, host, type, dimensions,
+overrides, materials and unselected sash angle are preserved. Properties also
+allow exact numeric entry for both angles. Switching a shared type operation
+resets only incompatible saved instance poses when the user opts in; otherwise
+the type update fails without changing the document.
+
+The family editor supports explicit `StartSash` and `EndSash` accessory
+attachments. Schema 83→84 upgrades family v10 to v11 and preserves existing
+single-casement poses. Opening-type packages advance from v10 to v11 with the
+same family upgrade. Older schema/package payloads reject paired-casement
+operations, pair-angle states, and sash-specific attachments rather than
+silently changing their meaning. Full-model native plugins require API 64 and
+schema 84; generic plugin API 2 is unchanged.
+
+Evidence: `crates/os-model/src/openings.rs`,
+`crates/os-model/src/opening_family.rs`,
+`crates/os-geometry/src/openings.rs`,
+`crates/os-ui/src/plan_workspace/opening_pose_tests.rs`,
+`crates/os-storage/tests/paired_casements.rs`, and
+`crates/os-ui/src/opening_type_tools.rs`. Curved hosts, custom profiles,
+collisions between moving sashes and other objects, animation, IFC exchange,
+and broad Revit parity remain outside this increment.
 
 Validation for temporary spacing:
 

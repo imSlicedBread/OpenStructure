@@ -177,6 +177,7 @@ fn mixed_plan_and_section_viewports_round_trip_with_independent_scales() {
     let section = View::new(
         "core.view",
         ViewParams {
+            drafting: None,
             facade: None,
             elevation: None,
             name: "Building section".into(),
@@ -207,6 +208,7 @@ fn mixed_plan_and_section_viewports_round_trip_with_independent_scales() {
             width_mm: 180.0,
             height_mm: 124.0,
             scale_denominator: 100.0,
+            detail_number: "1".into(),
             title_override: None,
         },
         SheetViewport {
@@ -217,6 +219,7 @@ fn mixed_plan_and_section_viewports_round_trip_with_independent_scales() {
             width_mm: 180.0,
             height_mm: 124.0,
             scale_denominator: 50.0,
+            detail_number: "2".into(),
             title_override: None,
         },
     ];

@@ -42,6 +42,14 @@ fn frozen_three_migration_and_grid_save_reopen_preserve_original() {
     expected["columns"] = json!({});
     expected["plan_graphics_templates"] = json!({});
     expected["plan_graphics"] = json!({});
+    expected["plan_callouts"] = json!({});
+    expected["section_callouts"] = json!({});
+    expected["text_notes"] = json!({});
+    expected["plan_hidden_openings"] = json!({});
+    expected["plan_element_graphics_overrides"] = json!({});
+    expected["plan_graphics_rules"] = json!({});
+    expected["group_definitions"] = json!({});
+    expected["group_instances"] = json!({});
     expected["phases"] = migrated["phases"].clone();
     expected["element_lifecycles"] = migrated["element_lifecycles"].clone();
     common::apply_schema_38_defaults(&mut expected);

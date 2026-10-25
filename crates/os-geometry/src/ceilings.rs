@@ -5,12 +5,14 @@ use os_core::{Id, Point2, Result, ensure};
 use os_model::{CeilingParams, Model};
 use std::collections::BTreeMap;
 
-/// Resolves room-backed ceilings once per level per derived scene/drawing. A
+/// Resolves room-backed ceilings once per level/phase per derived scene/drawing. A
 /// broken room remains an intentional unresolved association and is omitted
 /// from derived geometry without blocking edits to its source walls.
+/// Discard the resolver when the model changes, including phase reordering.
 #[derive(Default)]
 pub struct CeilingResolver {
-    faces_by_level: BTreeMap<Id, Option<crate::rooms::RoomFaces>>,
+    // None is the legacy unphased topology, never an alias for Latest.
+    faces_by_level: BTreeMap<(Id, Option<Id>), Option<crate::rooms::RoomFaces>>,
 }
 
 impl CeilingResolver {
@@ -22,6 +24,30 @@ impl CeilingResolver {
         model: &Model,
         parameters: &CeilingParams,
     ) -> Result<Option<Vec<Point2>>> {
+        self.resolved_room_boundary_in(model, parameters, None)
+    }
+
+    /// Resolve accepted room topology at a physical analysis phase, independent
+    /// of graphic visibility. A changed face stays unresolved, never reassigned.
+    pub fn resolved_room_boundary_at_phase(
+        &mut self,
+        model: &Model,
+        parameters: &CeilingParams,
+        target: Id,
+    ) -> Result<Option<Vec<Point2>>> {
+        ensure(
+            model.phases.contains_key(&target),
+            "ceiling analysis phase reference is missing",
+        )?;
+        self.resolved_room_boundary_in(model, parameters, Some(target))
+    }
+
+    fn resolved_room_boundary_in(
+        &mut self,
+        model: &Model,
+        parameters: &CeilingParams,
+        target: Option<Id>,
+    ) -> Result<Option<Vec<Point2>>> {
         let Some(room_id) = parameters.boundary_room else {
             return Ok(None);
         };
@@ -31,13 +57,20 @@ impl CeilingResolver {
         if room.parameters.level != parameters.level {
             return Ok(None);
         }
-        let faces = self
-            .faces_by_level
-            .entry(parameters.level)
-            .or_insert_with(|| {
-                let segments = model.room_boundary_segments(parameters.level).ok()?;
-                crate::rooms::derive_faces(&segments).ok()
-            });
+        let faces = match self.faces_by_level.entry((parameters.level, target)) {
+            std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                let segments = match target {
+                    Some(target) => {
+                        Some(model.room_boundary_segments_at_phase(parameters.level, target)?)
+                    }
+                    None => model.room_boundary_segments(parameters.level).ok(),
+                };
+                entry.insert(
+                    segments.and_then(|segments| crate::rooms::derive_faces(&segments).ok()),
+                )
+            }
+        };
         let Some(faces) = faces else {
             return Ok(None);
         };
@@ -56,11 +89,35 @@ impl CeilingResolver {
         model: &Model,
         parameters: &CeilingParams,
     ) -> Result<Option<CeilingParams>> {
+        self.effective_parameters_in(model, parameters, None)
+    }
+
+    /// Resolve a room-backed ceiling at the supplied phase. Explicit outlines
+    /// are unchanged; callers still own the ceiling's lifecycle visibility.
+    pub fn effective_parameters_at_phase(
+        &mut self,
+        model: &Model,
+        parameters: &CeilingParams,
+        target: Id,
+    ) -> Result<Option<CeilingParams>> {
+        ensure(
+            model.phases.contains_key(&target),
+            "ceiling analysis phase reference is missing",
+        )?;
+        self.effective_parameters_in(model, parameters, Some(target))
+    }
+
+    fn effective_parameters_in(
+        &mut self,
+        model: &Model,
+        parameters: &CeilingParams,
+        target: Option<Id>,
+    ) -> Result<Option<CeilingParams>> {
         parameters.validate_in(model)?;
         if parameters.boundary_room.is_none() {
             return Ok(Some(parameters.clone()));
         }
-        let Some(boundary) = self.resolved_room_boundary(model, parameters)? else {
+        let Some(boundary) = self.resolved_room_boundary_in(model, parameters, target)? else {
             return Ok(None);
         };
         let mut effective = parameters.clone();

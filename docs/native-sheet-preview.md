@@ -114,3 +114,65 @@ SheetParams and placement UUIDs are reused. Historical schema 13→14 sheets and
 cargo test -p os-render --lib sheet::tests
 cargo test -p os-ui --lib --all-features sheet_
 ```
+
+## Frozen ordered drawing issues (schema 71 / native API 52)
+
+Choose **Drawing sets and issues** on an open sheet. Create a named set, add
+existing sheets, and use the up/down controls to persist its paper order. Sets
+contain 1–100 unique sheet IDs (up to 100 sets). **Apply set name** commits the
+name draft. Set edits use ordinary atomic commands and undo/redo.
+
+Enter revision, description, an explicit `YYYY-MM-DD` date, and semicolon-separated
+recipients, then **Create draft issue**. The draft copies the set's current order.
+Sequence numbers advance within the set; after an issued record exists,
+**Create superseding draft** links the correction to the latest issued record.
+Existing issued metadata is not rewritten. Revision clouds and sheet-specific
+revision numbering policies are outside this increment.
+
+**Preflight all sheets** waits for checked graphics for every source in the set.
+It validates one document session/revision and provider activation signature,
+rejects missing/invalid viewports, duplicate numbers, unavailable or stale
+provider/native graphics, layout overlaps, frame/title-block crossings, schedule
+and text overflow, and additional viewport clipping. Geometry is inspected before
+paper clipping discards it, including stroke extents and caption footer space.
+An explicitly configured source crop remains intentional. This stronger preflight
+also applies to historic single-viewport layouts; the ordinary live preview keeps
+its existing clipping behavior. Dirty layout drafts must be applied or reset.
+
+The review lists nonblocking font/limited-geometry warnings and available room
+boundary diagnostics. Enter a decision for **each** warning, then **Accept review**.
+The manifest records the warning text and decision. Review is bound to the frozen
+PDF bytes, source-model SHA256, source session/revision, schema/API/application
+versions, per-sheet source view settings revisions, provider software/API versions,
+and provider activation identities. Editing the document or changing providers
+invalidates pending publication. Reopening a project preserves Review metadata,
+but pending PDF bytes are session-local: create a new draft and preflight again.
+
+Choose a new `.osissue` path and **Issue frozen package**. The bounded standalone
+ZIP contains ordered multipage vector `drawings.pdf`, canonical `manifest.json`,
+and `integrity.sha256` with SHA256 of both entries. A same-directory temporary
+file is fully written and synced before no-clobber publication. Existing bundles
+are never overwritten. Document validation and history-memory reservation happen
+before publication; write failure leaves model, revision, events and history
+unchanged. After successful publication the Issued record is immutable, and
+undo/redo is explicitly cleared at this durable issue boundary. Later model edits
+remain undoable and cannot remove the issued record. Save the native project to
+persist its issue register; bundle publication and native-project save are separate
+operations. An interruption after publication can leave a complete standalone
+bundle before the native register is saved, never a partially visible bundle.
+
+**Read archived bundle** checks the archived PDF/manifest digests against the
+selected issued record and displays its original ordered sheet list. It never
+regenerates from live sources. Extract `drawings.pdf` with a ZIP viewer to open it
+in a PDF viewer. The reader also accepts a moved standalone bundle through the
+storage API, without the original model or providers. Missing/corrupt archives
+fail explicitly. SHA256 detects altered bytes; it is not a digital signature or
+filesystem write-protection guarantee against external programs.
+
+Limits: A3 landscape and existing geometry only, 100 pages, 32 MiB bundle and
+2 MiB manifest; the vector writer has a 64 MiB aggregate output budget. PDF text
+remains Helvetica/WinAnsi without embedded fonts. CAD, printer drivers, custom
+paper, revision clouds, linked-model packaging, signed approvals, and full Revit
+parity are not claimed. Focused evidence lives in
+`os-ui/src/plan_workspace/drawing_issues/tests.rs`,
+`os-storage/tests/drawing_issues.rs`, and `os-render/src/sheet.rs`.

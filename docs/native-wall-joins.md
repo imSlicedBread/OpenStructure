@@ -132,8 +132,7 @@ Evidence is in `crates/os-ui/tests/wall_joins.rs`,
 `crates/os-ui/src/desktop_tests/wall_join_tests.rs`,
 `crates/os-storage/tests/wall_joins.rs`,
 `crates/os-plugin-host/tests/wasm_transport.rs`, and the Wall provider tests in
-`plugins/walls/src/lib.rs`. Curves, layered/variable-profile walls, arbitrary
-angled junctions, installed-provider
+`plugins/walls/src/lib.rs`. Curved/variable-profile junctions, compound-layer priority/wrapping cleanup, arbitrary angled junctions, installed-provider
 junction drag, joined IFC exchange, and native
 window/print qualification remain open; this is not full Revit-like join
 behavior.

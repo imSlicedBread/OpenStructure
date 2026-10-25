@@ -1,3 +1,4 @@
+mod common;
 use os_core::{Id, Point2};
 use os_document::{Command, Document};
 use os_model::*;
@@ -10,22 +11,17 @@ fn frozen() -> Value {
 
 fn advance_headers(value: &mut Value) {
     value["material_patterns"] = json!({});
+    value["sheet_sets"] = json!({});
+    value["drawing_issues"] = json!({});
+    value["plan_callouts"] = json!({});
+    value["section_callouts"] = json!({});
+    value["text_notes"] = json!({});
     for ty in value["opening_types"].as_object_mut().unwrap().values_mut() {
-        ty["parameters"]["family"]["version"] = 7.into();
+        ty["parameters"]["family"]["version"] = 10.into();
         ty["parameters"]["family"]["extrusions"] = json!([]);
     }
     value["schema_version"] = SCHEMA_VERSION.into();
-    for (name, data) in value.as_object_mut().unwrap() {
-        if name == "project" {
-            data["header"]["schema_version"] = SCHEMA_VERSION.into();
-        } else if name != "extensions"
-            && let Some(map) = data.as_object_mut()
-        {
-            for entity in map.values_mut().filter(|v| v.get("header").is_some()) {
-                entity["header"]["schema_version"] = SCHEMA_VERSION.into();
-            }
-        }
-    }
+    common::current_native_headers(value);
 }
 
 #[test]
@@ -170,6 +166,7 @@ fn document() -> (Document, Id, Id) {
     let view = View::new(
         "core.view",
         ViewParams {
+            drafting: None,
             name: "Right elevation".into(),
             kind: ViewKind::Elevation,
             level: None,
@@ -202,6 +199,7 @@ fn document() -> (Document, Id, Id) {
         width_mm: 200.0,
         height_mm: 100.0,
         scale_denominator: 100.0,
+        detail_number: "1".into(),
         title_override: None,
     });
     doc.execute("Sheet", vec![Command::AddSheet(sheet)])

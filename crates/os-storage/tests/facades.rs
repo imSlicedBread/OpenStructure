@@ -1,3 +1,4 @@
+mod common;
 use os_core::Point2;
 use os_document::{Command, Document};
 use os_model::*;
@@ -5,14 +6,14 @@ use os_storage::{StorageBackend, ZipJsonStorage, migrate};
 use serde_json::Value;
 fn headers(value: &mut Value, version: u32) {
     value["schema_version"] = version.into();
-    for (name, data) in value.as_object_mut().unwrap() {
-        if name == "project" {
+    for (key, data) in value.as_object_mut().unwrap() {
+        if key == "project" {
             data["header"]["schema_version"] = version.into();
-        } else if name != "extensions"
+        } else if key != "extensions"
             && let Some(map) = data.as_object_mut()
         {
-            for e in map.values_mut().filter(|e| e.get("header").is_some()) {
-                e["header"]["schema_version"] = version.into();
+            for entity in map.values_mut().filter(|v| v.get("header").is_some()) {
+                entity["header"]["schema_version"] = version.into();
             }
         }
     }
@@ -25,14 +26,24 @@ fn schema_65_facade_migration_preserves_identity_metadata_and_rejects_smuggled_f
     old["project"]["header"]["properties"]["opaque_facade"] =
         serde_json::json!({"kind":"Facade","facade":{"schema_version":123}});
     let mut expected = old.clone();
-    headers(&mut expected, SCHEMA_VERSION);
+    common::current_native_headers(&mut expected);
     expected["material_patterns"] = serde_json::json!({});
+    expected["sheet_sets"] = serde_json::json!({});
+    expected["drawing_issues"] = serde_json::json!({});
+    expected["plan_callouts"] = serde_json::json!({});
+    expected["section_callouts"] = serde_json::json!({});
+    expected["text_notes"] = serde_json::json!({});
+    expected["plan_hidden_openings"] = serde_json::json!({});
+    expected["plan_element_graphics_overrides"] = serde_json::json!({});
+    expected["plan_graphics_rules"] = serde_json::json!({});
+    expected["group_definitions"] = serde_json::json!({});
+    expected["group_instances"] = serde_json::json!({});
     for ty in expected["opening_types"]
         .as_object_mut()
         .unwrap()
         .values_mut()
     {
-        ty["parameters"]["family"]["version"] = 7.into();
+        ty["parameters"]["family"]["version"] = 10.into();
         ty["parameters"]["family"]["extrusions"] = serde_json::json!([]);
     }
     let mut actual = old.clone();
@@ -65,6 +76,7 @@ fn facade_world_definition_round_trips_without_meshes_or_host_links() {
     let view = View::new(
         "core.view",
         ViewParams {
+            drafting: None,
             name: "North".into(),
             kind: ViewKind::Facade,
             level: Some(level),

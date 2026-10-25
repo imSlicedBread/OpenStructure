@@ -9,6 +9,7 @@ fn facade_view_marker_identity_one_transaction_history_settings_and_wall_indepen
     let view = View::new(
         "core.view",
         ViewParams {
+            drafting: None,
             name: "Facade".into(),
             kind: ViewKind::Facade,
             level: Some(level),

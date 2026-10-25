@@ -30,6 +30,14 @@ fn schema_29_dimensions_preserve_every_prior_field_and_pins_through_reopen() {
     common::remove_phase_fields(&mut reversed);
     common::remove_phase_fields(&mut reversed);
     reversed.as_object_mut().unwrap().remove("opening_tags");
+    reversed
+        .as_object_mut()
+        .unwrap()
+        .remove("plan_element_graphics_overrides");
+    reversed
+        .as_object_mut()
+        .unwrap()
+        .remove("plan_graphics_rules");
     reversed["schema_version"] = json!(29);
     for (key, value) in reversed.as_object_mut().unwrap() {
         if key == "project" {

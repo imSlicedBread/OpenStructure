@@ -84,6 +84,7 @@ impl Editor {
         let view = View::new(
             "core.view",
             ViewParams {
+                drafting: None,
                 name: name.into(),
                 kind: ViewKind::Elevation,
                 level: None,
@@ -115,6 +116,7 @@ impl Editor {
             .ok_or_else(|| os_core::Error::Invalid("Elevation settings missing".into()))?;
         s.resolve_host(model)?;
         Ok(PlanContext {
+            annotation_crop: None,
             session_id: self.document.session_id(),
             model_revision: self.document.revision(),
             view_id: view.id(),

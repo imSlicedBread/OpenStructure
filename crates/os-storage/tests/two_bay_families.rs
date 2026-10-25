@@ -16,24 +16,14 @@ fn two_bay_frozen_49_only_adds_default_and_advances_versions() {
     common::apply_wall_paths(&mut expected);
     common::apply_lite_override(&mut expected);
     expected["schema_version"] = SCHEMA_VERSION.into();
-    for (key, data) in expected.as_object_mut().unwrap() {
-        if key == "project" {
-            data["header"]["schema_version"] = SCHEMA_VERSION.into();
-        } else if key != "extensions"
-            && let Some(map) = data.as_object_mut()
-        {
-            for entity in map.values_mut().filter(|e| e.get("header").is_some()) {
-                entity["header"]["schema_version"] = SCHEMA_VERSION.into();
-            }
-        }
-    }
+    common::current_native_headers(&mut expected);
     for ty in expected["opening_types"]
         .as_object_mut()
         .unwrap()
         .values_mut()
     {
         ty["parameters"]["window_operation"] = "Fixed".into();
-        ty["parameters"]["family"]["version"] = 7.into();
+        ty["parameters"]["family"]["version"] = 10.into();
         ty["parameters"]["family"]["extrusions"] = json!([]);
         ty["parameters"]["family"]["side_lite"] = Value::Null;
     }

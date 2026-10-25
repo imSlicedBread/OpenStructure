@@ -17,9 +17,17 @@ fn room_materials_frozen_schema34_preservation_and_save_reopen() {
     let old = frozen();
     let mut value = old.clone();
     migrate(&mut value, 34).unwrap();
-    assert_eq!(SCHEMA_VERSION, 70);
+    assert_eq!(old["schema_version"], 34);
     assert_eq!(value["schema_version"], SCHEMA_VERSION);
     let mut reverse = value.clone();
+    reverse
+        .as_object_mut()
+        .unwrap()
+        .remove("plan_element_graphics_overrides");
+    reverse
+        .as_object_mut()
+        .unwrap()
+        .remove("plan_graphics_rules");
     reverse["schema_version"] = json!(34);
     for (key, data) in reverse.as_object_mut().unwrap() {
         if key == "project" {

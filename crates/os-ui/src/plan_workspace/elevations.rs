@@ -1,13 +1,33 @@
-//! Single-host elevation navigation and transient opening placement.
+//! Single-host elevation navigation, opening placement and endpoint resizing.
+//! Opening resize gestures use station/project-elevation coordinates, not plan XY.
 use super::*;
 use crate::opening_tools::OpeningDraft;
 use os_model::{ElevationSide, ElevationViewSettings};
+
+#[path = "elevation_move.rs"]
+mod movement;
+#[path = "elevation_resize.rs"]
+mod resize;
 
 #[derive(Default)]
 pub(super) struct State {
     pub(super) placement: Option<OpeningDraft>,
     pub(super) dimension: Option<super::elevation_dimensions::Draft>,
     crop: Option<(PlanContext, ElevationViewSettings)>,
+    resize: Option<resize::Draft>,
+    resize_claimed: bool,
+    moving: Option<movement::Draft>,
+    move_claimed: bool,
+}
+
+impl State {
+    pub(super) fn cancel(&mut self) {
+        let claimed = self.resize_claimed || self.resize.is_some();
+        let move_claimed = self.move_claimed;
+        *self = Self::default();
+        self.resize_claimed = claimed;
+        self.move_claimed = move_claimed;
+    }
 }
 
 #[cfg(test)]
@@ -28,6 +48,8 @@ impl DesktopApp {
     }
 
     pub(super) fn validate_elevation_interaction(&mut self, ctx: &egui::Context) {
+        self.validate_elevation_resize(ctx);
+        self.validate_elevation_move(ctx);
         let escape = ctx.input(|i| i.key_pressed(egui::Key::Escape));
         if escape
             || self
@@ -100,6 +122,15 @@ impl DesktopApp {
 
     pub(super) fn elevation_toolbar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
+            if ui
+                .add_enabled(
+                    self.elevation_move_available(),
+                    egui::Button::new("Move opening"),
+                )
+                .clicked()
+            {
+                self.begin_elevation_move();
+            }
             for (label, layout) in [
                 (
                     "Horizontal dimension",
@@ -232,9 +263,9 @@ impl DesktopApp {
             ui.label("Generating elevation…");
             return;
         };
-        let Ok(lines) = drawing.provider_lines(context) else {
+        if drawing.provider_lines(context).is_err() {
             return;
-        };
+        }
         let (response, painter) =
             ui.allocate_painter(ui.available_size(), egui::Sense::click_and_drag());
         let rect = response.rect;
@@ -261,16 +292,27 @@ impl DesktopApp {
         let pointer = response
             .hover_pos()
             .map(|p| Point2::new(f64::from(p.x - rect.left()), f64::from(p.y - rect.top())));
+        let resize_camera = *camera;
+        let resize = self.elevation_resize_input(ctx, resize_camera, rect, context);
+        let movement = self.elevation_move_input(ctx, resize_camera, rect, context);
+        let Some(drawing) = &self.plans.drawing else {
+            return;
+        };
+        let camera = self.plans.cameras.get_mut(&id).unwrap();
         if self.plans.elevation.placement.is_none()
             && self.plans.facade.is_none()
             && self.plans.elevation.dimension.is_none()
             && self.opening_draft.is_none()
+            && !self.plans.elevation.resize_claimed
+            && !self.plans.elevation.move_claimed
             && response.dragged()
         {
             let d = ctx.input(|i| i.pointer.delta());
             let _ = camera.pan(Point2::new(f64::from(d.x), f64::from(d.y)), size);
         }
-        if let Some(p) = pointer {
+        if let Some(p) = pointer
+            .filter(|_| !self.plans.elevation.resize_claimed && !self.plans.elevation.move_claimed)
+        {
             let scroll = ctx.input(|i| i.smooth_scroll_delta.y);
             if scroll != 0. {
                 let _ = camera.zoom_at(p, (f64::from(scroll) * 0.002).exp(), size);
@@ -282,7 +324,11 @@ impl DesktopApp {
                 .project(p, size)
                 .map(|p| rect.min + egui::vec2(p.x as f32, p.y as f32))
         };
-        for line in lines {
+        let rendered = movement
+            .as_ref()
+            .or(resize.drawing.as_ref())
+            .unwrap_or(drawing);
+        for line in rendered.provider_lines(context).unwrap_or_default() {
             if let (Ok(a), Ok(b)) = (screen(line.start), screen(line.end)) {
                 painter.line_segment(
                     [a, b],
@@ -301,7 +347,7 @@ impl DesktopApp {
                 );
             }
         }
-        for graphic in drawing.dimensions(context).unwrap_or_default() {
+        for graphic in rendered.dimensions(context).unwrap_or_default() {
             let _ = paint_dimension_graphic(
                 &painter,
                 context,
@@ -313,6 +359,10 @@ impl DesktopApp {
             );
         }
         self.paint_facade_crop(&painter, camera, rect, size);
+        resize.paint(&painter, rect);
+        if self.plans.elevation.resize_claimed || self.plans.elevation.move_claimed {
+            return;
+        }
         if self.plans.facade.is_some() {
             return;
         }

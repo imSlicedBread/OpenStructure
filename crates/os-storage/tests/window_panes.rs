@@ -22,6 +22,14 @@ fn frozen_45_to_46_preserves_fields_and_pane_pins_across_save_reopen_and_type_ed
     let mut reversed = value;
     common::remove_opening_visibility(&mut reversed);
     common::reverse_wall_paths(&mut reversed);
+    reversed
+        .as_object_mut()
+        .unwrap()
+        .remove("plan_element_graphics_overrides");
+    reversed
+        .as_object_mut()
+        .unwrap()
+        .remove("plan_graphics_rules");
     reversed["schema_version"] = 45.into();
     for (key, data) in reversed.as_object_mut().unwrap() {
         if key == "project" {

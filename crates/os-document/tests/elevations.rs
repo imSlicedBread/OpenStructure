@@ -24,6 +24,7 @@ fn fixture() -> (Document, Id, View) {
     let view = View::new(
         "core.view",
         ViewParams {
+            drafting: None,
             name: "Left elevation".into(),
             kind: ViewKind::Elevation,
             level: None,

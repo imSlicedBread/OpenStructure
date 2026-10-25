@@ -5,11 +5,22 @@ use os_document::Command;
 use os_geometry::rooms::FaceKey;
 use os_model::{Room, RoomParams};
 
+#[cfg(test)]
 pub(super) fn create_at(
     editor: &mut Editor,
     level: Id,
     seed: Point2,
     boundary_signature: Vec<(Id, bool)>,
+) -> Result<Id> {
+    create_at_in_phase(editor, level, seed, boundary_signature, None)
+}
+
+pub(super) fn create_at_in_phase(
+    editor: &mut Editor,
+    level: Id,
+    seed: Point2,
+    boundary_signature: Vec<(Id, bool)>,
+    created_in: Option<Id>,
 ) -> Result<Id> {
     ensure(
         FaceKey::from_signature(&boundary_signature)
@@ -35,7 +46,17 @@ pub(super) fn create_at(
     );
     let id = room.id();
     room.parameters.validate()?;
-    editor.command("Place room", Command::AddRoom(room))?;
+    let mut commands = vec![Command::AddRoom(room)];
+    if let Some(created_in) = created_in {
+        commands.push(Command::SetElementLifecycle {
+            element: id,
+            lifecycle: os_model::ElementLifecycle {
+                created_in,
+                demolished_in: None,
+            },
+        });
+    }
+    editor.commands("Place room", commands)?;
     Ok(id)
 }
 

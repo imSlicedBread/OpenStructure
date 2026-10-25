@@ -34,7 +34,12 @@ fn horizontal_range_distinguishes_cut_projection_depth_and_hidden_boundaries() {
     assert_eq!(role(0.0, 3.0), Some(PlanRole::Cut));
     assert_eq!(role(0.0, 1.2), Some(PlanRole::Projected)); // top touches cut
     assert_eq!(role(1.2, 1.0), Some(PlanRole::Cut)); // base at cut
-    assert_eq!(role(1.3, 1.0), None); // entirely overhead
+    assert_eq!(role(1.3, 1.0), Some(PlanRole::Overhead));
+    assert_eq!(role(1.2 + PLAN_TOLERANCE / 2.0, 1.0), Some(PlanRole::Cut));
+    assert_eq!(
+        role(1.2 + PLAN_TOLERANCE * 2.0, 1.0),
+        Some(PlanRole::Overhead)
+    );
     assert_eq!(role(2.5, 1.0), None); // touches view top
     assert_eq!(role(-2.0, 2.0), Some(PlanRole::Depth)); // top at bottom
     assert_eq!(role(-2.0, 1.0), None); // top at depth
@@ -46,6 +51,29 @@ fn horizontal_range_distinguishes_cut_projection_depth_and_hidden_boundaries() {
         Some(PlanRole::Projected)
     );
     assert_eq!(role(0.0, 1.2 + PLAN_TOLERANCE * 2.0), Some(PlanRole::Cut));
+}
+
+#[test]
+fn overhead_span_boundaries_and_nonzero_level_ranges_are_explicit() {
+    let range = PlanRange::default().at_level(4.2).unwrap();
+    assert_eq!(
+        vertical_span_role(5.5, 6.4, range).unwrap(),
+        Some(PlanRole::Overhead)
+    );
+    assert_eq!(
+        vertical_span_role(5.4, 6.4, range).unwrap(),
+        Some(PlanRole::Cut)
+    );
+    assert_eq!(
+        vertical_span_role(6.5, 6.8, range).unwrap(),
+        Some(PlanRole::Overhead)
+    );
+    assert_eq!(
+        vertical_span_role(range.top, range.top + 1.0, range).unwrap(),
+        None
+    );
+    assert!(vertical_span_role(1.0, 1.0, range).is_err());
+    assert!(vertical_span_role(f64::NAN, 2.0, range).is_err());
 }
 
 #[test]

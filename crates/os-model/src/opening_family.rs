@@ -53,11 +53,19 @@ pub enum DoorLeaves {
 pub enum OpeningAttachment {
     OpeningFixed,
     PrimaryPanel,
+    /// Casement sash or Sliding Start sash; never the stationary End sash.
+    MovingSash,
+    StartSash,
+    EndSash,
+    /// Paired door leaves, identified independently of handedness.
+    ActiveLeaf,
+    InactiveLeaf,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OpeningExtrusion {
+    pub bindings: OpeningExtrusionBindings,
     pub id: Id,
     pub name: String,
     /// Fractions of the attachment frame's width and height, implicit closure.
@@ -73,6 +81,43 @@ pub struct OpeningExtrusion {
     pub attachment: OpeningAttachment,
     #[serde(deserialize_with = "required_material")]
     pub material: Option<Id>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OpeningExtrusionBindings {
+    #[serde(deserialize_with = "required_material")]
+    pub x: Option<Id>,
+    #[serde(deserialize_with = "required_material")]
+    pub y: Option<Id>,
+    #[serde(deserialize_with = "required_material")]
+    pub depth: Option<Id>,
+    #[serde(deserialize_with = "required_material")]
+    pub normal_offset: Option<Id>,
+}
+impl OpeningExtrusionBindings {
+    pub fn references(self) -> std::collections::BTreeSet<Id> {
+        [self.x, self.y, self.depth, self.normal_offset]
+            .into_iter()
+            .flatten()
+            .collect()
+    }
+    pub fn remap(&mut self, ids: &std::collections::BTreeMap<Id, Id>) -> Result<()> {
+        for id in [
+            &mut self.x,
+            &mut self.y,
+            &mut self.depth,
+            &mut self.normal_offset,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            *id = *ids.get(id).ok_or_else(|| {
+                os_core::Error::Invalid("extrusion parameter remap missing".into())
+            })?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Deserialize)]
@@ -98,6 +143,7 @@ impl OpeningExtrusion {
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             id: Id::new(),
+            bindings: OpeningExtrusionBindings::default(),
             name: name.into(),
             profile: vec![
                 Point2::new(0.75, 0.45),
@@ -185,7 +231,7 @@ fn required_material<'de, D: serde::Deserializer<'de>>(
 impl Default for OpeningFamily {
     fn default() -> Self {
         Self {
-            version: 7,
+            version: 11,
             extrusions: Vec::new(),
             door_leaves: DoorLeaves::Single,
             host_cut: OpeningHostCut::Rectangular,
@@ -254,7 +300,7 @@ impl OpeningFamily {
     }
 
     pub fn validate(&self) -> Result<()> {
-        ensure(self.version == 7, "unsupported opening family version")?;
+        ensure(self.version == 11, "unsupported opening family version")?;
         ensure(
             self.extrusions.len() <= Self::MAX_EXTRUSIONS,
             "too many authored opening extrusions",
@@ -263,17 +309,29 @@ impl OpeningFamily {
         for solid in &self.extrusions {
             solid.validate()?;
             ensure(ids.insert(solid.id), "duplicate extrusion identity")?;
+            ensure(
+                match solid.attachment {
+                    OpeningAttachment::PrimaryPanel
+                    | OpeningAttachment::MovingSash
+                    | OpeningAttachment::StartSash
+                    | OpeningAttachment::EndSash => self.door_leaves == DoorLeaves::Single,
+                    OpeningAttachment::ActiveLeaf | OpeningAttachment::InactiveLeaf => {
+                        matches!(self.door_leaves, DoorLeaves::Paired { .. })
+                    }
+                    OpeningAttachment::OpeningFixed => true,
+                },
+                "incompatible leaf attachment; explicitly reassign accessories",
+            )?;
         }
         if !self.extrusions.is_empty() {
             ensure(
-                self.door_leaves == DoorLeaves::Single
-                    && self.rectangular_cut()
+                self.rectangular_cut()
                     && self
                         .profile
                         .iter()
                         .all(|p| p.x == 0. || p.x == 1. || p.y == 0. || p.y == 1.)
                     && Self::rectangle().iter().all(|p| self.profile.contains(p)),
-                "authored extrusions require a single rectangular primary panel and rectangular cut",
+                "authored extrusions require rectangular components and rectangular cut",
             )?;
         }
         if let DoorLeaves::Paired { active_fraction } = self.door_leaves {
@@ -445,10 +503,38 @@ impl OpeningFamily {
             )?;
         }
         for solid in &self.extrusions {
-            let (w, h) = if solid.attachment == OpeningAttachment::PrimaryPanel {
+            match solid.attachment {
+                OpeningAttachment::PrimaryPanel => ensure(
+                    self.door_leaves == DoorLeaves::Single,
+                    "PrimaryPanel requires Single leaves; explicitly reassign paired accessories",
+                )?,
+                OpeningAttachment::ActiveLeaf | OpeningAttachment::InactiveLeaf => ensure(
+                    kind == crate::OpeningKind::Door
+                        && matches!(self.door_leaves, DoorLeaves::Paired { .. }),
+                    "ActiveLeaf/InactiveLeaf require a paired door; explicitly reassign accessories",
+                )?,
+                _ => {}
+            }
+            ensure(
+                solid.attachment != OpeningAttachment::MovingSash
+                    || kind == crate::OpeningKind::Window,
+                "MovingSash attachment requires an operable window",
+            )?;
+            let (w, h) = if solid.attachment != OpeningAttachment::OpeningFixed {
                 let (a, b) = self.primary_interval(width)?;
                 (
-                    b - a,
+                    (b - a)
+                        * match (solid.attachment, self.door_leaves) {
+                            (
+                                OpeningAttachment::ActiveLeaf,
+                                DoorLeaves::Paired { active_fraction },
+                            ) => active_fraction,
+                            (
+                                OpeningAttachment::InactiveLeaf,
+                                DoorLeaves::Paired { active_fraction },
+                            ) => 1. - active_fraction,
+                            _ => 1.,
+                        },
                     height
                         - self.frame_width
                             * if kind == crate::OpeningKind::Window {
@@ -460,26 +546,123 @@ impl OpeningFamily {
             } else {
                 (width, height)
             };
-            let points: Vec<_> = solid
-                .profile
-                .iter()
-                .map(|p| Point2::new(p.x * w + solid.position.x, p.y * h + solid.position.y))
-                .collect();
-            ensure(
-                points
-                    .iter()
-                    .all(|p| p.x >= 0. && p.x <= w && p.y >= 0. && p.y <= h),
-                "extrusion profile/position exceeds attachment frame",
-            )?;
-            ensure(
-                points
-                    .iter()
-                    .zip(points.iter().cycle().skip(1))
-                    .take(points.len())
-                    .all(|(a, b)| a.distance(*b) >= 0.001),
-                "extrusion edges need at least 1 mm at every instance",
-            )?;
+            Self::validate_attachment_frame(solid, w, h)?;
         }
+        Ok(())
+    }
+
+    /// Operation-aware checks also run for every effective instance, including pins.
+    pub fn validate_attachments(
+        &self,
+        width: f64,
+        height: f64,
+        kind: crate::OpeningKind,
+        operation: crate::WindowOperation,
+    ) -> Result<()> {
+        self.validate_for(width, height, kind)?;
+        let pair = if let crate::WindowOperation::PairedCasement {
+            start_fraction,
+            mullion_width,
+        } = operation
+        {
+            ensure(
+                kind == crate::OpeningKind::Window && self.door_leaves == DoorLeaves::Single,
+                "paired casements require a window with Single door leaves",
+            )?;
+            ensure(
+                self.host_cut == OpeningHostCut::Rectangular
+                    && self.rectangular_cut()
+                    && self
+                        .profile
+                        .iter()
+                        .all(|p| p.x == 0. || p.x == 1. || p.y == 0. || p.y == 1.)
+                    && Self::rectangle().iter().all(|p| self.profile.contains(p)),
+                "paired casements require rectangular profiles",
+            )?;
+            ensure(
+                start_fraction.is_finite()
+                    && start_fraction > 0.
+                    && start_fraction < 1.
+                    && mullion_width.is_finite()
+                    && (0.001..=0.3).contains(&mullion_width),
+                "paired casement fraction must be between 0 and 1; mullion must be 1-300 mm",
+            )?;
+            let (a, b) = self.primary_interval(width)?;
+            let clear = b - a - mullion_width;
+            let widths = [clear * start_fraction, clear * (1. - start_fraction)];
+            ensure(
+                widths.iter().all(|w| *w >= 0.001) && height - 2. * self.frame_width >= 0.001,
+                "each paired casement sash needs at least 1 mm clear width and height",
+            )?;
+            Some(widths)
+        } else {
+            None
+        };
+        for solid in &self.extrusions {
+            match solid.attachment {
+                OpeningAttachment::OpeningFixed
+                | OpeningAttachment::ActiveLeaf
+                | OpeningAttachment::InactiveLeaf => {}
+                OpeningAttachment::PrimaryPanel => ensure(
+                    operation == crate::WindowOperation::Fixed,
+                    "PrimaryPanel accessories require a door or Fixed window; choose MovingSash for operable windows",
+                )?,
+                OpeningAttachment::StartSash | OpeningAttachment::EndSash => {
+                    let widths = pair.ok_or_else(|| os_core::Error::Invalid("StartSash/EndSash require paired casements; explicitly reassign accessories".into()))?;
+                    Self::validate_attachment_frame(
+                        solid,
+                        widths[usize::from(solid.attachment == OpeningAttachment::EndSash)],
+                        height - 2. * self.frame_width,
+                    )?;
+                }
+                OpeningAttachment::MovingSash => {
+                    ensure(
+                        kind == crate::OpeningKind::Window
+                            && matches!(
+                                operation,
+                                crate::WindowOperation::Casement | crate::WindowOperation::Sliding
+                            ),
+                        "MovingSash requires a Casement or Sliding window",
+                    )?;
+                    let (a, b) = self.primary_interval(width)?;
+                    let h = height - 2. * self.frame_width;
+                    let w = if operation == crate::WindowOperation::Sliding {
+                        (b - a + Self::sash_rail_width(b - a, h)) / 2.
+                    } else {
+                        b - a
+                    };
+                    Self::validate_attachment_frame(solid, w, h)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Physical rail width shared by the authored attachment frame and sash solids.
+    pub fn sash_rail_width(clear_width: f64, clear_height: f64) -> f64 {
+        0.05_f64.min(clear_width * 0.1).min(clear_height * 0.1)
+    }
+
+    fn validate_attachment_frame(solid: &OpeningExtrusion, w: f64, h: f64) -> Result<()> {
+        let points: Vec<_> = solid
+            .profile
+            .iter()
+            .map(|p| Point2::new(p.x * w + solid.position.x, p.y * h + solid.position.y))
+            .collect();
+        ensure(
+            points
+                .iter()
+                .all(|p| p.x >= 0. && p.x <= w && p.y >= 0. && p.y <= h),
+            "extrusion profile/position exceeds attachment frame",
+        )?;
+        ensure(
+            points
+                .iter()
+                .zip(points.iter().cycle().skip(1))
+                .take(points.len())
+                .all(|(a, b)| a.distance(*b) >= 0.001),
+            "extrusion edges need at least 1 mm at every instance",
+        )?;
         Ok(())
     }
 
@@ -697,6 +880,81 @@ mod tests {
     }
 
     #[test]
+    fn paired_casement_sashes_require_valid_rectangular_bays_and_matching_accessories() {
+        let operation = |start_fraction, mullion_width| crate::WindowOperation::PairedCasement {
+            start_fraction,
+            mullion_width,
+        };
+        let mut family = OpeningFamily::default();
+        family
+            .validate_attachments(1.2, 1.4, crate::OpeningKind::Window, operation(0.6, 0.04))
+            .unwrap();
+        for (fraction, mullion) in [
+            (0., 0.04),
+            (1., 0.04),
+            (f64::NAN, 0.04),
+            (0.5, 0.0009),
+            (0.5, 0.301),
+            (0.5, f64::INFINITY),
+        ] {
+            assert!(
+                family
+                    .validate_attachments(
+                        1.2,
+                        1.4,
+                        crate::OpeningKind::Window,
+                        operation(fraction, mullion)
+                    )
+                    .is_err()
+            );
+        }
+        assert!(
+            family
+                .validate_attachments(1.2, 1.4, crate::OpeningKind::Door, operation(0.5, 0.04))
+                .is_err()
+        );
+        family.door_leaves = DoorLeaves::Paired {
+            active_fraction: 0.5,
+        };
+        assert!(
+            family
+                .validate_attachments(1.2, 1.4, crate::OpeningKind::Window, operation(0.5, 0.04))
+                .is_err()
+        );
+        family.door_leaves = DoorLeaves::Single;
+        family.profile[2].y = 0.8;
+        assert!(
+            family
+                .validate_attachments(1.2, 1.4, crate::OpeningKind::Window, operation(0.5, 0.04))
+                .is_err()
+        );
+        family.profile = OpeningFamily::rectangle();
+
+        for attachment in [OpeningAttachment::StartSash, OpeningAttachment::EndSash] {
+            let mut solid = OpeningExtrusion::new("Sash accessory");
+            solid.attachment = attachment;
+            family.extrusions.push(solid);
+            family
+                .validate_attachments(1.2, 1.4, crate::OpeningKind::Window, operation(0.6, 0.04))
+                .unwrap();
+            family.extrusions.clear();
+        }
+        let mut solid = OpeningExtrusion::new("Wrong sash attachment");
+        solid.attachment = OpeningAttachment::EndSash;
+        family.extrusions.push(solid);
+        assert!(
+            family
+                .validate_attachments(
+                    1.2,
+                    1.4,
+                    crate::OpeningKind::Window,
+                    crate::WindowOperation::Casement
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
     fn two_bay_bounds_profiles_and_physical_widths() {
         let mut minimum = OpeningFamily {
             side_lite: Some(SideLite {
@@ -840,9 +1098,9 @@ mod tests {
         let mut future = serde_json::to_value(&family).unwrap();
         future["operation"] = serde_json::json!("Sweep");
         assert!(serde_json::from_value::<OpeningFamily>(future).is_err());
-        family.version = 8;
+        family.version = 12;
         assert!(family.validate().is_err());
-        family.version = 7;
+        family.version = 11;
         family.frame_width = 0.3;
         assert!(
             family

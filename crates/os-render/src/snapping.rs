@@ -147,6 +147,7 @@ pub struct SnapScene {
     segments: Vec<PreparedSegment>,
     grids: BTreeSet<Id>,
     arcs: Vec<SnapArc>,
+    annotations: BTreeSet<Id>,
 }
 
 /// Immutable derived geometry, rebuilt with the revision-bound scene. In particular,
@@ -158,6 +159,17 @@ struct PreparedSegment {
     uy: f64,
 }
 impl SnapScene {
+    pub fn with_annotation_entities(mut self, entities: BTreeSet<Id>) -> Self {
+        self.annotations = entities;
+        self
+    }
+    fn crop_for(&self, id: Id) -> Option<os_geometry::plan::PlanCrop> {
+        if self.annotations.contains(&id) {
+            self.context.annotation_bounds()
+        } else {
+            self.context.crop
+        }
+    }
     pub fn new(context: PlanContext, segments: Vec<SnapSegment>) -> Result<Self> {
         ensure(
             segments.len() <= MAX_PLAN_ELEMENTS,
@@ -208,6 +220,7 @@ impl SnapScene {
                 .collect(),
             grids: BTreeSet::new(),
             arcs: Vec::new(),
+            annotations: BTreeSet::new(),
         })
     }
 
@@ -298,63 +311,73 @@ impl SnapScene {
             "invalid perpendicular anchor",
         )?;
         let mut best: Option<SnapCandidate> = None;
-        let mut offer =
-            |segment: &SnapSegment, other, kind, endpoint, point: Point2| -> Result<()> {
-                ensure(point.is_finite(), "snap geometry overflow")?;
-                if axis.is_some_and(|a| {
-                    ((point.x - a.origin.x) * a.direction.y
-                        - (point.y - a.origin.y) * a.direction.x)
-                        .abs()
-                        > 1e-9
-                }) {
-                    return Ok(());
-                }
-                if let Some(crop) = current.crop
-                    && (point.x < crop.min.x
-                        || point.x > crop.max.x
-                        || point.y < crop.min.y
-                        || point.y > crop.max.y)
-                {
-                    return Ok(());
-                }
-                let screen = query.camera.project(point, query.viewport)?;
-                let distance = screen.distance(query.pointer);
-                ensure(distance.is_finite(), "snap screen distance overflow")?;
-                if distance > query.radius_pixels {
-                    return Ok(());
-                }
-                let candidate = SnapCandidate {
-                    entity: segment.entity,
-                    feature: segment.feature,
-                    other,
-                    kind,
-                    endpoint,
-                    point,
-                    distance_pixels: distance,
-                };
-                if best.is_none_or(|old| {
-                    kind.cmp(&old.kind)
-                        .then_with(|| distance.total_cmp(&old.distance_pixels))
-                        .then_with(|| {
-                            (
-                                candidate.entity,
-                                candidate.feature,
-                                candidate.other,
-                                endpoint,
-                            )
-                                .cmp(&(
-                                    old.entity,
-                                    old.feature,
-                                    old.other,
-                                    old.endpoint,
-                                ))
-                        })
-                        .is_lt()
-                }) {
-                    best = Some(candidate);
-                }
-                Ok(())
+        let mut offer = |segment: &SnapSegment,
+                         other,
+                         kind,
+                         endpoint,
+                         point: Point2|
+         -> Result<()> {
+            ensure(point.is_finite(), "snap geometry overflow")?;
+            if axis.is_some_and(|a| {
+                ((point.x - a.origin.x) * a.direction.y - (point.y - a.origin.y) * a.direction.x)
+                    .abs()
+                    > 1e-9
+            }) {
+                return Ok(());
+            }
+            if let Some(crop) = self.crop_for(segment.entity)
+                && (point.x < crop.min.x
+                    || point.x > crop.max.x
+                    || point.y < crop.min.y
+                    || point.y > crop.max.y)
+            {
+                return Ok(());
+            }
+            if let Some((id, _)) = other
+                && self.crop_for(id).is_some_and(|c| {
+                    point.x < c.min.x || point.x > c.max.x || point.y < c.min.y || point.y > c.max.y
+                })
+            {
+                return Ok(());
+            }
+            let screen = query.camera.project(point, query.viewport)?;
+            let distance = screen.distance(query.pointer);
+            ensure(distance.is_finite(), "snap screen distance overflow")?;
+            if distance > query.radius_pixels {
+                return Ok(());
+            }
+            let candidate = SnapCandidate {
+                entity: segment.entity,
+                feature: segment.feature,
+                other,
+                kind,
+                endpoint,
+                point,
+                distance_pixels: distance,
             };
+            if best.is_none_or(|old| {
+                kind.cmp(&old.kind)
+                    .then_with(|| distance.total_cmp(&old.distance_pixels))
+                    .then_with(|| {
+                        (
+                            candidate.entity,
+                            candidate.feature,
+                            candidate.other,
+                            endpoint,
+                        )
+                            .cmp(&(
+                                old.entity,
+                                old.feature,
+                                old.other,
+                                old.endpoint,
+                            ))
+                    })
+                    .is_lt()
+            }) {
+                best = Some(candidate);
+            }
+            Ok(())
+        };
         for arc in &self.arcs {
             if query.exclude_entity == Some(arc.entity) || excluded_entities.contains(&arc.entity) {
                 continue;
@@ -472,7 +495,7 @@ impl SnapScene {
                 ensure(distance.is_finite(), "snap nearest-point overflow")?;
                 let mut lo: f64 = 0.0;
                 let mut hi: f64 = length;
-                if let Some(crop) = current.crop {
+                if let Some(crop) = self.crop_for(segment.entity) {
                     for (origin, direction, min, max) in [
                         (segment.start.x, ux, crop.min.x, crop.max.x),
                         (segment.start.y, uy, crop.min.y, crop.max.y),
@@ -496,7 +519,7 @@ impl SnapScene {
                         segment.start.y + uy * distance,
                     );
                     // Remove rounding overshoot at a clipped boundary, without inventing an endpoint.
-                    if let Some(crop) = current.crop {
+                    if let Some(crop) = self.crop_for(segment.entity) {
                         point.x = point.x.clamp(crop.min.x, crop.max.x);
                         point.y = point.y.clamp(crop.min.y, crop.max.y);
                     }
@@ -568,6 +591,7 @@ mod axis_tests {
     #[test]
     fn graph_axis_query_checks_axis_exclusion_context_and_preserves_legacy_ranking() {
         let context = PlanContext {
+            annotation_crop: None,
             session_id: Id::new(),
             model_revision: 0,
             view_id: Id::new(),

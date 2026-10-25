@@ -50,7 +50,7 @@ collections. Migration creates empty collections only when all three are
 absent, advances native headers, and validates before adoption. Populated
 assemblies, custom assignments, materials, save/reopen, and schema migration
 are covered by `crates/os-storage/tests/curtain_systems.rs`. Native full-model
-plugins use API 40/schema 59; generic API 2 and container 2 are unchanged.
+plugins now use API 56/schema 75; generic API 2 and container 2 are unchanged.
 
 ## Plan placement
 

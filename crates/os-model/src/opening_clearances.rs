@@ -80,6 +80,14 @@ impl Model {
         }
         let mut changed = BTreeSet::new();
         for (&id, &lock) in &self.opening_clearances {
+            // Group members are materialized from their shared definition. A
+            // newly duplicated opening can be within the accepted clearance
+            // tolerance while differing by one floating-point bit; normalizing
+            // it here would make the live member diverge from its canonical
+            // template. Group edits must update the definition transactionally.
+            if self.group_instance_for_member(id).is_some() {
+                continue;
+            }
             let expected = self.clearance_offset(id, lock)?;
             let new = &self.openings[&id].parameters;
             // Unrelated transactions (including copying a host to another level)

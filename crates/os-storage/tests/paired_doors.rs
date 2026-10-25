@@ -24,6 +24,12 @@ fn paired_doors_schema57_migration_preserves_states_and_rejects_ambiguity() {
         .id();
     model.openings.get_mut(&door).unwrap().parameters.open_state = OpeningState::DoorAngle(32.);
     let mut wire = serde_json::to_value(&model).unwrap();
+    wire.as_object_mut().unwrap().remove("plan_callouts");
+    wire.as_object_mut().unwrap().remove("section_callouts");
+    wire.as_object_mut().unwrap().remove("text_notes");
+    wire.as_object_mut().unwrap().remove("plan_hidden_openings");
+    wire.as_object_mut().unwrap().remove("group_definitions");
+    wire.as_object_mut().unwrap().remove("group_instances");
     common::remove_railings(&mut wire);
     common::remove_curtains(&mut wire);
     for ty in wire["opening_types"].as_object_mut().unwrap().values_mut() {
@@ -95,6 +101,7 @@ fn paired_doors_package_v5_v4_upgrade_and_save_reopen() {
     let length = LengthParameter::new(
         "core.length_parameter",
         LengthParameterParams {
+            formula: None,
             name: "Pair width".into(),
             value: resolved.width,
             unit: LengthUnit::Metres,
@@ -135,6 +142,19 @@ fn paired_doors_package_v5_v4_upgrade_and_save_reopen() {
         .as_object_mut()
         .unwrap()
         .remove("door_leaves");
+    // A current literal carries formula:null; package v4 predates that field.
+    // Keep the strict legacy rejection, then construct the actual old wire.
+    assert!(parse_opening_type_package(&serde_json::to_vec(&old).unwrap()).is_err());
+    for parameter in old["length_parameters"]
+        .as_object_mut()
+        .unwrap()
+        .values_mut()
+    {
+        assert_eq!(
+            parameter.as_object_mut().unwrap().remove("formula"),
+            Some(serde_json::Value::Null)
+        );
+    }
     assert_eq!(
         parse_opening_type_package(&serde_json::to_vec(&old).unwrap()).unwrap(),
         current

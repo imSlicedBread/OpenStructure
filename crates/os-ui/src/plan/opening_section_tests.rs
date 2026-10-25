@@ -998,3 +998,6 @@ fn opening_sections_fail_atomically_on_invalid_late_source_and_budgets() {
     snapshot.source.plane.origin.y = 100.;
     assert!(snapshot.derive().is_err());
 }
+
+#[path = "section_callout_output_tests.rs"]
+mod section_callout_output_tests;

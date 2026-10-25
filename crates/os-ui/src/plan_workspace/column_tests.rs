@@ -1,6 +1,6 @@
 //! Headless egui acceptance for native rectangular column authoring.
 use super::*;
-use os_model::{Wall, WallParams};
+use os_model::{Column, ColumnParams, Material, MaterialParams, Wall, WallParams};
 
 const PROFILES: [(egui::Vec2, f32); 2] = [
     (egui::vec2(1280.0, 800.0), 1.0),
@@ -139,6 +139,45 @@ fn escape() -> egui::Event {
         repeat: false,
         modifiers: egui::Modifiers::NONE,
     }
+}
+
+fn add_move_fixture(h: &mut Harness, center: Point2) -> (Id, Column) {
+    let material = Material::new(
+        "core.material",
+        MaterialParams {
+            cut_pattern: None,
+            name: "Column finish".into(),
+            density_kg_m3: 7850.0,
+            color: [120, 130, 140],
+        },
+    );
+    let material_id = material.id();
+    h.app
+        .editor
+        .command("Add column material", Command::AddMaterial(material))
+        .unwrap();
+    let column = Column::new(
+        "core.column",
+        ColumnParams {
+            name: "Move fixture".into(),
+            level: h.app.active_level,
+            center,
+            width: 0.4,
+            depth: 0.6,
+            height: 3.2,
+            base_offset: 0.15,
+            material: Some(material_id),
+        },
+    );
+    let id = column.id();
+    h.app
+        .editor
+        .command("Add move fixture", Command::AddColumn(column.clone()))
+        .unwrap();
+    h.settle();
+    h.app.select(Some(id));
+    h.frame(vec![]);
+    (id, column)
 }
 
 #[test]
@@ -325,4 +364,261 @@ fn escape_while_pointer_is_claimed_does_not_pan_or_place_column() {
     assert!(h.app.plans.column_placement.is_none());
     assert!(h.app.editor.document.model().columns.is_empty());
     assert_eq!(h.app.plans.cameras[&h.view].center, before);
+}
+
+#[test]
+fn move_column_previews_then_commits_once_and_preserves_identity_at_two_dpi_profiles() {
+    for (size, scale) in PROFILES {
+        let mut h = Harness::new(size, scale);
+        h.app.plans.split = true;
+        let (id, original) = add_move_fixture(&mut h, Point2::new(1.0, 2.0));
+        let camera = h.app.plans.cameras.get_mut(&h.view).unwrap();
+        camera.center = Point2::new(2.0, 3.0);
+        camera.pixels_per_metre = 15.0;
+        h.frame(vec![]);
+        let original_model = h.app.editor.document.model().clone();
+        let original_revision = h.app.editor.document.revision();
+        let original_undo_count = h.app.editor.document.history_stats().undo_entries;
+
+        h.app.begin_column_move();
+        h.frame(vec![]);
+        h.click(h.point(Point2::new(1.0, 2.0)));
+        let destination = Point2::new(3.0, 4.0);
+        let preview = h.hover(h.point(destination));
+        assert_eq!(h.app.editor.document.model(), &original_model);
+        assert_eq!(h.app.editor.document.revision(), original_revision);
+        assert!(
+            !preview.shapes.is_empty(),
+            "transient move preview paints without changing the model"
+        );
+
+        h.click(h.point(destination));
+        let mut expected = original.clone();
+        expected.parameters.center = destination;
+        assert_eq!(h.app.editor.document.model().columns[&id], expected);
+        assert_eq!(
+            h.app.editor.document.history_stats().undo_entries,
+            original_undo_count + 1
+        );
+        h.settle();
+        assert!((h.app.editor.scene[&id].signed_volume() - 0.4 * 0.6 * 3.2).abs() < 1e-10);
+        let context = h.app.editor.native_plan_context(h.view).unwrap();
+        assert!(
+            h.app
+                .plans
+                .drawing
+                .as_ref()
+                .unwrap()
+                .columns(context)
+                .unwrap()
+                .iter()
+                .any(|item| item.entity == id)
+        );
+
+        h.app.history(false);
+        h.settle();
+        assert_eq!(h.app.editor.document.model().columns[&id], original);
+        h.app.history(true);
+        h.settle();
+        assert_eq!(h.app.editor.document.model().columns[&id], expected);
+
+        let committed = h.app.editor.document.model().clone();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("column-move.osb");
+        h.app.editor.save(&path).unwrap();
+        h.app.editor.open(&path).unwrap();
+        assert_eq!(h.app.editor.document.model(), &committed);
+        assert!(h.app.editor.scene.contains_key(&id));
+    }
+}
+
+#[test]
+fn move_column_uses_snaps_excludes_its_own_footprint_and_handles_rotated_large_coordinates() {
+    let mut h = Harness::new(PROFILES[0].0, PROFILES[0].1);
+    let origin = Point2::new(100_000.0, -100_000.0);
+    let (id, original) = add_move_fixture(&mut h, origin);
+    let mut parameters = h.app.editor.document.model().views[&h.view]
+        .parameters
+        .clone();
+    let plan = parameters.plan.as_mut().unwrap();
+    plan.basis = os_model::PlanViewBasis {
+        origin,
+        rotation: 0.73,
+    };
+    plan.crop = Some(os_model::PlanViewCrop {
+        min: Point2::new(-5.0, -5.0),
+        max: Point2::new(5.0, 5.0),
+    });
+    h.app
+        .editor
+        .command(
+            "Rotate and crop plan",
+            Command::UpdateView {
+                id: h.view,
+                parameters,
+            },
+        )
+        .unwrap();
+    h.settle();
+    h.app.plans.cameras.get_mut(&h.view).unwrap().center = Point2::new(0.0, 0.0);
+    h.app
+        .plans
+        .cameras
+        .get_mut(&h.view)
+        .unwrap()
+        .pixels_per_metre = 30.0;
+    h.app.plans.snaps.enabled = true;
+    h.frame(vec![]);
+
+    // The base is close enough to the selected column edge that it would
+    // acquire that edge if the edited entity were not excluded from snapping.
+    let base = Point2::new(origin.x + 0.15, origin.y + 0.10);
+    let destination = Point2::new(origin.x + 2.15, origin.y + 1.10);
+    h.app.begin_column_move();
+    h.frame(vec![]);
+    h.click(h.point(base));
+    h.click(h.point(destination));
+    let expected_delta = Point2::new(2.0, 1.0);
+    let moved = h.app.editor.document.model().columns[&id].parameters.center;
+    assert!((moved.x - (original.parameters.center.x + expected_delta.x)).abs() < 0.04);
+    assert!((moved.y - (original.parameters.center.y + expected_delta.y)).abs() < 0.04);
+
+    // A visible wall endpoint is still the authoritative destination snap.
+    let basis = os_geometry::plan::HorizontalBasis {
+        origin,
+        rotation: 0.73,
+    };
+    let snap_start = basis.plane_to_world(Point2::new(3.0, 4.0)).unwrap();
+    let snap_end = basis.plane_to_world(Point2::new(3.0, 6.0)).unwrap();
+    let wall = Wall::new(
+        os_walls::WALL_TYPE,
+        WallParams {
+            name: "Move snap target".into(),
+            path: os_model::WallPath::Straight {
+                start: snap_start,
+                end: snap_end,
+            },
+            thickness: 0.2,
+            height: 3.0,
+            level: h.app.active_level,
+            material: None,
+        },
+    );
+    h.app
+        .editor
+        .command("Add snap target", Command::AddWall(wall))
+        .unwrap();
+    h.settle();
+    h.app.select(Some(id));
+    h.app.plans.cameras.get_mut(&h.view).unwrap().center = Point2::new(2.0, 3.0);
+    h.frame(vec![]);
+    let current = h.app.editor.document.model().columns[&id].parameters.center;
+    let base = Point2::new(current.x, current.y);
+    let target = basis.plane_to_world(Point2::new(3.02, 4.01)).unwrap();
+    h.app.begin_column_move();
+    h.frame(vec![]);
+    h.click(h.point(base));
+    h.click(h.point(target));
+    assert!(
+        (h.app.editor.document.model().columns[&id]
+            .parameters
+            .center
+            .x
+            - snap_start.x)
+            .abs()
+            < 0.04
+    );
+    assert!(
+        (h.app.editor.document.model().columns[&id]
+            .parameters
+            .center
+            .y
+            - snap_start.y)
+            .abs()
+            < 0.04
+    );
+}
+
+#[test]
+fn invalid_destination_can_be_retried_zero_translation_is_noop_and_escape_cancels() {
+    let mut h = Harness::new(PROFILES[0].0, PROFILES[0].1);
+    let (id, _) = add_move_fixture(&mut h, Point2::new(0.0, 0.0));
+    let mut parameters = h.app.editor.document.model().views[&h.view]
+        .parameters
+        .clone();
+    parameters.plan.as_mut().unwrap().crop = Some(os_model::PlanViewCrop {
+        min: Point2::new(-2.0, -2.0),
+        max: Point2::new(2.0, 2.0),
+    });
+    h.app
+        .editor
+        .command(
+            "Crop plan",
+            Command::UpdateView {
+                id: h.view,
+                parameters,
+            },
+        )
+        .unwrap();
+    h.settle();
+    let original = h.app.editor.document.model().columns[&id].clone();
+    let original_undo_count = h.app.editor.document.history_stats().undo_entries;
+    h.app.begin_column_move();
+    h.frame(vec![]);
+    h.click(h.point(Point2::new(0.0, 0.0)));
+    h.click(h.point(Point2::new(4.0, 4.0)));
+    assert!(
+        h.app.plans.column_move.is_some(),
+        "invalid release keeps the draft available for correction"
+    );
+    assert_eq!(h.app.editor.document.model().columns[&id], original);
+    h.click(h.point(Point2::new(0.0, 0.0)));
+    assert!(h.app.plans.column_move.is_none());
+    assert_eq!(h.app.editor.document.model().columns[&id], original);
+    assert_eq!(
+        h.app.editor.document.history_stats().undo_entries,
+        original_undo_count
+    );
+
+    h.app.begin_column_move();
+    h.frame(vec![]);
+    let base = h.point(Point2::new(0.0, 0.0));
+    h.hover(base);
+    h.frame(vec![button(base, true)]);
+    let camera_center = h.app.plans.cameras[&h.view].center;
+    h.frame(vec![escape()]);
+    h.frame(vec![button(base, false)]);
+    h.frame(vec![]);
+    assert!(h.app.plans.column_move.is_none());
+    assert_eq!(h.app.editor.document.model().columns[&id], original);
+    assert_eq!(h.app.plans.cameras[&h.view].center, camera_center);
+
+    // With no move tool armed, the same canvas gesture remains a pan.
+    let before_pan = h.app.plans.cameras[&h.view].center;
+    let start = h.point(Point2::new(0.0, 0.0));
+    let end = start + egui::vec2(45.0, 0.0);
+    h.hover(start);
+    h.frame(vec![button(start, true)]);
+    h.frame(vec![egui::Event::PointerMoved(end)]);
+    h.frame(vec![button(end, false)]);
+    assert_ne!(h.app.plans.cameras[&h.view].center, before_pan);
+}
+
+#[test]
+fn stale_document_cancels_column_move_without_applying_the_draft() {
+    let mut h = Harness::new(PROFILES[0].0, PROFILES[0].1);
+    let (id, original) = add_move_fixture(&mut h, Point2::new(1.0, 1.0));
+    h.app.begin_column_move();
+    h.frame(vec![]);
+    h.click(h.point(Point2::new(1.0, 1.0)));
+    h.app
+        .editor
+        .command(
+            "External document edit",
+            Command::RenameProject("Changed".into()),
+        )
+        .unwrap();
+    h.frame(vec![]);
+    assert!(h.app.plans.column_move.is_none());
+    assert_eq!(h.app.editor.document.model().columns[&id], original);
 }

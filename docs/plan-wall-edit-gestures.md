@@ -285,3 +285,76 @@ cancellation, and ordinary canvas pan. Focused validation passed:
 `cargo test -p os-ui --all-features --locked --offline wall_set_move --lib --
 --test-threads=1`. Native visual acceptance has not been performed; general
 multi-entity move/copy and Revit parity remain open.
+
+## Wall assembly Rotate/Mirror — 2026-10-23 implementation evidence
+
+The existing Wall transforms menu now accepts 2–64 selected visible native
+straight walls on the active floor-plan level. Assembly Rotate first picks an
+explicit pivot, then a direction or exact relative degrees; Mirror retains the
+two-point axis. Single-wall midpoint rotation and installed-worker routing stay
+on their existing paths. Assembly snapping excludes selected walls/openings.
+
+The disposable candidate includes all walls, hosted openings, opening tags in
+every owning view, room seeds, and room tags. Room faces are rederived and their
+new canonical signatures accepted only for the same UUID boundary sets; partial
+joins and wall/separation-line loops reject. Identity-based dimension references
+remain unchanged and are validated in their owning supported views. Reflection
+changes instance swing, pane side, and wall layer order. Commit preflights scene
+regeneration and affected drawings in an isolated editor before one transaction.
+Installed Wall providers fail closed for assembly batches without a protocol change.
+
+Rigid transforms preserve the stored tee station. The candidate assigns the
+transformed branch endpoint from the transformed host's exact station point,
+avoiding last-bit disagreement between two independent floating-point
+evaluations under non-cardinal rotation.
+
+Final validation in `E:\fkey labs second drive\OpenStructure`:
+
+```powershell
+$env:CARGO_TARGET_DIR='E:\fkey labs second drive\OpenStructure\target'
+$env:CARGO_INCREMENTAL='0'
+$env:TMP=$env:CARGO_TARGET_DIR
+$env:TEMP=$env:TMP
+$env:OPENSTRUCTURE_WALL_TEST_PLUGIN='E:\fkey labs second drive\OpenStructure\outputs\rust-wall-install'
+rustfmt --check --edition 2024 --config skip_children=true crates/os-ui/src/plan_workspace/transforms.rs crates/os-ui/src/plan_workspace/transforms/assembly.rs crates/os-ui/src/plan_workspace/wall_assembly_transform_tests.rs
+cargo test -p os-ui --all-features --lib --locked --offline wall_assembly_transform -- --include-ignored --test-threads=1
+cargo check -p os-ui --all-features --locked --offline
+```
+
+Scoped rustfmt check and all-feature check pass. Focused tests: **8 passed,
+0 failed, 0 ignored**, including the installed Wall guest. They cover both egui DPI profiles, explicit pivot,
+exact rotation, horizontal/vertical/diagonal mirror axes, complete corner loops,
+cross-view room/opening tags, room area/signature/seed, typed door/window meshes
+and pins, semantic Plan/Elevation dimensions, Section reference acceptance and
+rejection, immutable preview, one-step undo/redo/save-reopen, split scene,
+partial-loop/join rejection, genuinely invalid junction geometry, Escape/stale/
+pan, rotated-plan snaps, and the actual installed guest's batch refusal plus
+single-wall Rotate/Mirror worker commits. The full workspace and existing full
+single-wall regression suites were not run. A broader `wall_` library filter
+had 70 passed, 0 failed, and 3 ignored on the follow-up run. The earlier failure
+was a test-coordinate error: the 2 m endpoint was 13 logical pixels outside the
+1000×650 canvas. The test now uses an in-canvas 1 m endpoint and passes at both
+profiles; ignored cases require an explicitly installed guest.
+Native-window qualification remains open. Git status/diff still fails with the
+pre-existing checkout metadata error;
+metadata was not repaired. No schema or plugin protocol changed.
+
+## Static radial wall arrays — 2026-10-23
+
+The **Array walls** draft now offers Linear/Radial modes. Radial uses the existing
+plan snap query to choose its pivot even when exact angular input is present;
+the signed angle controls the repeat transform independently of pointer position.
+Switching modes clears the prior base/pivot. A second canvas release commits the
+validated preview. Invalid release, Escape, lost pointer or stale document/view/
+drawing/selection/provider context preserves the original model. Active drafts
+claim pointer input, preventing simultaneous canvas pan.
+
+Every repeat transforms the original source and remaps dependencies through the
+existing wall-copy identity maps. The candidate includes earlier repeats for
+collision/room validation; commit uses isolated regeneration and drawing preflight.
+There is no live scene mutation during preview. Bounds and dependency policy are
+documented in [native wall-set copy](native-wall-set-copy.md#static-radial-wall-assembly-arrays--2026-10-23).
+The new `wall_assembly_radial_array_tests.rs` covers both headless egui DPI profiles,
+signed steps/snapped pivot, metadata and tag behavior, history/save-reopen/split,
+large coordinates, exact Tee stations, rejection/cancellation/pan, room protection
+and opt-in installed-provider refusal. Native-window visual QA remains open.

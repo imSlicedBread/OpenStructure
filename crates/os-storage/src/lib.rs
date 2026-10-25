@@ -10,6 +10,7 @@ use std::{
     path::Path,
 };
 use zip::{ZipArchive, ZipWriter, write::SimpleFileOptions};
+pub mod drawing_issue;
 mod json_guard;
 pub mod opening_type_library;
 pub use opening_type_library::{
@@ -137,7 +138,7 @@ impl StorageBackend for ZipJsonStorage {
 }
 /// ZIP lookup deduplicates names internally. Inspect the actual directory rather
 /// than counting an already-deduplicated iterator. No archive path is extracted.
-fn validate_directory(mut file: File, start: u64, expected: usize) -> Result<()> {
+fn validate_directory(mut file: impl Read + Seek, start: u64, expected: usize) -> Result<()> {
     let mut names = std::collections::BTreeSet::new();
     file.seek(SeekFrom::Start(start)).map_err(storage)?;
     loop {
@@ -379,8 +380,124 @@ fn migrated_phase_id(project: Id, salt: u128) -> Id {
     Id(uuid::Uuid::from_u128(value))
 }
 
+/// Family 7 only allowed accessories on doors/Fixed windows. Preserve the old
+/// attachment values exactly and reject new semantics in an old wire version.
+fn migrate_opening_family_v7(parameters: &mut serde_json::Value) -> Result<()> {
+    let operation = parameters["window_operation"].as_str().map(str::to_owned);
+    let family = parameters["family"]
+        .as_object_mut()
+        .ok_or_else(|| Error::Invalid("missing opening family".into()))?;
+    ensure(
+        family.get("version") == Some(&serde_json::json!(7)),
+        "legacy opening family must be version 7",
+    )?;
+    let extrusions = family
+        .get("extrusions")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| Error::Invalid("missing legacy extrusions".into()))?;
+    ensure(
+        extrusions.iter().all(|s| {
+            matches!(
+                s["attachment"].as_str(),
+                Some("OpeningFixed" | "PrimaryPanel")
+            )
+        }) && (extrusions.is_empty() || operation.as_deref() == Some("Fixed")),
+        "moving sash accessories require family 8/model 72/package 8",
+    )?;
+    family.insert("version".into(), 8.into());
+    Ok(())
+}
+
+/// Family 8 never allowed authored solids on paired doors. Reject new semantics
+/// even when the new enum can deserialize them, before advancing the wire version.
+fn migrate_opening_family_v8(parameters: &mut serde_json::Value) -> Result<()> {
+    let family = &mut parameters["family"];
+    ensure(
+        family["version"] == 8,
+        "legacy opening family must be version 8",
+    )?;
+    let extrusions = family["extrusions"]
+        .as_array()
+        .ok_or_else(|| Error::Invalid("missing legacy extrusions".into()))?;
+    ensure(
+        extrusions.iter().all(|s| {
+            matches!(
+                s["attachment"].as_str(),
+                Some("OpeningFixed" | "PrimaryPanel" | "MovingSash")
+            )
+        }) && (extrusions.is_empty() || family["door_leaves"] == "Single"),
+        "paired leaf accessories require family 9/model 73/package 9",
+    )?;
+    family["version"] = 9.into();
+    Ok(())
+}
+
 /// Explicit native schema chain; never infer a version from optional field shapes.
 fn migrate_inner(value: &mut serde_json::Value, from: u32) -> Result<()> {
+    if from < 84 {
+        for opening in value["openings"]
+            .as_object()
+            .into_iter()
+            .flat_map(|m| m.values())
+        {
+            ensure(
+                opening["parameters"]["open_state"]
+                    .get("CasementPairAngles")
+                    .is_none(),
+                "paired casement poses require schema 84",
+            )?;
+        }
+        for ty in value["opening_types"]
+            .as_object()
+            .into_iter()
+            .flat_map(|m| m.values())
+        {
+            reject_legacy_paired_casement(&ty["parameters"])?;
+        }
+    }
+    if from < 83 {
+        ensure(
+            value.get("plan_graphics_rules").is_none(),
+            "plan graphics rules require schema 83",
+        )?;
+    }
+    if from < 82 {
+        ensure(
+            value
+                .get("plan_element_graphics_overrides")
+                .is_none_or(|v| v.as_object().is_some_and(serde_json::Map::is_empty)),
+            "plan element graphics overrides require schema 82",
+        )?;
+    }
+    if from < 81 {
+        ensure(
+            value.get("group_definitions").is_none() && value.get("group_instances").is_none(),
+            "groups require schema 81",
+        )?;
+    }
+    if from < 80 {
+        ensure(
+            value.get("plan_hidden_openings").is_none(),
+            "hidden openings require schema 80",
+        )?;
+    }
+    if from < 79 {
+        if let Some(views) = value["views"].as_object() {
+            ensure(
+                views
+                    .values()
+                    .all(|v| v["parameters"]["plan"].get("annotation_crop").is_none()),
+                "annotation crop requires schema 79",
+            )?;
+        }
+    }
+
+    if from < 71 {
+        ensure(
+            value.get("sheet_sets").is_none() && value.get("drawing_issues").is_none(),
+            "ambiguous legacy drawing issues",
+        )?;
+    }
     if from < 70 {
         ensure(
             value.get("material_patterns").is_none(),
@@ -535,7 +652,184 @@ fn migrate_inner(value: &mut serde_json::Value, from: u32) -> Result<()> {
     Ok(())
 }
 
+fn migrate_parameters_v76(parameters: &mut serde_json::Value) -> Result<()> {
+    let p = parameters
+        .as_object_mut()
+        .ok_or_else(|| storage("invalid legacy parameter"))?;
+    ensure(
+        !p.contains_key("formula") && p.get("unit") == Some(&serde_json::json!("Metres")),
+        "ambiguous legacy typed parameter",
+    )?;
+    p.insert("formula".into(), serde_json::Value::Null);
+    Ok(())
+}
+fn migrate_opening_family_v9(parameters: &mut serde_json::Value) -> Result<()> {
+    let family = &mut parameters["family"];
+    ensure(family["version"] == 9, "expected legacy family v9")?;
+    for solid in family["extrusions"]
+        .as_array_mut()
+        .ok_or_else(|| storage("missing legacy extrusions"))?
+    {
+        let solid = solid
+            .as_object_mut()
+            .ok_or_else(|| storage("invalid legacy extrusion"))?;
+        ensure(
+            !solid.contains_key("bindings"),
+            "ambiguous legacy extrusion bindings",
+        )?;
+        solid.insert(
+            "bindings".into(),
+            serde_json::json!({"x":null,"y":null,"depth":null,"normal_offset":null}),
+        );
+    }
+    family["version"] = 10.into();
+    Ok(())
+}
+fn reject_legacy_paired_casement(p: &serde_json::Value) -> Result<()> {
+    ensure(
+        p["window_operation"].get("PairedCasement").is_none()
+            && p["family"]["version"].as_u64().is_none_or(|v| v <= 10)
+            && p["family"]["extrusions"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .all(|s| !matches!(s["attachment"].as_str(), Some("StartSash" | "EndSash"))),
+        "paired casements require schema 84/family 11/package 11",
+    )
+}
+fn migrate_opening_family_v10(p: &mut serde_json::Value) -> Result<()> {
+    reject_legacy_paired_casement(p)?;
+    ensure(p["family"]["version"] == 10, "expected legacy family v10")?;
+    p["family"]["version"] = 11.into();
+    Ok(())
+}
 fn migrate_step(value: &mut serde_json::Value, from: u32) -> Result<()> {
+    if from == 83 {
+        for ty in value["opening_types"]
+            .as_object_mut()
+            .ok_or_else(|| storage("missing opening types"))?
+            .values_mut()
+        {
+            migrate_opening_family_v10(&mut ty["parameters"])?;
+        }
+    }
+    if from == 82 {
+        value["plan_graphics_rules"] = serde_json::json!({});
+    }
+    if from == 81 {
+        value["plan_element_graphics_overrides"] = serde_json::json!({});
+        value["plan_graphics_rules"] = serde_json::json!({});
+    }
+    if from == 80 {
+        value["group_definitions"] = serde_json::json!({});
+        value["group_instances"] = serde_json::json!({});
+    }
+    if from == 79 {
+        value["plan_hidden_openings"] = serde_json::json!({});
+    }
+    if from == 77 {
+        for view in value["views"]
+            .as_object()
+            .ok_or_else(|| storage("missing views"))?
+            .values()
+        {
+            ensure(
+                view["parameters"].get("drafting").is_none()
+                    && view["parameters"]["kind"] != "Drafting",
+                "drafting views require schema 78",
+            )?;
+        }
+    }
+    if from == 76 {
+        for p in value["length_parameters"]
+            .as_object_mut()
+            .ok_or_else(|| storage("missing parameters"))?
+            .values_mut()
+        {
+            migrate_parameters_v76(&mut p["parameters"])?;
+        }
+        for ty in value["opening_types"]
+            .as_object_mut()
+            .ok_or_else(|| storage("missing opening types"))?
+            .values_mut()
+        {
+            migrate_opening_family_v9(&mut ty["parameters"])?;
+        }
+    }
+    if from == 75 {
+        ensure(
+            value.get("text_notes").is_none(),
+            "text notes require schema 76",
+        )?;
+        for line in value["detail_lines"]
+            .as_object()
+            .ok_or_else(|| Error::Invalid("missing detail lines".into()))?
+            .values()
+        {
+            let owner = line["parameters"]["view"]
+                .as_str()
+                .ok_or_else(|| Error::Invalid("invalid detail owner".into()))?;
+            ensure(
+                value["views"][owner]["parameters"]["kind"] == "Plan",
+                "section detail lines require schema 76",
+            )?;
+        }
+        value["text_notes"] = serde_json::json!({});
+    }
+    if from == 74 {
+        ensure(
+            value.get("section_callouts").is_none(),
+            "section callouts require schema 75",
+        )?;
+        value["section_callouts"] = serde_json::json!({});
+    }
+    if from == 73 {
+        ensure(
+            value.get("plan_callouts").is_none(),
+            "callouts require schema 74",
+        )?;
+        value["plan_callouts"] = serde_json::json!({});
+        for sheet in value["sheets"]
+            .as_object_mut()
+            .ok_or_else(|| Error::Invalid("missing sheets".into()))?
+            .values_mut()
+        {
+            for (index, viewport) in sheet["parameters"]["viewports"]
+                .as_array_mut()
+                .ok_or_else(|| Error::Invalid("missing viewports".into()))?
+                .iter_mut()
+                .enumerate()
+            {
+                ensure(
+                    viewport.get("detail_number").is_none(),
+                    "detail numbers require schema 74",
+                )?;
+                viewport["detail_number"] = (index + 1).to_string().into();
+            }
+        }
+    }
+    if from == 72 {
+        for ty in value["opening_types"]
+            .as_object_mut()
+            .ok_or_else(|| Error::Invalid("missing opening types".into()))?
+            .values_mut()
+        {
+            migrate_opening_family_v8(&mut ty["parameters"])?;
+        }
+    }
+    if from == 71 {
+        for ty in value["opening_types"]
+            .as_object_mut()
+            .ok_or_else(|| Error::Invalid("missing opening types".into()))?
+            .values_mut()
+        {
+            migrate_opening_family_v7(&mut ty["parameters"])?;
+        }
+    }
+    if from == 70 {
+        value["sheet_sets"] = serde_json::json!({});
+        value["drawing_issues"] = serde_json::json!({});
+    }
     if from == 69 {
         value["material_patterns"] = serde_json::json!({});
     }
@@ -623,7 +917,7 @@ fn migrate_step(value: &mut serde_json::Value, from: u32) -> Result<()> {
         }
     }
     match from {
-        63..=69 => {
+        63..=83 => {
             let object = value
                 .as_object_mut()
                 .ok_or_else(|| Error::Invalid("invalid model".into()))?;
@@ -4369,6 +4663,33 @@ fn remove_phase_fields_from_legacy_fixture(value: &mut serde_json::Value) {
         object.remove("railing_types");
         object.remove("casework_types");
         object.remove("casework");
+        object.remove("sheet_sets");
+        object.remove("drawing_issues");
+        // Schema-74 links must stay absent until their own strict migration.
+        object.remove("plan_callouts");
+        object.remove("section_callouts");
+        object.remove("text_notes");
+        object.remove("plan_hidden_openings");
+        object.remove("plan_element_graphics_overrides");
+        object.remove("plan_graphics_rules");
+    }
+    if let Some(sheets) = value
+        .get_mut("sheets")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        for sheet in sheets.values_mut() {
+            if let Some(viewports) = sheet
+                .get_mut("parameters")
+                .and_then(|p| p.get_mut("viewports"))
+                .and_then(serde_json::Value::as_array_mut)
+            {
+                for viewport in viewports {
+                    if let Some(viewport) = viewport.as_object_mut() {
+                        viewport.remove("detail_number");
+                    }
+                }
+            }
+        }
     }
 }
 

@@ -1,6 +1,9 @@
 //! Real egui frames for pointer placement; no native-window or screenshot claim.
 use super::*;
 
+#[path = "opening_pose_tests.rs"]
+mod opening_pose_tests;
+
 #[path = "opening_align_tests.rs"]
 mod opening_align_tests;
 

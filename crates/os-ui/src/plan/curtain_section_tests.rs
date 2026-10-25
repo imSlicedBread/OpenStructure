@@ -11,6 +11,7 @@ mod curtain_fixture;
 
 fn context() -> PlanContext {
     PlanContext {
+        annotation_crop: None,
         session_id: Id::new(),
         model_revision: 1,
         view_id: Id::new(),
@@ -350,6 +351,7 @@ fn editor_section_snapshot_captures_same_building_curtains_only() {
     let view = View::new(
         "core.view",
         ViewParams {
+            drafting: None,
             name: "Curtain section".into(),
             kind: ViewKind::Section,
             level: Some(level),

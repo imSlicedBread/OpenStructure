@@ -145,6 +145,9 @@ impl DesktopApp {
                                     if ui.add_enabled(self.plans.active.is_some(), egui::Button::new("Detail Line")).clicked() {
                                         self.begin_detail_line();
                                     }
+                                    if ui.add_enabled(self.plans.active.is_some(), egui::Button::new("Text note")).clicked() {
+                                        self.begin_text_note(None);
+                                    }
                                     ui.menu_button("Dimensions…", |ui| {
                                         for (label, layout) in [
                                             ("Aligned dimension", os_model::DimensionLayout::Aligned),

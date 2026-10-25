@@ -92,7 +92,8 @@ impl PlanDrawing {
                 match line.role {
                     PlanRole::Depth => 0,
                     PlanRole::Projected => 1,
-                    PlanRole::Cut => 2,
+                    PlanRole::Overhead => 2,
+                    PlanRole::Cut => 3,
                 },
                 line.entity,
                 line.feature,

@@ -18,7 +18,22 @@ impl PlanDrawing {
         let point = camera.unproject(pointer, viewport)?;
         let in_crop = current.crop.is_none_or(|crop| point_in_crop(crop, point));
         let mut hits: Vec<Id> = first.into_iter().collect();
-        for tag in self.opening_tags(current)?.iter().rev() {
+        if current.annotation_crop.is_some() {
+            hits.extend(self.annotation_hits(
+                current,
+                camera,
+                viewport,
+                pointer,
+                radius,
+                |_| true,
+            )?);
+        }
+        for tag in self
+            .opening_tags(current)?
+            .iter()
+            .rev()
+            .filter(|_| current.annotation_crop.is_none())
+        {
             if tag.hit(current, camera, viewport, pointer)? {
                 hits.push(tag.entity);
             }
@@ -38,7 +53,18 @@ impl PlanDrawing {
             ensure(distance.is_finite(), "plan pick distance overflow")?;
             Ok(distance)
         };
-        if in_crop {
+        let outline_hit = |segments: Vec<(Point2, Point2)>| -> Result<bool> {
+            for (a, b) in segments {
+                if distance(a, b)? <= radius {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        };
+        if current
+            .annotation_bounds()
+            .is_none_or(|c| point_in_crop(c, point))
+        {
             for line in self.detail_lines(current)?.iter().rev() {
                 if distance(line.start, line.end)? <= radius {
                     hits.push(line.entity);
@@ -51,7 +77,12 @@ impl PlanDrawing {
             }
         }
         for item in self.items(current)?.iter().rev() {
-            if item.footprint.contains(point) {
+            let hit = if item.footprint.role == PlanRole::Overhead {
+                outline_hit(item.outline().collect())?
+            } else {
+                item.footprint.contains(point)
+            };
+            if hit {
                 hits.push(item.entity);
             }
         }
@@ -70,12 +101,22 @@ impl PlanDrawing {
         grids.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
         hits.extend(grids.into_iter().map(|(_, id)| id));
         for item in self.columns(current)?.iter().rev() {
-            if item.footprint.contains(point) {
+            let hit = if item.footprint.role == PlanRole::Overhead {
+                outline_hit(item.outline().collect())?
+            } else {
+                item.footprint.contains(point)
+            };
+            if hit {
                 hits.push(item.entity);
             }
         }
         for item in self.casework(current)?.iter().rev() {
-            if item.footprint.contains(point) {
+            let hit = if item.footprint.role == PlanRole::Overhead {
+                outline_hit(item.outline().collect())?
+            } else {
+                item.footprint.contains(point)
+            };
+            if hit {
                 hits.push(item.entity);
             }
         }
@@ -91,7 +132,25 @@ impl PlanDrawing {
                 .rev()
                 .chain(self.ceilings(current)?.iter().rev())
             {
-                if floor.contains(point) {
+                let hit = if floor.role == PlanRole::Overhead {
+                    let mut segments = Vec::new();
+                    for ring in std::iter::once(&floor.boundary).chain(floor.holes.iter()) {
+                        for (start, end) in ring
+                            .iter()
+                            .copied()
+                            .zip(ring.iter().copied().cycle().skip(1))
+                            .take(ring.len())
+                        {
+                            if let Some(segment) = grids::clip(start, end, current.crop)? {
+                                segments.push(segment);
+                            }
+                        }
+                    }
+                    outline_hit(segments)?
+                } else {
+                    floor.contains(point)
+                };
+                if hit {
                     hits.push(floor.entity);
                 }
             }

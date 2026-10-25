@@ -22,6 +22,18 @@ Interior plan picking uses the clipped footprint. The generated closed prism
 uses the instance material identity on its faces. Level elevation/material
 changes invalidate dependent geometry and views.
 
+To translate one visible native column, select it and choose **Move column**.
+Click a base point and then a destination; the destination uses the active plan
+snap settings, and the column itself is excluded from snap candidates. The
+clipped footprint previews without changing the document or 3D scene. A valid
+move is preflighted and committed as one undoable edit, preserving the column
+UUID, level, dimensions, base offset and material. Escape, stale document/view/
+provider/selection context, or a lost pointer cancels safely. A destination
+outside the crop can be corrected without restarting the tool; zero translation
+does not add history. Ordinary canvas dragging continues to pan when Move column
+is not armed. Column movement currently supports one native rectangular column;
+there is no column copy, rotation, array, or collision solver.
+
 Schema 26 migrates to schema 27 by adding an empty native `columns` map and
 advancing native headers. Unknown extension payloads are preserved. IFC export
 explicitly rejects a model containing native columns until a mapping exists;
@@ -45,7 +57,9 @@ Focused automated evidence is in:
 - `crates/os-storage/src/tests/columns.rs` for schema migration, extension
   preservation and native archive reopen.
 - `crates/os-ui/src/plan_workspace/column_tests.rs` for egui placement,
-  non-mutating preview, Properties edit, history and save/reopen at
-  1280×800 / 100% and 1000×650 / 150%.
+  non-mutating preview, Properties edit, snapped movement, identity preservation,
+  undo/redo, invalid/cancel/stale handling, split 2D/3D refresh, rotated large
+  coordinates, crop behavior and save/reopen at 1280×800 / 100% and
+  1000×650 / 150%.
 
 These are headless egui tests, not native-window or physical print acceptance.

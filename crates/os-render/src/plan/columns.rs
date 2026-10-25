@@ -56,7 +56,8 @@ impl PlanDrawing {
                 match item.footprint.role {
                     PlanRole::Depth => 0,
                     PlanRole::Projected => 1,
-                    PlanRole::Cut => 2,
+                    PlanRole::Overhead => 2,
+                    PlanRole::Cut => 3,
                 },
                 item.entity,
             )
@@ -74,7 +75,9 @@ impl PlanDrawing {
             .columns(current)?
             .iter()
             .rev()
-            .find(|item| item.footprint.contains(point))
+            .find(|item| {
+                item.footprint.role != PlanRole::Overhead && item.footprint.contains(point)
+            })
             .map(|item| item.entity))
     }
 }

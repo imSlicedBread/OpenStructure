@@ -55,7 +55,7 @@ V1 plugin command responses are explicitly denied access to these core commands.
   still need representative measurement/budgets.
 - IFC wall export refuses any extension entity, even with loss consent. There is
   no extension IFC mapping yet. Unused requirement metadata is reported as omitted.
-- V1 wall replies must use current native header schema 2; older developer guests
+- At that milestone, V1 wall replies required native header schema 2; older developer guests
   constructing schema-1 walls fail document validation and need rebuilding. Buffer
   ABI and geometry-only Wasm probes remain unchanged. A generic independent DTO
   contract, descriptors and SDK are still required before general plugin support.

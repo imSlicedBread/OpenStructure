@@ -15,18 +15,18 @@ use std::collections::BTreeSet;
 #[path = "wall_level_copy_tests.rs"]
 mod wall_level_copy_tests;
 
-struct Bay {
-    walls: BTreeSet<Id>,
-    openings: [Id; 2],
-    joins: BTreeSet<Id>,
-    tags: [Id; 2],
+pub(super) struct Bay {
+    pub(super) walls: BTreeSet<Id>,
+    pub(super) openings: [Id; 2],
+    pub(super) joins: BTreeSet<Id>,
+    pub(super) tags: [Id; 2],
     dimension: Id,
     room: Id,
     room_tag: Id,
-    snap_wall: Id,
+    pub(super) snap_wall: Id,
 }
 
-fn add_wall(model: &mut Model, template: Id, start: Point2, end: Point2) -> Id {
+pub(super) fn add_wall(model: &mut Model, template: Id, start: Point2, end: Point2) -> Id {
     let mut parameters = model.walls[&template].parameters.clone();
     parameters.path = WallPath::Straight { start, end };
     let wall = Wall::new(os_walls::WALL_TYPE, parameters);
@@ -42,7 +42,7 @@ fn add_corner(model: &mut Model, a: WallAnchor, b: WallAnchor, owner: Id) -> Id 
     id
 }
 
-fn fixture(h: &mut Harness) -> (Model, Bay) {
+pub(super) fn fixture(h: &mut Harness) -> (Model, Bay) {
     let mut model = h.app.editor.document.model().clone();
     let bottom = h.wall;
     *model
@@ -381,7 +381,7 @@ fn fixture(h: &mut Harness) -> (Model, Bay) {
     )
 }
 
-fn load(h: &mut Harness, model: Model, selection: &BTreeSet<Id>) {
+pub(super) fn load(h: &mut Harness, model: Model, selection: &BTreeSet<Id>) {
     let geometry: Vec<_> = model
         .walls
         .keys()

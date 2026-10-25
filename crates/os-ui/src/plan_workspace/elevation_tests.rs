@@ -3,6 +3,9 @@ use super::*;
 use os_model::{Wall, WallPath};
 use std::time::{Duration, Instant};
 
+#[path = "elevation_resize_tests.rs"]
+mod resize_tests;
+
 struct Harness {
     app: DesktopApp,
     ctx: egui::Context,

@@ -8,6 +8,7 @@ pub const MAX_LENGTH_PARAMETERS: usize = 64;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LengthUnit {
     Metres,
+    Scalar,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -16,10 +17,30 @@ pub struct LengthParameterParams {
     pub name: String,
     pub unit: LengthUnit,
     pub value: f64,
+    /// Literal fallback is retained when a formula drives the value.
+    #[serde(deserialize_with = "required_formula")]
+    pub formula: Option<String>,
+}
+fn required_formula<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> std::result::Result<Option<String>, D::Error> {
+    Option::<String>::deserialize(d)
 }
 pub type LengthParameter = Entity<LengthParameterParams>;
 
 impl LengthParameterParams {
+    pub fn source_label(&self) -> String {
+        let unit = if self.unit == LengthUnit::Metres {
+            "m"
+        } else {
+            "Scalar"
+        };
+        if self.formula.is_some() {
+            format!("Formula · {unit}")
+        } else {
+            format!("{:.3} {unit}", self.value)
+        }
+    }
     pub fn validate(&self) -> Result<()> {
         ensure(
             !self.name.trim().is_empty()
@@ -28,9 +49,13 @@ impl LengthParameterParams {
             "Length parameter name must be 1-256 bytes without control characters",
         )?;
         ensure(
-            self.value.is_finite() && self.value >= 0.,
-            "Length parameter must be finite and nonnegative",
-        )
+            self.value.is_finite() && self.value.abs() <= 1e6,
+            "parameter literal must be finite within ±1000000",
+        )?;
+        if let Some(formula) = &self.formula {
+            crate::ParameterExpression::parse(formula)?;
+        }
+        Ok(())
     }
 }
 
@@ -73,7 +98,21 @@ pub struct ResolvedOpeningType {
 }
 
 impl Model {
+    pub fn formula_parameter_dependents(&self, id: Id) -> Vec<Id> {
+        self.length_parameters
+            .values()
+            .filter(|p| {
+                p.parameters
+                    .formula
+                    .as_ref()
+                    .and_then(|f| crate::ParameterExpression::parse(f).ok())
+                    .is_some_and(|e| e.references().contains(&id))
+            })
+            .map(|p| p.id())
+            .collect()
+    }
     pub fn resolve_opening_type(&self, id: Id) -> Result<ResolvedOpeningType> {
+        let evaluated = crate::evaluate_parameters(&self.length_parameters)?;
         let mut parameters = self
             .opening_types
             .get(&id)
@@ -105,12 +144,29 @@ impl Model {
                 "invalid literal Length fallback",
             )?;
             if let Some(parameter) = binding {
-                let driver = self.length_parameters.get(&parameter).ok_or_else(|| {
+                let driver = evaluated.get(&parameter).ok_or_else(|| {
                     os_core::Error::Invalid("shared Length parameter missing".into())
                 })?;
-                driver.parameters.validate()?;
-                *value = driver.parameters.value;
+                *value = driver.length()?;
                 sources[index] = LengthSource::ProjectParameter(parameter);
+            }
+        }
+        for solid in &mut parameters.family.extrusions {
+            solid.validate()?;
+            for (binding, value) in [
+                (solid.bindings.x, &mut solid.position.x),
+                (solid.bindings.y, &mut solid.position.y),
+                (solid.bindings.depth, &mut solid.depth),
+                (solid.bindings.normal_offset, &mut solid.normal_offset),
+            ] {
+                if let Some(id) = binding {
+                    *value = evaluated
+                        .get(&id)
+                        .ok_or_else(|| {
+                            os_core::Error::Invalid("extrusion parameter missing".into())
+                        })?
+                        .length()?;
+                }
             }
         }
         parameters.validate()?;
@@ -123,6 +179,20 @@ impl Model {
     /// Reports type identities and dimensions, including unplaced types.
     pub fn length_parameter_uses(&self, id: Id) -> Vec<(Id, &'static str)> {
         let mut uses = Vec::new();
+        for (ty, p) in &self.opening_types {
+            for solid in &p.parameters.family.extrusions {
+                for (binding, property) in [
+                    (solid.bindings.x, "extrusion X"),
+                    (solid.bindings.y, "extrusion Y"),
+                    (solid.bindings.depth, "extrusion depth"),
+                    (solid.bindings.normal_offset, "extrusion normal offset"),
+                ] {
+                    if binding == Some(id) {
+                        uses.push((*ty, property));
+                    }
+                }
+            }
+        }
         for (ty, b) in &self.opening_type_length_bindings {
             for (binding, dimension) in [(b.width, "width"), (b.height, "height"), (b.sill, "sill")]
             {
@@ -135,6 +205,7 @@ impl Model {
     }
 
     pub fn validate_opening_lengths(&self) -> Result<()> {
+        crate::evaluate_parameters(&self.length_parameters)?;
         ensure(
             self.length_parameters.len() <= MAX_LENGTH_PARAMETERS,
             "project Length parameter limit (64) exceeded",
@@ -193,6 +264,75 @@ impl Model {
             self.opening_type_length_bindings.remove(&id);
         } else {
             self.opening_type_length_bindings.insert(id, bindings);
+        }
+        Ok(())
+    }
+}
+
+impl Model {
+    pub fn opening_parameter_dependencies(&self, id: Id) -> Result<std::collections::BTreeSet<Id>> {
+        let ty = self
+            .opening_types
+            .get(&id)
+            .ok_or_else(|| os_core::Error::Invalid("opening type missing".into()))?;
+        let mut roots = self
+            .opening_type_length_bindings
+            .get(&id)
+            .copied()
+            .unwrap_or_default()
+            .references();
+        for solid in &ty.parameters.family.extrusions {
+            roots.extend(solid.bindings.references());
+        }
+        crate::parameter_dependencies(&self.length_parameters, roots)
+    }
+    /// Preserve effective values when an existing solid changes a binding to literal.
+    pub fn freeze_unbound_extrusions(&self, id: Id, next: &mut OpeningTypeParams) -> Result<()> {
+        let before = &self
+            .opening_types
+            .get(&id)
+            .ok_or_else(|| os_core::Error::Invalid("opening type missing".into()))?
+            .parameters;
+        let resolved = self.resolve_opening_type(id)?.parameters;
+        for solid in &mut next.family.extrusions {
+            if let Some(old) = before.family.extrusions.iter().find(|s| s.id == solid.id) {
+                let effective = resolved
+                    .family
+                    .extrusions
+                    .iter()
+                    .find(|s| s.id == solid.id)
+                    .unwrap();
+                for (was, now, value, frozen) in [
+                    (
+                        old.bindings.x,
+                        solid.bindings.x,
+                        &mut solid.position.x,
+                        effective.position.x,
+                    ),
+                    (
+                        old.bindings.y,
+                        solid.bindings.y,
+                        &mut solid.position.y,
+                        effective.position.y,
+                    ),
+                    (
+                        old.bindings.depth,
+                        solid.bindings.depth,
+                        &mut solid.depth,
+                        effective.depth,
+                    ),
+                    (
+                        old.bindings.normal_offset,
+                        solid.bindings.normal_offset,
+                        &mut solid.normal_offset,
+                        effective.normal_offset,
+                    ),
+                ] {
+                    if was.is_some() && now.is_none() {
+                        *value = frozen;
+                    }
+                }
+            }
         }
         Ok(())
     }

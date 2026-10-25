@@ -1,0 +1,132 @@
+{
+  "format": "OpenStructure.OpeningTypePackage",
+  "version": 7,
+  "source_type_id": "00000000-0000-4000-8000-000000000011",
+  "parameters": {
+    "name": "Shared window",
+    "kind": "Window",
+    "width": 1,
+    "height": 1.2,
+    "sill": 0.8,
+    "pane_position": "RightFace",
+    "family": {
+      "version": 7,
+      "host_cut": "Rectangular",
+      "operation": "ProfileExtrusion",
+      "profile": [
+        {
+          "x": 0,
+          "y": 0
+        },
+        {
+          "x": 1,
+          "y": 0
+        },
+        {
+          "x": 1,
+          "y": 1
+        },
+        {
+          "x": 0,
+          "y": 1
+        }
+      ],
+      "cut_profile": [
+        {
+          "x": 0,
+          "y": 0
+        },
+        {
+          "x": 1,
+          "y": 0
+        },
+        {
+          "x": 1,
+          "y": 1
+        },
+        {
+          "x": 0,
+          "y": 1
+        }
+      ],
+      "depth": 0.025,
+      "frame_width": 0.05,
+      "frame_depth": 0.05,
+      "panel_material": "12345600-0000-4000-8000-000000000051",
+      "frame_material": "ff005000-0000-4000-8000-000000000052",
+      "side_lite": {
+        "side": "Start",
+        "width_fraction": 0.25,
+        "mullion_width": 0.04,
+        "material": null
+      },
+      "door_leaves": "Single",
+      "extrusions": [
+        {
+          "id": "9a6a5200-0000-4000-8000-000000000001",
+          "name": "Legacy panel accessory",
+          "profile": [
+            {
+              "x": 0.7,
+              "y": 0.45
+            },
+            {
+              "x": 0.9,
+              "y": 0.45
+            },
+            {
+              "x": 0.9,
+              "y": 0.5
+            },
+            {
+              "x": 0.7,
+              "y": 0.5
+            }
+          ],
+          "position": {
+            "x": 0,
+            "y": 0
+          },
+          "depth": 0.02,
+          "normal_offset": 0.03,
+          "attachment": "PrimaryPanel",
+          "material": null
+        }
+      ]
+    },
+    "window_operation": "Fixed"
+  },
+  "materials": [
+    {
+      "source_id": "12345600-0000-4000-8000-000000000051",
+      "parameters": {
+        "name": "Shared panel/wall",
+        "density_kg_m3": 650,
+        "color": [
+          158,
+          192,
+          146
+        ]
+      }
+    },
+    {
+      "source_id": "ff005000-0000-4000-8000-000000000052",
+      "parameters": {
+        "name": "Frame",
+        "density_kg_m3": 8500,
+        "color": [
+          155,
+          140,
+          140
+        ]
+      }
+    }
+  ],
+  "length_parameters": {},
+  "length_bindings": {
+    "width": null,
+    "height": null,
+    "sill": null
+  },
+  "material_patterns": {}
+}

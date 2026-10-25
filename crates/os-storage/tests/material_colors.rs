@@ -65,6 +65,16 @@ fn material_color_schema33_frozen_migration_and_save_reopen() {
     }
     reverse.as_object_mut().unwrap().remove("stairs");
     reverse.as_object_mut().unwrap().remove("roofs");
+    reverse.as_object_mut().unwrap().remove("sheet_sets");
+    reverse.as_object_mut().unwrap().remove("drawing_issues");
+    reverse
+        .as_object_mut()
+        .unwrap()
+        .remove("plan_element_graphics_overrides");
+    reverse
+        .as_object_mut()
+        .unwrap()
+        .remove("plan_graphics_rules");
     common::reverse_schema_38_migration(&mut reverse, &old);
     assert_eq!(
         reverse, old,

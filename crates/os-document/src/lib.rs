@@ -12,6 +12,10 @@ use os_core::{Error, Id, Result, ensure};
 use os_model::*;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+mod callouts;
+mod plan_duplication;
+pub use plan_duplication::{PlanDuplicate, PlanDuplicateCounts, PlanDuplicateMode};
+mod drawing_issues;
 mod history;
 use history::{History, HistoryStore};
 pub use history::{HistoryLimits, HistoryStats};
@@ -19,6 +23,63 @@ pub use history::{HistoryLimits, HistoryStats};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "command", content = "data")]
 pub enum Command {
+    /// Capture existing walls and their supported dependents without changing live IDs.
+    CreateWallGroup {
+        walls: BTreeSet<Id>,
+        view: Id,
+        name: String,
+    },
+    /// Translation is relative to the source instance's current placement.
+    DuplicateGroupInstance {
+        id: Id,
+        translation: os_core::Point2,
+    },
+    /// Explicit identities allocated once for a transient preview and its commit.
+    DuplicateGroupInstancePrepared {
+        id: Id,
+        translation: os_core::Point2,
+        instance: Id,
+        members: BTreeMap<Id, Id>,
+    },
+    SetGroupInstanceTransform {
+        id: Id,
+        transform: GroupTransform,
+    },
+    UpdateGroupDefinition {
+        id: Id,
+        parameters: GroupDefinitionParams,
+    },
+    MakeGroupInstanceUnique {
+        id: Id,
+        name: String,
+    },
+    UngroupInstance(Id),
+    SetPlanHiddenOpenings {
+        view: Id,
+        hidden: BTreeSet<Id>,
+    },
+    AddTextNote(TextNote),
+    UpdateTextNote {
+        id: Id,
+        parameters: TextNoteParams,
+    },
+    RemoveTextNote(Id),
+    AddPlanCallout(PlanCallout),
+    UpdatePlanCallout {
+        id: Id,
+        parameters: PlanCalloutParams,
+    },
+    RemovePlanCallout(Id),
+    AddSectionCallout(SectionCallout),
+    UpdateSectionCallout {
+        id: Id,
+        parameters: SectionCalloutParams,
+    },
+    RemoveSectionCallout(Id),
+    PutSheetSet(SheetSet),
+    RemoveSheetSet(Id),
+    PutDrawingIssue(DrawingIssue),
+    RemoveDrawingIssue(Id),
     AddCurtainSystem(CurtainSystem),
     UpdateCurtainSystem {
         id: Id,
@@ -60,6 +121,14 @@ pub enum Command {
     SetPlanGraphics {
         view: Id,
         binding: Option<PlanGraphicsBinding>,
+    },
+    SetPlanElementGraphicsOverrides {
+        view: Id,
+        overrides: BTreeMap<Id, PlanElementGraphicsOverride>,
+    },
+    SetPlanGraphicsRules {
+        view: Id,
+        rules: Vec<PlanGraphicsRule>,
     },
     AddMaterial(Material),
     AddMaterialPattern(MaterialPattern),
@@ -297,6 +366,73 @@ fn phaseable_ids(model: &Model) -> BTreeSet<Id> {
     ids
 }
 
+/// Replace canonical members and optional shared metadata together. Lifecycles
+/// belong to live members and are intentionally left untouched.
+fn install_group_members(
+    model: &mut Model,
+    members: GroupMaterialization,
+    changed: &mut BTreeSet<Id>,
+) {
+    for id in members.walls.keys() {
+        model.wall_type_assignments.remove(id);
+    }
+    for id in members.openings.keys() {
+        model.opening_clearances.remove(id);
+    }
+    changed.extend(members.walls.keys().copied());
+    changed.extend(members.openings.keys().copied());
+    changed.extend(members.joins.keys().copied());
+    changed.extend(members.opening_tags.keys().copied());
+    model.walls.extend(members.walls);
+    model.openings.extend(members.openings);
+    model.wall_joins.extend(members.joins);
+    model.opening_tags.extend(members.opening_tags);
+    model
+        .wall_type_assignments
+        .extend(members.wall_type_assignments);
+    model.opening_clearances.extend(members.opening_clearances);
+}
+
+fn ensure_group_materialization_available(
+    model: &Model,
+    members: &GroupMaterialization,
+) -> Result<()> {
+    ensure(
+        members.walls.keys().all(|id| !model.walls.contains_key(id))
+            && members
+                .openings
+                .keys()
+                .all(|id| !model.openings.contains_key(id))
+            && members
+                .joins
+                .keys()
+                .all(|id| !model.wall_joins.contains_key(id))
+            && members
+                .opening_tags
+                .keys()
+                .all(|id| !model.opening_tags.contains_key(id)),
+        "duplicate group member identity already exists",
+    )
+}
+
+fn group_instance(model: &Model, id: Id) -> Result<GroupInstance> {
+    model
+        .group_instances
+        .get(&id)
+        .cloned()
+        .ok_or_else(|| Error::Invalid("group instance missing".into()))
+}
+
+fn remove_orphan_group_definition(model: &mut Model, definition: Id) {
+    if !model
+        .group_instances
+        .values()
+        .any(|instance| instance.parameters.definition == definition)
+    {
+        model.group_definitions.remove(&definition);
+    }
+}
+
 impl Document {
     pub fn new(name: &str) -> Result<Self> {
         Self::from_model(Model::new(name))
@@ -383,8 +519,266 @@ impl Document {
         let original_phaseable = phaseable_ids(&self.model);
         let mut changed = BTreeSet::new();
         let mut edited_views = BTreeSet::new();
+        let mut explicit_hidden = BTreeMap::new();
+        let mut explicit_plan_element_overrides = BTreeMap::new();
+        let mut explicit_plan_graphics_rules = BTreeMap::new();
         for command in commands {
+            let command = match command {
+                Command::DuplicateGroupInstance { id, translation } => {
+                    let source = group_instance(&candidate, id)?;
+                    Command::DuplicateGroupInstancePrepared {
+                        id,
+                        translation,
+                        instance: Id::new(),
+                        members: source
+                            .parameters
+                            .members
+                            .keys()
+                            .map(|slot| (*slot, Id::new()))
+                            .collect(),
+                    }
+                }
+                other => other,
+            };
             let id = match command {
+                Command::CreateWallGroup { walls, view, name } => {
+                    let (parameters, members) = GroupDefinitionParams::capture_wall_assembly(
+                        &candidate, &walls, view, name,
+                    )?;
+                    ensure(
+                        members
+                            .values()
+                            .all(|member| candidate.group_instance_for_member(*member).is_none()),
+                        "group member already belongs to an instance",
+                    )?;
+                    let definition = GroupDefinition::create(parameters);
+                    ensure(
+                        !candidate.group_definitions.contains_key(&definition.id()),
+                        "group definition identity collision",
+                    )?;
+                    let instance = GroupInstance::from_members(definition.id(), members);
+                    ensure(
+                        !candidate.group_instances.contains_key(&instance.id()),
+                        "group instance identity collision",
+                    )?;
+                    changed.insert(definition.id());
+                    changed.extend(instance.parameters.members.values().copied());
+                    let id = instance.id();
+                    candidate
+                        .group_definitions
+                        .insert(definition.id(), definition);
+                    candidate.group_instances.insert(id, instance);
+                    id
+                }
+                Command::DuplicateGroupInstance { .. } => unreachable!("allocated above"),
+                Command::DuplicateGroupInstancePrepared {
+                    id,
+                    translation,
+                    instance: instance_id,
+                    members: identities,
+                } => {
+                    let source = group_instance(&candidate, id)?;
+                    let mut parameters = source.parameters.clone();
+                    ensure(
+                        parameters.members.keys().eq(identities.keys()),
+                        "duplicate group requires exactly the source slots",
+                    )?;
+                    parameters.members = identities;
+                    parameters.transform.translation.x += translation.x;
+                    parameters.transform.translation.y += translation.y;
+                    let definition = candidate
+                        .group_definitions
+                        .get(&parameters.definition)
+                        .ok_or_else(|| Error::Invalid("group definition missing".into()))?;
+                    let members = definition.parameters.materialize(&parameters)?;
+                    let mut instance = GroupInstance::create(parameters);
+                    instance.header.id = instance_id;
+                    ensure_group_materialization_available(&candidate, &members)?;
+                    ensure(
+                        !candidate.group_instances.contains_key(&instance.id()),
+                        "group instance identity collision",
+                    )?;
+                    // Copy the source instance's phase state, independently of its definition.
+                    for (slot, member) in &instance.parameters.members {
+                        if let Some(lifecycle) = candidate
+                            .element_lifecycles
+                            .get(&source.parameters.members[slot])
+                            .copied()
+                        {
+                            candidate.element_lifecycles.insert(*member, lifecycle);
+                        }
+                    }
+                    install_group_members(&mut candidate, members, &mut changed);
+                    changed.insert(instance.parameters.definition);
+                    let id = instance.id();
+                    candidate.group_instances.insert(id, instance);
+                    id
+                }
+                Command::SetGroupInstanceTransform { id, transform } => {
+                    let mut instance = group_instance(&candidate, id)?;
+                    instance.parameters.transform = transform;
+                    let definition = candidate
+                        .group_definitions
+                        .get(&instance.parameters.definition)
+                        .ok_or_else(|| Error::Invalid("group definition missing".into()))?;
+                    let members = definition.parameters.materialize(&instance.parameters)?;
+                    install_group_members(&mut candidate, members, &mut changed);
+                    changed.insert(instance.parameters.definition);
+                    candidate.group_instances.insert(id, instance);
+                    id
+                }
+                Command::UpdateGroupDefinition { id, parameters } => {
+                    let definition = candidate
+                        .group_definitions
+                        .get(&id)
+                        .ok_or_else(|| Error::Invalid("group definition missing".into()))?;
+                    let old = &definition.parameters.template;
+                    let new = &parameters.template;
+                    // Slots retain both identity and entity kind so replacement cannot
+                    // leave an obsolete entity in another live map.
+                    ensure(
+                        old.walls.keys().eq(new.walls.keys())
+                            && old.openings.keys().eq(new.openings.keys())
+                            && old.joins.keys().eq(new.joins.keys())
+                            && old.opening_tags.keys().eq(new.opening_tags.keys()),
+                        "group definition update requires stable typed member slots",
+                    )?;
+                    let instances: Vec<_> = candidate
+                        .group_instances
+                        .values()
+                        .filter(|instance| instance.parameters.definition == id)
+                        .cloned()
+                        .collect();
+                    for instance in instances {
+                        let members = parameters.materialize(&instance.parameters)?;
+                        install_group_members(&mut candidate, members, &mut changed);
+                        changed.insert(instance.id());
+                    }
+                    candidate.group_definitions.get_mut(&id).unwrap().parameters = parameters;
+                    id
+                }
+                Command::MakeGroupInstanceUnique { id, name } => {
+                    let mut instance = group_instance(&candidate, id)?;
+                    let old_definition = instance.parameters.definition;
+                    let definition = candidate
+                        .group_definitions
+                        .get(&old_definition)
+                        .ok_or_else(|| Error::Invalid("group definition missing".into()))?;
+                    // Definitions own distinct slot IDs. Remap the canonical template
+                    // through identity placement, preserving this instance's transform.
+                    let slots: BTreeMap<_, _> = instance
+                        .parameters
+                        .members
+                        .keys()
+                        .map(|slot| (*slot, Id::new()))
+                        .collect();
+                    let remapped = definition.parameters.materialize(&GroupInstanceParams {
+                        definition: old_definition,
+                        members: slots.clone(),
+                        transform: GroupTransform::default(),
+                    })?;
+                    let definition = GroupDefinition::create(GroupDefinitionParams {
+                        name,
+                        template: GroupTemplate {
+                            walls: remapped.walls,
+                            openings: remapped.openings,
+                            joins: remapped.joins,
+                            opening_tags: remapped.opening_tags,
+                            wall_type_assignments: remapped.wall_type_assignments,
+                            opening_clearances: remapped.opening_clearances,
+                        },
+                    });
+                    ensure(
+                        !candidate.group_definitions.contains_key(&definition.id()),
+                        "group definition identity collision",
+                    )?;
+                    instance.parameters.members = instance
+                        .parameters
+                        .members
+                        .iter()
+                        .map(|(slot, member)| (slots[slot], *member))
+                        .collect();
+                    instance.parameters.definition = definition.id();
+                    changed.extend(instance.parameters.members.values().copied());
+                    changed.extend([old_definition, definition.id()]);
+                    candidate
+                        .group_definitions
+                        .insert(definition.id(), definition);
+                    candidate.group_instances.insert(id, instance);
+                    remove_orphan_group_definition(&mut candidate, old_definition);
+                    id
+                }
+                Command::UngroupInstance(id) => {
+                    let instance = group_instance(&candidate, id)?;
+                    changed.extend(instance.parameters.members.values().copied());
+                    changed.insert(instance.parameters.definition);
+                    candidate.group_instances.remove(&id);
+                    remove_orphan_group_definition(&mut candidate, instance.parameters.definition);
+                    id
+                }
+                Command::SetPlanHiddenOpenings { view, hidden } => {
+                    candidate.validate_plan_hidden_openings_replacement(view, &hidden)?;
+                    explicit_hidden.insert(view, hidden.clone());
+                    if hidden.is_empty() {
+                        candidate.plan_hidden_openings.remove(&view);
+                    } else {
+                        candidate.plan_hidden_openings.insert(view, hidden);
+                    }
+                    view
+                }
+                Command::PutSheetSet(set) => {
+                    let id = set.id;
+                    candidate.sheet_sets.insert(id, set);
+                    id
+                }
+                Command::RemoveSheetSet(id) => {
+                    ensure(
+                        candidate.sheet_sets.remove(&id).is_some(),
+                        "sheet set missing",
+                    )?;
+                    id
+                }
+                Command::PutDrawingIssue(issue) => {
+                    let id = issue.id;
+                    ensure(
+                        issue.state == IssueState::Draft
+                            && candidate
+                                .drawing_issues
+                                .get(&id)
+                                .is_none_or(|old| old.state == IssueState::Draft),
+                        "reviewed/issued records cannot be rewritten; create a new draft",
+                    )?;
+                    if !candidate.drawing_issues.contains_key(&id) {
+                        ensure(
+                            issue.sequence
+                                == candidate
+                                    .drawing_issues
+                                    .values()
+                                    .filter(|i| i.set == issue.set)
+                                    .map(|i| i.sequence)
+                                    .max()
+                                    .unwrap_or(0)
+                                    .checked_add(1)
+                                    .ok_or_else(|| {
+                                        Error::Invalid("issue sequence exhausted".into())
+                                    })?,
+                            "issue sequence must be next in set",
+                        )?;
+                    }
+                    candidate.drawing_issues.insert(id, issue);
+                    id
+                }
+                Command::RemoveDrawingIssue(id) => {
+                    ensure(
+                        candidate
+                            .drawing_issues
+                            .get(&id)
+                            .is_some_and(|i| i.state != IssueState::Issued),
+                        "issued records cannot be removed",
+                    )?;
+                    candidate.drawing_issues.remove(&id);
+                    id
+                }
                 Command::AddPhase(phase) => {
                     let id = phase.id();
                     ensure(!candidate.phases.contains_key(&id), "phase already exists")?;
@@ -820,7 +1214,7 @@ impl Document {
                 Command::RemoveLengthParameter(id) => {
                     let uses = candidate.length_parameter_uses(id);
                     ensure(
-                        uses.is_empty(),
+                        uses.is_empty() && candidate.formula_parameter_dependents(id).is_empty(),
                         format!(
                             "Length parameter is referenced by {} dimension(s): {uses:?}",
                             uses.len()
@@ -845,7 +1239,8 @@ impl Document {
                     candidate.opening_types.insert(id, ty);
                     id
                 }
-                Command::UpdateOpeningType { id, parameters } => {
+                Command::UpdateOpeningType { id, mut parameters } => {
+                    candidate.freeze_unbound_extrusions(id, &mut parameters)?;
                     let ty = candidate
                         .opening_types
                         .get_mut(&id)
@@ -919,6 +1314,27 @@ impl Document {
                         "room tag already exists",
                     )?;
                     candidate.room_tags.insert(id, tag);
+                    id
+                }
+                Command::AddTextNote(note) => {
+                    let id = note.id();
+                    ensure(
+                        !candidate.text_notes.contains_key(&id),
+                        "note already exists",
+                    )?;
+                    candidate.text_notes.insert(id, note);
+                    id
+                }
+                Command::UpdateTextNote { id, parameters } => {
+                    candidate
+                        .text_notes
+                        .get_mut(&id)
+                        .ok_or_else(|| Error::Invalid("note missing".into()))?
+                        .parameters = parameters;
+                    id
+                }
+                Command::RemoveTextNote(id) => {
+                    ensure(candidate.text_notes.remove(&id).is_some(), "note missing")?;
                     id
                 }
                 Command::AddDetailLine(line) => {
@@ -1268,6 +1684,74 @@ impl Document {
                     candidate.views.insert(id, view);
                     id
                 }
+                Command::AddPlanCallout(callout) => {
+                    let id = callout.id();
+                    ensure(
+                        !candidate.plan_callouts.contains_key(&id),
+                        "callout already exists",
+                    )?;
+                    candidate.plan_callouts.insert(id, callout);
+                    id
+                }
+                Command::UpdatePlanCallout { id, parameters } => {
+                    candidate
+                        .plan_callouts
+                        .get_mut(&id)
+                        .ok_or_else(|| Error::Invalid("callout missing".into()))?
+                        .parameters = parameters;
+                    id
+                }
+                Command::RemovePlanCallout(id) => {
+                    ensure(
+                        candidate.plan_callouts.remove(&id).is_some(),
+                        "callout missing",
+                    )?;
+                    id
+                }
+                Command::AddSectionCallout(callout) => {
+                    ensure(
+                        candidate.compatible_callout_sections(
+                            callout.parameters.parent,
+                            callout.parameters.target,
+                        ),
+                        "new section callout requires matching authored plane, side, mode and depth",
+                    )?;
+                    let id = callout.id();
+                    ensure(
+                        !candidate.section_callouts.contains_key(&id),
+                        "callout already exists",
+                    )?;
+                    candidate.section_callouts.insert(id, callout);
+                    id
+                }
+                Command::UpdateSectionCallout { id, parameters } => {
+                    let old = candidate
+                        .section_callouts
+                        .get(&id)
+                        .ok_or_else(|| Error::Invalid("callout missing".into()))?;
+                    if old.parameters.parent != parameters.parent
+                        || old.parameters.target != parameters.target
+                    {
+                        ensure(
+                            candidate
+                                .compatible_callout_sections(parameters.parent, parameters.target),
+                            "retargeted section callout requires matching authored plane, side, mode and depth",
+                        )?;
+                    }
+                    candidate
+                        .section_callouts
+                        .get_mut(&id)
+                        .ok_or_else(|| Error::Invalid("callout missing".into()))?
+                        .parameters = parameters;
+                    id
+                }
+                Command::RemoveSectionCallout(id) => {
+                    ensure(
+                        candidate.section_callouts.remove(&id).is_some(),
+                        "callout missing",
+                    )?;
+                    id
+                }
                 Command::UpdateView { id, mut parameters } => {
                     parameters.validate_edit()?;
                     edited_views.insert(id);
@@ -1290,7 +1774,29 @@ impl Document {
                     id
                 }
                 Command::RemoveView(id) => {
+                    ensure(
+                        !candidate
+                            .detail_lines
+                            .values()
+                            .any(|l| l.parameters.view == id)
+                            && !candidate
+                                .text_notes
+                                .values()
+                                .any(|n| n.parameters.view == id),
+                        "remove owned annotations before removing their view",
+                    )?;
+                    ensure(
+                        !candidate.drawing_issues.values().any(|issue| {
+                            issue.manifest.as_ref().is_some_and(|m| {
+                                m.sheets
+                                    .iter()
+                                    .any(|s| s.views.iter().any(|(view, _)| *view == id))
+                            })
+                        }),
+                        "drawing issue references this view",
+                    )?;
                     candidate.plan_graphics.remove(&id);
+                    candidate.plan_hidden_openings.remove(&id);
                     ensure(
                         !candidate.sheets.values().any(|sheet| {
                             sheet
@@ -1366,6 +1872,26 @@ impl Document {
                     }
                     view
                 }
+                Command::SetPlanGraphicsRules { view, rules } => {
+                    if rules.is_empty() {
+                        candidate.plan_graphics_rules.remove(&view);
+                    } else {
+                        candidate.plan_graphics_rules.insert(view, rules.clone());
+                    }
+                    explicit_plan_graphics_rules.insert(view, rules);
+                    view
+                }
+                Command::SetPlanElementGraphicsOverrides { view, overrides } => {
+                    if overrides.is_empty() {
+                        candidate.plan_element_graphics_overrides.remove(&view);
+                    } else {
+                        candidate
+                            .plan_element_graphics_overrides
+                            .insert(view, overrides.clone());
+                    }
+                    explicit_plan_element_overrides.insert(view, overrides);
+                    view
+                }
                 Command::ReplaceExtension {
                     expected_schema_version,
                     entity,
@@ -1419,6 +1945,50 @@ impl Document {
             changed.insert(id);
         }
         let current_phaseable = phaseable_ids(&candidate);
+        // Validate requested replacements against the complete graph before
+        // lifecycle cleanup. Bad user input must never become a partial success.
+        for (view, hidden) in &explicit_hidden {
+            candidate.validate_plan_hidden_openings_replacement(*view, hidden)?;
+        }
+        for (view, overrides) in &explicit_plan_element_overrides {
+            candidate.validate_plan_element_graphics_replacement(*view, overrides)?;
+        }
+        for (view, rules) in &explicit_plan_graphics_rules {
+            candidate.validate_plan_graphics_rules_replacement(*view, rules)?;
+        }
+        let old_rules = std::mem::take(&mut candidate.plan_graphics_rules);
+        for (view, rules) in old_rules {
+            if candidate.plan_graphics_rules_compatible(view) {
+                candidate.plan_graphics_rules.insert(view, rules);
+            } else {
+                changed.insert(view);
+            }
+        }
+        let old_hidden = std::mem::take(&mut candidate.plan_hidden_openings);
+        for (view, mut hidden) in old_hidden {
+            let old_count = hidden.len();
+            hidden.retain(|id| candidate.plan_hidden_opening_compatible(view, *id));
+            if hidden.len() != old_count {
+                changed.insert(view);
+            }
+            if !hidden.is_empty() {
+                candidate.plan_hidden_openings.insert(view, hidden);
+            }
+        }
+        let old_element_overrides = std::mem::take(&mut candidate.plan_element_graphics_overrides);
+        for (view, mut overrides) in old_element_overrides {
+            let old_count = overrides.len();
+            overrides
+                .retain(|element, _| candidate.plan_element_graphics_compatible(view, *element));
+            if overrides.len() != old_count {
+                changed.insert(view);
+            }
+            if !overrides.is_empty() {
+                candidate
+                    .plan_element_graphics_overrides
+                    .insert(view, overrides);
+            }
+        }
         candidate
             .element_lifecycles
             .retain(|id, _| current_phaseable.contains(id));
@@ -1450,6 +2020,44 @@ impl Document {
             }
         }
         changed.extend(candidate.settle_opening_clearances(&self.model)?);
+        for old in self.model.plan_callouts.values() {
+            if let CalloutReference::Placed { viewport, .. } =
+                self.model.callout_reference(&old.parameters)
+                && candidate
+                    .plan_callouts
+                    .get(&old.id())
+                    .is_some_and(|c| c.parameters == old.parameters)
+            {
+                ensure(
+                    candidate.sheets.values().any(|s| {
+                        s.parameters
+                            .viewports
+                            .iter()
+                            .any(|v| v.id == viewport && v.view == old.parameters.target)
+                    }),
+                    "remove or explicitly repair the callout before deleting its referenced placement",
+                )?;
+            }
+        }
+        for old in self.model.section_callouts.values() {
+            if let CalloutReference::Placed { viewport, .. } =
+                self.model.section_callout_reference(&old.parameters)
+                && candidate
+                    .section_callouts
+                    .get(&old.id())
+                    .is_some_and(|c| c.parameters == old.parameters)
+            {
+                ensure(
+                    candidate.sheets.values().any(|s| {
+                        s.parameters
+                            .viewports
+                            .iter()
+                            .any(|v| v.id == viewport && v.view == old.parameters.target)
+                    }),
+                    "remove or explicitly repair the callout before deleting its referenced placement",
+                )?;
+            }
+        }
         os_constraints::validate(&candidate)?;
         // Embedded viewport UUIDs participate in change events as well as identity
         // validation. Retaining a UUID during an edit preserves its identity.
@@ -1484,6 +2092,44 @@ impl Document {
             seeds.extend(invalidated.iter().copied());
             let previous = seeds.len();
             for model in [&h.before, &h.after] {
+                for callout in model.plan_callouts.values() {
+                    let p = &callout.parameters;
+                    let reference_changed = model.sheets.values().any(|s| {
+                        seeds.contains(&s.id())
+                            && s.parameters.viewports.iter().any(|v| v.view == p.target)
+                    });
+                    if reference_changed
+                        || seeds.contains(&callout.id())
+                        || seeds.contains(&p.target)
+                        || seeds.contains(&p.parent)
+                    {
+                        invalidated.extend([callout.id(), p.parent, p.target]);
+                    }
+                }
+                for callout in model.section_callouts.values() {
+                    let p = &callout.parameters;
+                    let reference_changed = model.sheets.values().any(|s| {
+                        seeds.contains(&s.id())
+                            && s.parameters.viewports.iter().any(|v| v.view == p.target)
+                    });
+                    if reference_changed
+                        || seeds.contains(&callout.id())
+                        || seeds.contains(&p.target)
+                        || seeds.contains(&p.parent)
+                    {
+                        invalidated.extend([callout.id(), p.parent, p.target]);
+                    }
+                }
+                for note in model.text_notes.values() {
+                    if seeds.contains(&note.id()) || seeds.contains(&note.parameters.view) {
+                        invalidated.extend([note.id(), note.parameters.view]);
+                    }
+                }
+                for line in model.detail_lines.values() {
+                    if seeds.contains(&line.id()) || seeds.contains(&line.parameters.view) {
+                        invalidated.extend([line.id(), line.parameters.view]);
+                    }
+                }
                 for (view, binding) in &model.plan_graphics {
                     if binding.template.is_some_and(|id| seeds.contains(&id)) {
                         invalidated.insert(*view);

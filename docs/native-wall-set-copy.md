@@ -99,7 +99,76 @@ valid source offset due to floating-point rounding. Settlement now preserves
 unchanged accepted offsets; host-length, width and lock edits still solve their
 constraints. `crates/os-document/tests/opening_clearances.rs` covers that regression.
 
-Focused validation:
+## Linear wall-assembly arrays — 2026-10-23
+
+Choose **Array walls** with 1–64 selected visible native straight walls on one
+floor-plan level. The total instance count includes the source and is limited to
+2–32, further bounded so no more than 64 walls or 4096 dependent openings, joins,
+active-plan tags and clearance locks are added. Two clicks define the per-instance
+spacing vector; the existing exact distance/angle fields and plan snaps apply.
+Repeat *n* is translated by *n* times that vector.
+
+Each copy receives independent IDs and remapped wall/opening/join/tag references.
+The source stays unchanged; typed opening data, assignments, lifecycle and
+clearance locks are retained. Preview draws every copy without mutating the model,
+scene or history. A checked isolated regeneration and drawing preflight precede
+one undoable transaction. Collisions between repeats or with existing geometry,
+partial joins, room-boundary changes, invalid spacing and stale/cancelled contexts
+reject the whole array. Copied tee branches are derived from the copied host's
+exact station point. Installed Wall-provider batches are not supported; no schema
+or protocol changed.
+
+`crates/os-ui/src/plan_workspace/wall_assembly_array_tests.rs` covers the two
+desktop DPI profiles, typed doors/windows, active-plan tags, locks, stable preview,
+one-step undo/redo, save/reopen, split 2D/3D regeneration, exact non-cardinal tee
+contacts, aggregate budgets, late-copy collision, room-boundary protection,
+snapping, Escape/stale-selection cancellation and ordinary canvas panning. This
+is automated headless evidence, not native-window visual qualification. The array
+is static rather than a persistent associative Revit array, and other entity kinds
+remain outside its scope.
+
+## Static radial wall-assembly arrays — 2026-10-23
+
+Choose **Array walls → Radial**, set the total count and signed **Angular step
+(°, signed)**, then click a snapped pivot in the plan. The next canvas click
+applies the preview. Positive angles rotate counterclockwise in world XY;
+negative angles rotate clockwise. Switching Linear/Radial clears the base/pivot
+so the next click defines it again. Escape cancels; array input owns the pointer
+until completion or cancellation, after which ordinary canvas dragging pans.
+
+Repeat *i* rotates the original assembly by *i × step* around the pivot. The
+step must be finite and nonzero, and `(count − 1) × abs(step) < 360°`. Existing
+eligibility and budgets apply: 1–64 visible native straight walls on one level,
+complete joins, 2–32 total instances, at most 64 added walls and 4096 added
+openings/joins/active-plan opening tags/clearance locks. Each repeat has stable
+fresh IDs throughout preview; each transformation starts from the source rather
+than accumulating the previous rotation. Active-plan opening tag positions
+rotate too. Tee branch contacts use the transformed host's exact stored station.
+
+The full candidate retains the copy dependency policy: source elements and
+metadata remain intact, rooms/room tags/dimensions/other-view tags are not
+cloned, and accepted room boundaries must remain unchanged. Existing-wall and
+repeat-to-repeat collisions, including a collision in the last repeat, reject
+the entire candidate. Preview is isolated from the live model, scene and history.
+Commit preflights regeneration and drawing budgets, applies one transaction and
+regenerates committed 2D/3D. Installed Wall-provider batches fail closed, including
+revocation of a draft after provider replacement. No schema, storage or plugin
+protocol changed. These are static independent copies; associative array
+constraints, curved/mixed-level hosts and arbitrary entity arrays remain
+outside this array increment. Native same-level wall assembly groups now have
+separate, partial document/model support; see [native model groups](native-model-groups.md).
+
+`wall_assembly_radial_array_tests.rs` adds headless real-egui acceptance at
+1280×800/100% and 1000×650/150% for signed steps, a snapped pivot in a rotated
+plan, preview isolation/stable IDs, typed doors/windows and overrides, wall
+assignments/lifecycle, clearance locks, tag rotation/exclusion, source preservation,
+pointer ownership, cancellation/stale context, invalid release, one-step history,
+save/reopen and split scene regeneration. Additional cases cover large coordinates,
+invalid angles/counts, overlapping copies, late-repeat collision, exact non-cardinal
+Tee contacts and room protection. An opt-in installed-guest test exercises batch
+refusal and provider-change revocation. Native-window visual QA remains open.
+
+Prior copy/level-copy validation (before this radial increment):
 
 - `cargo test -p os-ui --lib --all-features --locked --offline wall_set -- --test-threads=1` — 9 passed. The installed-provider test was ignored in that run and passed separately with `OPENSTRUCTURE_WALL_TEST_PLUGIN` pointing to `outputs/rust-wall-install` and `--ignored`.
 - The document opening-clearance suite passed all 5 tests.

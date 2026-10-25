@@ -21,14 +21,34 @@ pub(super) fn rows(model: &Model, definition: &ScheduleParams) -> Result<Vec<Roo
         definition.category == ScheduleCategory::RoomFinish,
         "expected room finish schedule",
     )?;
+    let schedule_phase = definition.phase.resolve(model)?;
     let mut levels = std::collections::BTreeMap::new();
     let mut result = Vec::new();
     for room in model.rooms.values() {
         let p = &room.parameters;
-        if let std::collections::btree_map::Entry::Vacant(entry) = levels.entry(p.level) {
-            entry.insert(derive_faces(&model.room_boundary_segments(p.level)?));
+        let boundary_phase = if let Some((target, filter)) = schedule_phase {
+            let status = model.phase_status(room.id(), target)?;
+            if !filter.includes(status) {
+                continue;
+            }
+            match status {
+                // A demolished room is reported as it existed immediately before
+                // demolition, while all other visible rooms use target topology.
+                os_model::PhaseStatus::Demolished => Some(previous_phase(model, target)?),
+                _ => Some(target),
+            }
+        } else {
+            None
+        };
+        let topology_key = (p.level, boundary_phase);
+        if let std::collections::btree_map::Entry::Vacant(entry) = levels.entry(topology_key) {
+            let segments = match boundary_phase {
+                Some(phase) => model.room_boundary_segments_at_phase(p.level, phase),
+                None => model.room_boundary_segments(p.level),
+            }?;
+            entry.insert(derive_faces(&segments));
         }
-        let resolved = match &levels[&p.level] {
+        let resolved = match &levels[&topology_key] {
             Err(error) => Err(format!("Room boundary derivation failed: {error:?}")),
             Ok(faces) => FaceKey::from_signature(&p.boundary_signature)
                 .ok_or(SeedDiagnostic::FaceChanged)
@@ -98,6 +118,18 @@ pub(super) fn rows(model: &Model, definition: &ScheduleParams) -> Result<Vec<Roo
     Ok(result)
 }
 
+fn previous_phase(model: &Model, target: Id) -> Result<Id> {
+    let phases = model.ordered_phases();
+    let index = phases
+        .iter()
+        .position(|phase| phase.id() == target)
+        .ok_or_else(|| Error::Invalid("schedule phase is unavailable".into()))?;
+    index
+        .checked_sub(1)
+        .map(|previous| phases[previous].id())
+        .ok_or_else(|| Error::Invalid("demolished room has no preceding phase".into()))
+}
+
 impl RoomRow {
     pub(super) fn cell(&self, column: ScheduleColumn) -> String {
         match column {
@@ -134,7 +166,7 @@ impl DesktopApp {
     }
 
     pub(super) fn room_schedule_rows(&mut self, ui: &mut egui::Ui, definition: &ScheduleParams) {
-        ui.label("Materials and finish codes • Area in m² from current room boundaries • Click a row to edit room properties");
+        ui.label("Materials and finish codes • Area in m² from schedule-phase boundaries • Click a row to edit room properties");
         match rows(self.editor.document.model(), definition) {
             Err(error) => {
                 ui.colored_label(crate::theme::ERROR, error.to_string());

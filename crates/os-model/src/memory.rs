@@ -118,6 +118,7 @@ named_parameters!(
 // size already accounts for them. Keep this pattern exhaustive on schema changes.
 named_parameters!(
     ViewParams,
+    drafting,
     kind,
     level,
     settings_revision,
@@ -195,6 +196,11 @@ impl Model {
     /// owned parameter fields must be added here when expanding the model schema.
     pub fn estimated_memory_bytes(&self) -> usize {
         let Model {
+            group_definitions,
+            group_instances,
+            text_notes,
+            section_callouts,
+            plan_callouts,
             schema_version: _,
             project,
             sites,
@@ -236,18 +242,64 @@ impl Model {
             views,
             plan_graphics_templates,
             plan_graphics,
+            plan_element_graphics_overrides,
+            plan_graphics_rules,
+            plan_hidden_openings,
             sheets,
+            sheet_sets,
+            drawing_issues,
             schedules,
             extensions,
             plugin_requirements,
         } = self;
         let mut estimate = Estimate(size_of::<Self>());
+        estimate.tree::<Id, GroupDefinition>(group_definitions.len());
+        for definition in group_definitions.values() {
+            estimate.header(&definition.header);
+            let parameters = &definition.parameters;
+            estimate.add(parameters.name.capacity());
+            let template = &parameters.template;
+            estimate.tree::<Id, Wall>(template.walls.len());
+            estimate.tree::<Id, Opening>(template.openings.len());
+            estimate.tree::<Id, WallJoin>(template.joins.len());
+            estimate.tree::<Id, OpeningTag>(template.opening_tags.len());
+            estimate.tree::<Id, WallTypeAssignment>(template.wall_type_assignments.len());
+            estimate.tree::<Id, OpeningClearance>(template.opening_clearances.len());
+            for entity in template.walls.values() {
+                estimate.entity(entity);
+            }
+            for entity in template.openings.values() {
+                estimate.entity(entity);
+            }
+            for entity in template.joins.values() {
+                estimate.header(&entity.header);
+            }
+            for entity in template.opening_tags.values() {
+                estimate.header(&entity.header);
+            }
+        }
+        estimate.tree::<Id, GroupInstance>(group_instances.len());
+        for instance in group_instances.values() {
+            estimate.header(&instance.header);
+            estimate.tree::<Id, Id>(instance.parameters.members.len());
+        }
+        estimate.tree::<Id, SectionCallout>(section_callouts.len());
+        for c in section_callouts.values() {
+            estimate.header(&c.header);
+        }
+        estimate.tree::<Id, PlanCallout>(plan_callouts.len());
+        for c in plan_callouts.values() {
+            estimate.header(&c.header);
+        }
         estimate.tree::<Id, OpeningClearance>(opening_clearances.len());
         estimate.tree::<Id, OpeningTypeLengthBindings>(opening_type_length_bindings.len());
         estimate.tree::<Id, LengthParameter>(length_parameters.len());
         for parameter in length_parameters.values() {
             estimate.header(&parameter.header);
             estimate.add(parameter.parameters.name.capacity());
+            if let Some(formula) = &parameter.parameters.formula {
+                estimate.add(formula.capacity());
+            }
         }
         estimate.entity(project);
         macro_rules! entities {
@@ -263,6 +315,37 @@ impl Model {
         entities!(levels, Level);
         entities!(plan_graphics_templates, PlanGraphicsTemplate);
         estimate.tree::<Id, PlanGraphicsBinding>(plan_graphics.len());
+        estimate.tree::<Id, BTreeMap<Id, PlanElementGraphicsOverride>>(
+            plan_element_graphics_overrides.len(),
+        );
+        for overrides in plan_element_graphics_overrides.values() {
+            estimate.tree::<Id, PlanElementGraphicsOverride>(overrides.len());
+        }
+        estimate.tree::<Id, BTreeSet<Id>>(plan_hidden_openings.len());
+        estimate.tree::<Id, Vec<PlanGraphicsRule>>(plan_graphics_rules.len());
+        for rules in plan_graphics_rules.values() {
+            estimate.add(
+                rules
+                    .capacity()
+                    .saturating_mul(size_of::<PlanGraphicsRule>()),
+            );
+            for rule in rules {
+                estimate.add(rule.name.capacity());
+                estimate.add(
+                    rule.predicates
+                        .capacity()
+                        .saturating_mul(size_of::<PlanGraphicsPredicate>()),
+                );
+                for predicate in &rule.predicates {
+                    if let PlanGraphicsPredicate::Text { value, .. } = predicate {
+                        estimate.add(value.capacity());
+                    }
+                }
+            }
+        }
+        for ids in plan_hidden_openings.values() {
+            estimate.tree::<Id, ()>(ids.len());
+        }
         entities!(walls, Wall);
         entities!(columns, Column);
         entities!(casework_types, CaseworkType);
@@ -456,6 +539,11 @@ impl Model {
         for tag in opening_tags.values() {
             estimate.header(&tag.header);
         }
+        estimate.tree::<Id, TextNote>(text_notes.len());
+        for note in text_notes.values() {
+            estimate.header(&note.header);
+            estimate.add(note.parameters.text.capacity());
+        }
         estimate.tree::<Id, DetailLine>(detail_lines.len());
         for line in detail_lines.values() {
             estimate.header(&line.header);
@@ -530,6 +618,83 @@ impl Model {
                     .saturating_mul(size_of::<ScheduleColumn>()),
             );
         }
+        estimate.tree::<Id, SheetSet>(sheet_sets.len());
+        for set in sheet_sets.values() {
+            estimate.add(set.name.capacity());
+            estimate.add(set.sheets.capacity().saturating_mul(size_of::<Id>()));
+        }
+        estimate.tree::<Id, DrawingIssue>(drawing_issues.len());
+        for issue in drawing_issues.values() {
+            estimate.add(
+                issue.revision.capacity() + issue.description.capacity() + issue.date.capacity(),
+            );
+            estimate.add(issue.sheets.capacity().saturating_mul(size_of::<Id>()));
+            estimate.add(
+                issue
+                    .recipients
+                    .capacity()
+                    .saturating_mul(size_of::<String>()),
+            );
+            for r in &issue.recipients {
+                estimate.add(r.capacity());
+            }
+            if let Some(p) = &issue.archive_path {
+                estimate.add(p.capacity());
+            }
+            if let Some(h) = &issue.manifest_sha256 {
+                estimate.add(h.capacity());
+            }
+            if let Some(m) = &issue.manifest {
+                estimate.add(size_of::<IssueManifest>());
+                estimate.add(
+                    m.revision.capacity()
+                        + m.description.capacity()
+                        + m.date.capacity()
+                        + m.application_version.capacity()
+                        + m.source_sha256.capacity()
+                        + m.pdf_sha256.capacity(),
+                );
+                estimate.add(m.recipients.capacity().saturating_mul(size_of::<String>()));
+                for r in &m.recipients {
+                    estimate.add(r.capacity());
+                }
+                estimate.add(m.provider_versions.capacity().saturating_mul(size_of::<(
+                    String,
+                    String,
+                    u32,
+                )>()));
+                for (id, version, _) in &m.provider_versions {
+                    estimate.add(id.capacity() + version.capacity());
+                }
+                estimate.add(
+                    m.providers
+                        .capacity()
+                        .saturating_mul(size_of::<(String, Id)>()),
+                );
+                for (name, _) in &m.providers {
+                    estimate.add(name.capacity());
+                }
+                estimate.add(m.sheets.capacity().saturating_mul(size_of::<IssueSheet>()));
+                for sheet in &m.sheets {
+                    estimate.add(
+                        sheet.number.capacity()
+                            + sheet.name.capacity()
+                            + sheet
+                                .views
+                                .capacity()
+                                .saturating_mul(size_of::<(Id, u64)>()),
+                    );
+                }
+                estimate.add(
+                    m.warnings
+                        .capacity()
+                        .saturating_mul(size_of::<IssueWarning>()),
+                );
+                for w in &m.warnings {
+                    estimate.add(w.message.capacity() + w.acknowledgment.capacity());
+                }
+            }
+        }
         estimate.tree::<Id, Sheet>(sheets.len());
         for sheet in sheets.values() {
             estimate.header(&sheet.header);
@@ -554,6 +719,7 @@ impl Model {
             );
             for viewport in viewports {
                 let SheetViewport {
+                    detail_number,
                     id: _,
                     view: _,
                     model_center_m: _,
@@ -563,6 +729,7 @@ impl Model {
                     scale_denominator: _,
                     title_override,
                 } = viewport;
+                estimate.add(detail_number.capacity());
                 if let Some(title) = title_override {
                     estimate.add(title.capacity());
                 }
@@ -665,5 +832,58 @@ mod tests {
             .relationships
             .insert("self".into(), vec![model.project.id(); 100]);
         assert!(model.estimated_memory_bytes() >= with_payload + 100 * size_of::<Id>());
+    }
+
+    #[test]
+    fn group_templates_account_for_entity_names_and_instance_slot_maps() {
+        let mut model = Model::new("Group memory");
+        let before = model.estimated_memory_bytes();
+        let slot = Id::new();
+        let live_id = Id::new();
+        let mut wall = Wall::new(
+            "org.openstructure.walls.wall",
+            WallParams {
+                name: "Template wall".into(),
+                path: WallPath::Straight {
+                    start: os_core::Point2::default(),
+                    end: os_core::Point2::new(5., 0.),
+                },
+                thickness: 0.2,
+                height: 3.,
+                level: *model.levels.keys().next().unwrap(),
+                material: None,
+            },
+        );
+        wall.header.id = slot;
+        let definition = GroupDefinition::create(GroupDefinitionParams {
+            name: "Memory group".into(),
+            template: GroupTemplate {
+                walls: std::collections::BTreeMap::from([(slot, wall)]),
+                ..GroupTemplate::default()
+            },
+        });
+        let definition_id = definition.id();
+        model.group_definitions.insert(definition_id, definition);
+        let instance = GroupInstance::from_members(
+            definition_id,
+            std::collections::BTreeMap::from([(slot, live_id)]),
+        );
+        model.group_instances.insert(instance.id(), instance);
+        let with_group = model.estimated_memory_bytes();
+        assert!(with_group > before + size_of::<GroupDefinition>());
+
+        model
+            .group_definitions
+            .get_mut(&definition_id)
+            .unwrap()
+            .parameters
+            .template
+            .walls
+            .get_mut(&slot)
+            .unwrap()
+            .parameters
+            .name
+            .reserve(4096);
+        assert!(model.estimated_memory_bytes() >= with_group + 4096);
     }
 }

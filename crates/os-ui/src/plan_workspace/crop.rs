@@ -6,6 +6,7 @@ use os_model::PlanViewCrop;
 pub(super) struct State {
     pub mode: Option<Id>,
     pub claimed: bool,
+    pub annotation: bool,
     drag: Option<Drag>,
 }
 struct Drag {
@@ -18,6 +19,8 @@ struct Drag {
     origin: Point2,
     handle: usize,
     candidate: Option<PlanViewCrop>,
+    camera: PlanCamera,
+    canvas: egui::Rect,
 }
 
 pub(super) fn handles(c: PlanViewCrop) -> [Point2; 8] {
@@ -63,7 +66,13 @@ impl State {
         let crop_available = active
             .and_then(|id| editor.document.model().views.get(&id))
             .and_then(|view| view.parameters.plan)
-            .is_some_and(|settings| settings.crop.is_some());
+            .is_some_and(|settings| {
+                if self.annotation {
+                    settings.annotation_crop.is_some()
+                } else {
+                    settings.crop.is_some()
+                }
+            });
         if cancel
             || self.mode != active
             || !crop_available
@@ -91,15 +100,26 @@ impl State {
         response: &egui::Response,
         ctx: &egui::Context,
     ) -> Option<PlanViewCrop> {
-        let saved = editor.document.model().views[&context.view_id]
+        let settings = editor.document.model().views[&context.view_id]
             .parameters
-            .plan?
-            .crop?;
+            .plan?;
+        let saved = if self.annotation {
+            settings.annotation_crop?
+        } else {
+            settings.crop?
+        };
         if self.mode != Some(context.view_id) {
             self.cancel();
             return None;
         }
         let rect = response.rect;
+        if self
+            .drag
+            .as_ref()
+            .is_some_and(|d| d.camera != camera || d.canvas != rect)
+        {
+            self.cancel();
+        }
         let size = [f64::from(rect.width()), f64::from(rect.height())];
         let project = |p| {
             camera
@@ -144,6 +164,8 @@ impl State {
                 origin,
                 handle,
                 candidate: Some(saved),
+                camera,
+                canvas: rect,
             });
         }
         if let Some(d) = &mut self.drag {
@@ -162,7 +184,11 @@ impl State {
             let mut settings = editor.document.model().views[&context.view_id]
                 .parameters
                 .plan?;
-            settings.crop = Some(c);
+            if self.annotation {
+                settings.annotation_crop = Some(c);
+            } else {
+                settings.crop = Some(c);
+            }
             return (settings.validate().is_ok() && c != d.original).then_some(c);
         }
         None
@@ -186,7 +212,13 @@ impl State {
             .views
             .get(&context.view_id)
             .and_then(|view| view.parameters.plan)
-            .and_then(|settings| settings.crop)
+            .and_then(|settings| {
+                if self.annotation {
+                    settings.annotation_crop
+                } else {
+                    settings.crop
+                }
+            })
         else {
             return;
         };
@@ -220,6 +252,17 @@ impl State {
             .and_then(|drag| drag.candidate)
             .unwrap_or(saved);
         let points = handles(candidate);
+        if self.annotation
+            && let Some(p) = project(points[6])
+        {
+            painter.text(
+                p + egui::vec2(8., -8.),
+                egui::Align2::LEFT_BOTTOM,
+                "Annotation crop",
+                egui::FontId::proportional(12.),
+                theme::ACCENT,
+            );
+        }
         for (a, b) in [(0, 2), (2, 4), (4, 6), (6, 0)] {
             if let (Some(a), Some(b)) = (project(points[a]), project(points[b])) {
                 painter.line_segment([a, b], egui::Stroke::new(1.5, theme::ACCENT));
@@ -272,5 +315,17 @@ impl DesktopApp {
         self.grid_draft = None;
         self.opening_draft = None;
         self.plans.crop.mode = view;
+        self.plans.crop.annotation = false;
+    }
+
+    pub(super) fn toggle_annotation_crop_edit(&mut self) {
+        if self.plans.crop.mode.is_some() && self.plans.crop.annotation {
+            self.plans.crop.mode = None;
+            self.plans.crop.cancel();
+            return;
+        }
+        self.plans.crop.mode = None;
+        self.toggle_crop_edit();
+        self.plans.crop.annotation = true;
     }
 }

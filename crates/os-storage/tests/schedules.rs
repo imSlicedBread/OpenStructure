@@ -71,6 +71,8 @@ fn migration_preserves_ids_metadata_and_opaque_data_then_multiple_definitions_ro
     common::apply_schema_38_defaults(&mut expected);
     expected["plan_graphics_templates"] = json!({});
     expected["plan_graphics"] = json!({});
+    expected["plan_element_graphics_overrides"] = json!({});
+    expected["plan_graphics_rules"] = json!({});
     expected["project"]["header"]["schema_version"] = json!(SCHEMA_VERSION);
     for map in [
         "sites",

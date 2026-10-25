@@ -9,6 +9,22 @@ use std::collections::BTreeSet;
 /// are separately required to be acyclic by model validation.
 pub fn affected_entities(model: &Model, changed: &BTreeSet<Id>) -> BTreeSet<Id> {
     let mut reverse: BTreeMap<Id, Vec<Id>> = BTreeMap::new();
+    for parameter in model.length_parameters.values() {
+        if let Some(formula) = &parameter.parameters.formula
+            && let Ok(expression) = os_model::ParameterExpression::parse(formula)
+        {
+            for dependency in expression.references() {
+                reverse.entry(dependency).or_default().push(parameter.id());
+            }
+        }
+    }
+    for ty in model.opening_types.values() {
+        for solid in &ty.parameters.family.extrusions {
+            for dependency in solid.bindings.references() {
+                reverse.entry(dependency).or_default().push(ty.id());
+            }
+        }
+    }
     for ty in model.railing_types.values() {
         if let Some(material) = ty.parameters.material {
             reverse.entry(material).or_default().push(ty.id());

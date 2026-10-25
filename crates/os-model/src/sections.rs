@@ -114,7 +114,7 @@ impl SectionViewSettings {
     }
 }
 
-fn strict_point<'de, D: serde::Deserializer<'de>>(
+pub(crate) fn strict_point<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> std::result::Result<Point2, D::Error> {
     #[derive(Deserialize)]
@@ -184,6 +184,7 @@ mod tests {
         let section =
             SectionViewSettings::new(Point2::new(0.0, 0.0), Point2::new(8.0, 0.0), -1.0, 9.0);
         let mut view = crate::ViewParams {
+            drafting: None,
             facade: None,
             elevation: None,
             name: "Section A".into(),

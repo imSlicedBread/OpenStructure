@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 
 fn context() -> PlanContext {
     PlanContext {
+        annotation_crop: None,
         session_id: Id::new(),
         model_revision: 3,
         view_id: Id::new(),
@@ -121,6 +122,7 @@ fn section_fill_access_uses_full_drawing_freshness() {
         .unwrap();
     for stale in [
         PlanContext {
+            annotation_crop: None,
             session_id: Id::new(),
             ..ctx
         },

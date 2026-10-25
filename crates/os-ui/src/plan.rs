@@ -13,6 +13,7 @@ mod opening_sections;
 mod section_fills;
 use opening_sections::SectionOpening;
 use section_fills::{SectionFills, material_surface};
+mod drafting;
 pub(crate) mod elevations;
 mod facades;
 
@@ -57,6 +58,7 @@ pub struct PreparedProviderPlan {
 }
 
 pub(crate) enum NativeViewSnapshot {
+    Drafting(drafting::Snapshot),
     Plan(Box<PlanSnapshot>),
     Section(Box<PreparedSectionSnapshot>),
     Elevation(Box<elevations::Snapshot>),
@@ -65,6 +67,7 @@ pub(crate) enum NativeViewSnapshot {
 impl NativeViewSnapshot {
     pub(crate) fn derive(self) -> Result<PlanDrawing> {
         match self {
+            Self::Drafting(snapshot) => snapshot.derive(),
             Self::Plan(snapshot) => (*snapshot).derive(),
             Self::Section(snapshot) => (*snapshot).derive(),
             Self::Elevation(snapshot) => (*snapshot).derive(),
@@ -143,6 +146,7 @@ impl Editor {
         let view = View::new(
             "core.view",
             ViewParams {
+                drafting: None,
                 name: name.into(),
                 kind: ViewKind::Section,
                 level: Some(marker_level),
@@ -223,6 +227,10 @@ impl Editor {
                 rotation: settings.basis.rotation,
             },
             range,
+            annotation_crop: settings.annotation_crop.map(|crop| PlanCrop {
+                min: crop.min,
+                max: crop.max,
+            }),
             crop: settings.crop.map(|crop| PlanCrop {
                 min: crop.min,
                 max: crop.max,
@@ -244,6 +252,7 @@ impl Editor {
             .ok_or_else(|| os_core::Error::Invalid("drawing view missing".into()))?
             .parameters;
         match parameters.kind {
+            ViewKind::Drafting => self.native_drafting_context(view),
             ViewKind::Plan => self.native_plan_context(view),
             ViewKind::Section => self.native_section_context(view),
             ViewKind::Elevation => self.native_elevation_context(view),
@@ -276,6 +285,7 @@ impl Editor {
         let middle =
             section.bottom_elevation + (section.top_elevation - section.bottom_elevation) * 0.5;
         Ok(PlanContext {
+            annotation_crop: None,
             session_id: self.document.session_id(),
             model_revision: self.document.revision(),
             view_id: view.id(),
@@ -310,6 +320,9 @@ impl Editor {
             .ok_or_else(|| os_core::Error::Invalid("drawing view missing".into()))?
             .parameters;
         match parameters.kind {
+            ViewKind::Drafting => self
+                .drafting_snapshot(view)
+                .map(NativeViewSnapshot::Drafting),
             ViewKind::Plan => self
                 .plan_snapshot(view)
                 .map(Box::new)
@@ -496,6 +509,35 @@ impl Editor {
             railing_members.insert(railing.id(), geometry.members);
         }
         Ok(PreparedSectionSnapshot {
+            text_notes: note_graphics(model, context)?,
+            detail_lines: model
+                .detail_lines
+                .values()
+                .filter(|l| l.parameters.view == view)
+                .map(|l| os_render::plan::PlanDetailLine {
+                    entity: l.id(),
+                    view,
+                    start: l.parameters.start,
+                    end: l.parameters.end,
+                })
+                .collect(),
+            callouts: model
+                .section_callouts
+                .values()
+                .filter(|c| c.parameters.parent == view)
+                .map(|c| os_render::plan::PlanCalloutGraphic {
+                    entity: c.id(),
+                    boundary: os_geometry::plan::PlanCrop {
+                        min: c.parameters.boundary.min,
+                        max: c.parameters.boundary.max,
+                    },
+                    label: model
+                        .section_callout_reference(&c.parameters)
+                        .label()
+                        .to_owned(),
+                })
+                .collect(),
+
             dimensions: model
                 .dimensions
                 .values()
@@ -788,6 +830,22 @@ impl Editor {
             .level
             .ok_or_else(|| os_core::Error::Invalid("floor plan level missing".into()))?;
         let graphics = model.plan_graphics_styles(view);
+        let mut element_graphics_overrides = model.resolve_plan_graphics_rules(view)?;
+        for (element, explicit) in model
+            .plan_element_graphics_overrides
+            .get(&view)
+            .into_iter()
+            .flatten()
+        {
+            let resolved = element_graphics_overrides.entry(*element).or_insert(
+                os_model::PlanElementGraphicsOverride {
+                    cut: None,
+                    projected: None,
+                },
+            );
+            resolved.cut = explicit.cut.or(resolved.cut);
+            resolved.projected = explicit.projected.or(resolved.projected);
+        }
         let opening_kinds = model
             .openings
             .iter()
@@ -818,8 +876,16 @@ impl Editor {
             .filter_map(|v| v.parameters.facade.map(|s| (v.id(), s)))
             .collect();
         let mut ceiling_resolver = os_geometry::ceilings::CeilingResolver::default();
-        // Category visibility affects symbols and references, not the physical
+        // Category and instance visibility affect symbols and references, not the physical
         // apertures already resolved from the phase-filtered wall source above.
+        excluded.extend(
+            model
+                .plan_hidden_openings
+                .get(&view)
+                .into_iter()
+                .flatten()
+                .copied(),
+        );
         for (id, kind) in &opening_kinds {
             if !settings.visibility.shows_opening(*kind) {
                 excluded.insert(*id);
@@ -878,6 +944,35 @@ impl Editor {
             railing_lines.insert(railing.id(), features);
         }
         Ok(PlanSnapshot {
+            wall_contacts: wall_source
+                .wall_joins
+                .values()
+                .map(|join| {
+                    use os_model::WallJoinParams;
+                    let members = join.parameters.members();
+                    let owner = match join.parameters {
+                        WallJoinParams::Butt { .. } => members[0].min(members[1]),
+                        WallJoinParams::Corner { owner, .. } => {
+                            if owner == members[0] {
+                                members[1]
+                            } else {
+                                members[0]
+                            }
+                        }
+                        WallJoinParams::Tee { branch, .. } => branch.wall,
+                    };
+                    let (a, b) = os_model::wall_join_trace(&wall_source, &join.parameters)?;
+                    Ok(os_render::plan::PlanWallContact {
+                        members,
+                        owner,
+                        trace: (
+                            context.basis.world_to_plane(a)?,
+                            context.basis.world_to_plane(b)?,
+                        ),
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?,
+            text_notes: note_graphics(model, context)?,
             railing_lines,
             railing_surfaces,
             curtain_lines,
@@ -890,6 +985,7 @@ impl Editor {
                 .collect(),
             context,
             graphics,
+            element_graphics_overrides,
             opening_kinds,
             wall_ids: model.walls.keys().copied().collect(),
             room_separation_lines: model
@@ -907,6 +1003,19 @@ impl Editor {
                     })
                 })
                 .collect::<Result<Vec<_>>>()?,
+            callouts: model
+                .plan_callouts
+                .values()
+                .filter(|c| c.parameters.parent == view)
+                .map(|c| os_render::plan::PlanCalloutGraphic {
+                    entity: c.id(),
+                    boundary: os_geometry::plan::PlanCrop {
+                        min: c.parameters.boundary.min,
+                        max: c.parameters.boundary.max,
+                    },
+                    label: model.callout_reference(&c.parameters).label().to_owned(),
+                })
+                .collect(),
             detail_lines: model
                 .detail_lines
                 .values()
@@ -926,7 +1035,17 @@ impl Editor {
                 .filter(|tag| !excluded.contains(&tag.parameters.opening))
                 .filter(|tag| tag.parameters.view == view)
                 .map(|tag| opening_tag_graphic(model, tag.id(), &tag.parameters, context))
-                .collect::<Result<Vec<_>>>()?,
+                .collect::<Result<Vec<_>>>()?
+                .into_iter()
+                .filter(|tag| {
+                    context.annotation_crop.is_none()
+                        || tag.leader_source.is_some_and(|p| {
+                            context.crop.is_none_or(|c| {
+                                p.x >= c.min.x && p.x <= c.max.x && p.y >= c.min.y && p.y <= c.max.y
+                            })
+                        })
+                })
+                .collect(),
             room_tags: model
                 .room_tags
                 .values()
@@ -955,7 +1074,10 @@ impl Editor {
                 .filter(|opening| !excluded.contains(&opening.id()))
                 .map(|o| Ok((o.id(), model.resolve_opening(&o.parameters)?)))
                 .collect::<Result<Vec<_>>>()?,
-            room_segments: model.room_boundary_segments(plan_level)?,
+            // Room enclosure is physical at the view's target phase. Keep it
+            // independent of the graphic phase filter so hidden geometry does
+            // not alter areas or room-bound ceilings.
+            room_segments: model.room_boundary_segments_at_phase(plan_level, target)?,
             rooms: model
                 .rooms
                 .values()
@@ -973,6 +1095,23 @@ impl Editor {
                         .all(|reference| !excluded.contains(&reference.entity()))
                 })
                 .filter(|dimension| dimension.parameters.view == view)
+                .filter(|dimension| {
+                    context.annotation_crop.is_none()
+                        || dimension.parameters.references().all(|reference| {
+                            reference
+                                .resolve(model, plan_level)
+                                .ok()
+                                .and_then(|p| context.basis.world_to_plane(p).ok())
+                                .is_some_and(|p| {
+                                    context.crop.is_none_or(|c| {
+                                        p.x >= c.min.x
+                                            && p.x <= c.max.x
+                                            && p.y >= c.min.y
+                                            && p.y <= c.max.y
+                                    })
+                                })
+                        })
+                })
                 .map(|dimension| (dimension.id(), dimension.parameters.clone()))
                 .collect(),
             dimension_walls: model
@@ -1102,8 +1241,11 @@ impl Editor {
                             model.levels[&ceiling.parameters.level].parameters.building == building
                         })
                         .map(|ceiling| {
-                            let parameters = ceiling_resolver
-                                .effective_parameters(model, &ceiling.parameters)?;
+                            let parameters = ceiling_resolver.effective_parameters_at_phase(
+                                model,
+                                &ceiling.parameters,
+                                target,
+                            )?;
                             Ok(parameters.map(|parameters| {
                                 let elevation =
                                     model.levels[&parameters.level].parameters.elevation;
@@ -1148,17 +1290,7 @@ fn curtain_plan_lines(
         let base = elevation + parameters.base_offset + component.min[2];
         let top = elevation + parameters.base_offset + component.max[2];
         let range = context.range;
-        let tolerance = os_geometry::plan::PLAN_TOLERANCE;
-        if top <= range.depth + tolerance || base >= range.top - tolerance {
-            continue;
-        }
-        let role = if base <= range.cut + tolerance && top > range.cut + tolerance {
-            PlanRole::Cut
-        } else if top <= range.cut + tolerance && top > range.bottom + tolerance {
-            PlanRole::Projected
-        } else if top <= range.bottom + tolerance && top > range.depth + tolerance {
-            PlanRole::Depth
-        } else {
+        let Some(role) = os_geometry::plan::vertical_span_role(base, top, range)? else {
             continue;
         };
         let [x0, y0, z] = component.min;
@@ -1198,20 +1330,6 @@ fn railing_plan_lines(
         !members.is_empty() && members.len() <= os_model::MAX_STAIR_RAILING_POSTS as usize + 1,
         "railing exceeds plan member budget",
     )?;
-    let role = |base: f64, top: f64| {
-        let range = context.range;
-        if top <= range.depth + PLAN_TOLERANCE || base >= range.top - PLAN_TOLERANCE {
-            None
-        } else if base <= range.cut + PLAN_TOLERANCE && top > range.cut + PLAN_TOLERANCE {
-            Some(PlanRole::Cut)
-        } else if top <= range.cut + PLAN_TOLERANCE && top > range.bottom + PLAN_TOLERANCE {
-            Some(PlanRole::Projected)
-        } else if top <= range.bottom + PLAN_TOLERANCE && top > range.depth + PLAN_TOLERANCE {
-            Some(PlanRole::Depth)
-        } else {
-            None
-        }
-    };
     let mut lines = Vec::new();
     for (index, member) in members.iter().enumerate() {
         member.validate()?;
@@ -1255,7 +1373,9 @@ fn railing_plan_lines(
             stations.dedup();
             for (feature, pair) in stations.windows(2).enumerate() {
                 let z = base + rise * (pair[0] + pair[1]) * 0.5;
-                let Some(role) = role(z, z + depth) else {
+                let Some(role) =
+                    os_geometry::plan::vertical_span_role(z, z + depth, context.range)?
+                else {
                     continue;
                 };
                 let at = |t: f64| {
@@ -1276,7 +1396,13 @@ fn railing_plan_lines(
                 }
             }
         } else {
-            let Some(role) = role(vertices[0].z, vertices[4].z) else {
+            let base = vertices.iter().map(|v| v.z).fold(f64::INFINITY, f64::min);
+            let top = vertices
+                .iter()
+                .map(|v| v.z)
+                .fold(f64::NEG_INFINITY, f64::max);
+            let Some(role) = os_geometry::plan::vertical_span_role(base, top, context.range)?
+            else {
                 continue;
             };
             for edge in 0..4 {
@@ -1300,6 +1426,9 @@ fn railing_plan_lines(
 }
 
 pub(crate) struct PlanSnapshot {
+    wall_contacts: Vec<os_render::plan::PlanWallContact>,
+    text_notes: Vec<os_render::plan::NoteGraphic>,
+    callouts: Vec<os_render::plan::PlanCalloutGraphic>,
     railing_lines: BTreeMap<Id, Vec<os_render::plan::PlanLine>>,
     railing_surfaces: BTreeMap<(Id, u32), os_geometry::SurfaceIdentity>,
     curtain_lines: BTreeMap<Id, Vec<os_render::plan::PlanLine>>,
@@ -1309,6 +1438,7 @@ pub(crate) struct PlanSnapshot {
     material_colors: BTreeMap<Id, [u8; 3]>,
     pub context: PlanContext,
     graphics: Option<os_model::PlanGraphicsStyles>,
+    element_graphics_overrides: BTreeMap<Id, os_model::PlanElementGraphicsOverride>,
     opening_kinds: BTreeMap<Id, os_model::OpeningKind>,
     wall_ids: std::collections::BTreeSet<Id>,
     detail_lines: Vec<os_render::plan::PlanDetailLine>,
@@ -1349,14 +1479,14 @@ impl PlanSnapshot {
         lines.retain(|id, _| !self.excluded.contains(id));
         let (room_faces, room_items, room_diagnostic) =
             derive_room_graphics(self.context, &self.room_segments, &self.rooms)?;
-        let dimension_items = derive_dimension_graphics(
+        let mut dimension_items = derive_dimension_graphics(
             self.context,
             self.plan_level,
             &self.dimension_walls,
             &self.openings,
             &self.dimensions,
         )?;
-        let arc_length_items = self
+        let mut arc_length_items = self
             .dimensions
             .iter()
             .filter(|(_, p)| p.layout == os_model::DimensionLayout::ArcLength)
@@ -1375,7 +1505,7 @@ impl PlanSnapshot {
                 arc_length_graphic(self.context, *id, p.orphan_hint, resolved)
             })
             .collect::<Result<Vec<_>>>()?;
-        let angular_items = self
+        let mut angular_items = self
             .dimensions
             .iter()
             .filter(|(_, p)| p.layout == os_model::DimensionLayout::Angular)
@@ -1453,13 +1583,16 @@ impl PlanSnapshot {
         let floor_items = self
             .floors
             .iter()
-            .filter_map(|(entity, parameters, level_elevation)| {
+            .map(|(entity, parameters, level_elevation)| {
                 let top = level_elevation + parameters.top_offset;
                 let bottom = top - parameters.thickness;
-                (top > self.context.range.depth && bottom < self.context.range.top)
-                    .then_some((*entity, parameters, top))
+                let role = os_geometry::plan::vertical_span_role(bottom, top, self.context.range)?;
+                Ok(role.map(|role| (*entity, parameters, role)))
             })
-            .map(|(entity, parameters, _)| {
+            .collect::<Result<Vec<_>>>()?
+            .into_iter()
+            .flatten()
+            .map(|(entity, parameters, vertical_role)| {
                 let boundary = parameters
                     .boundary
                     .iter()
@@ -1478,6 +1611,11 @@ impl PlanSnapshot {
                     os_geometry::floor_holes::triangulate_floor_rings(&boundary, &holes)?;
                 Ok(os_render::plan::PlanFloorItem {
                     entity,
+                    role: if vertical_role == PlanRole::Overhead {
+                        PlanRole::Overhead
+                    } else {
+                        PlanRole::Projected
+                    },
                     area_m2: triangulation.net_area,
                     boundary,
                     holes,
@@ -1499,6 +1637,7 @@ impl PlanSnapshot {
                 ) {
                     Ok(Some(plan)) => Some(Ok(os_render::plan::PlanCeilingItem {
                         entity: *entity,
+                        role: PlanRole::Projected,
                         boundary: plan.boundary,
                         holes: plan.holes,
                         vertices: plan.vertices,
@@ -1565,22 +1704,45 @@ impl PlanSnapshot {
             );
         }
         let mut arcs = Vec::new();
+        let joined_ids: std::collections::BTreeSet<_> = self
+            .wall_contacts
+            .iter()
+            .flat_map(|contact| contact.members)
+            .collect();
+        let mut join_boundaries = BTreeMap::new();
         for wall in self.walls {
             let id = wall.entity;
             let parameters = &wall.parameters;
             let elevation = wall.elevation;
-            seams.insert(
-                id,
-                wall.seams()
-                    .into_iter()
-                    .map(|(a, b)| {
-                        Ok((
-                            self.context.basis.world_to_plane(a)?,
-                            self.context.basis.world_to_plane(b)?,
-                        ))
-                    })
-                    .collect::<Result<Vec<_>>>()?,
-            );
+            // Straight native joins are resolved after appearances. Keep the
+            // legacy curved-wall tessellation cleanup independent of joins.
+            if !parameters.path.is_straight() {
+                seams.insert(
+                    id,
+                    wall.seams()
+                        .into_iter()
+                        .map(|(a, b)| {
+                            Ok((
+                                self.context.basis.world_to_plane(a)?,
+                                self.context.basis.world_to_plane(b)?,
+                            ))
+                        })
+                        .collect::<Result<Vec<_>>>()?,
+                );
+            }
+            if joined_ids.contains(&id) {
+                let mut boundaries = Vec::new();
+                for (layer, footprints) in
+                    wall.layer_plan_footprints(self.context.range, self.context.basis, None)?
+                {
+                    let surface = os_geometry::SurfaceIdentity {
+                        layer: layer.id,
+                        material: layer.material,
+                    };
+                    boundaries.extend(footprints.into_iter().map(|footprint| (surface, footprint)));
+                }
+                join_boundaries.insert(id, boundaries);
+            }
             let mut cells = Vec::new();
             for (layer, part) in wall.layer_plan_footprints(
                 self.context.range,
@@ -1682,6 +1844,25 @@ impl PlanSnapshot {
             .iter()
             .map(|item| item.entity)
             .collect();
+        if self.context.annotation_crop.is_some() {
+            let mut sources = visible.clone();
+            sources.extend(
+                native_lines
+                    .iter()
+                    .filter(|(_, lines)| !lines.is_empty())
+                    .map(|(id, _)| *id),
+            );
+            let eligible: std::collections::BTreeSet<_> = self
+                .dimensions
+                .iter()
+                .filter(|(_, p)| p.references().all(|r| sources.contains(&r.entity())))
+                .map(|(id, _)| *id)
+                .collect();
+            dimension_items.retain(|d| eligible.contains(&d.entity));
+            angular_items.retain(|d| eligible.contains(&d.entity));
+            arc_length_items.retain(|d| eligible.contains(&d.entity));
+            self.opening_tags.retain(|t| sources.contains(&t.opening));
+        }
         segments.retain(|segment| visible.contains(&segment.entity));
         arcs.retain(|arc| visible.contains(&arc.entity));
         for segment in &mut segments {
@@ -1691,11 +1872,10 @@ impl PlanSnapshot {
         let mut grids = self.grids;
         let roof_ids: std::collections::BTreeSet<_> =
             self.roofs.iter().map(|(id, _, _)| *id).collect();
-        for item in drawing
-            .items(self.context)?
-            .iter()
-            .filter(|item| roof_ids.contains(&item.entity))
-        {
+        for item in drawing.items(self.context)?.iter().filter(|item| {
+            roof_ids.contains(&item.entity)
+                && item.footprint.role != os_geometry::plan::PlanRole::Overhead
+        }) {
             for (start, end) in item.outline() {
                 segments.push(os_render::snapping::SnapSegment {
                     entity: item.entity,
@@ -1717,6 +1897,8 @@ impl PlanSnapshot {
             .with_native_lines(native_lines)?
             .with_provider_lines(lines)?
             .with_detail_lines(self.detail_lines)?
+            .with_text_notes(self.text_notes)?
+            .with_callouts(self.callouts)?
             .with_room_separation_lines(self.plan_level, self.room_separation_lines)?
             .with_snap_segments(segments)?
             .with_snap_arcs(arcs)?
@@ -1752,6 +1934,7 @@ impl PlanSnapshot {
                 match item.footprint.role {
                     PlanRole::Cut => entry.cut = Some(convert(styles.walls.cut)),
                     PlanRole::Projected => entry.projected = Some(convert(styles.walls.projected)),
+                    PlanRole::Overhead => entry.overhead = Some(convert(styles.walls.projected)),
                     PlanRole::Depth => {}
                 }
             }
@@ -1772,6 +1955,7 @@ impl PlanSnapshot {
                 match line.role {
                     PlanRole::Cut => entry.cut = Some(convert(category.cut)),
                     PlanRole::Projected => entry.projected = Some(convert(category.projected)),
+                    PlanRole::Overhead => entry.overhead = Some(convert(category.projected)),
                     PlanRole::Depth => {}
                 }
             }
@@ -1780,7 +1964,10 @@ impl PlanSnapshot {
                     floor.entity,
                     PlanElementAppearance {
                         cut: None,
-                        projected: Some(convert(styles.slabs.projected)),
+                        projected: (floor.role != PlanRole::Overhead)
+                            .then(|| convert(styles.slabs.projected)),
+                        overhead: (floor.role == PlanRole::Overhead)
+                            .then(|| convert(styles.slabs.projected)),
                     },
                 );
             }
@@ -1802,10 +1989,12 @@ impl PlanSnapshot {
             let entry = appearances
                 .entry(id)
                 .or_insert_with(os_render::plan::PlanElementAppearance::default);
-            let stroke = if role == os_geometry::plan::PlanRole::Cut {
-                &mut entry.cut
-            } else {
-                &mut entry.projected
+            let stroke = match role {
+                os_geometry::plan::PlanRole::Cut => &mut entry.cut,
+                os_geometry::plan::PlanRole::Overhead => &mut entry.overhead,
+                os_geometry::plan::PlanRole::Projected | os_geometry::plan::PlanRole::Depth => {
+                    &mut entry.projected
+                }
             };
             *stroke = Some(os_render::plan::PlanStroke {
                 color,
@@ -1839,7 +2028,7 @@ impl PlanSnapshot {
             .iter()
             .chain(drawing.ceilings(self.context)?)
         {
-            apply_phase(floor.entity, os_geometry::plan::PlanRole::Projected, 0.18);
+            apply_phase(floor.entity, floor.role, 0.18);
         }
         for room in drawing.rooms(self.context)? {
             apply_phase(room.entity, os_geometry::plan::PlanRole::Projected, 0.15);
@@ -1851,7 +2040,83 @@ impl PlanSnapshot {
                 os_render::plan::ROOM_SEPARATOR_WEIGHT_MM,
             );
         }
+        // Snapshot-resolved rules and explicit overrides outrank phase/category,
+        // only for roles which survived view range, phase, crop and visibility.
+        let mut visible_roles = BTreeMap::<Id, (bool, bool, bool)>::new();
+        for item in drawing
+            .items(self.context)?
+            .iter()
+            .chain(drawing.columns(self.context)?)
+            .chain(drawing.casework(self.context)?)
+        {
+            let roles = visible_roles.entry(item.entity).or_default();
+            match item.footprint.role {
+                os_geometry::plan::PlanRole::Cut => roles.0 = true,
+                os_geometry::plan::PlanRole::Projected | os_geometry::plan::PlanRole::Depth => {
+                    roles.1 = true
+                }
+                os_geometry::plan::PlanRole::Overhead => roles.2 = true,
+            }
+        }
+        for line in drawing.provider_lines(self.context)? {
+            if drawing.is_native_line(line.entity) {
+                let roles = visible_roles.entry(line.entity).or_default();
+                match line.role {
+                    os_geometry::plan::PlanRole::Cut => roles.0 = true,
+                    os_geometry::plan::PlanRole::Projected | os_geometry::plan::PlanRole::Depth => {
+                        roles.1 = true
+                    }
+                    os_geometry::plan::PlanRole::Overhead => roles.2 = true,
+                }
+            }
+        }
+        for floor in drawing.floors(self.context)? {
+            let roles = visible_roles.entry(floor.entity).or_default();
+            if floor.role == os_geometry::plan::PlanRole::Overhead {
+                roles.2 = true;
+            } else {
+                roles.1 = true;
+            }
+        }
+        for ceiling in drawing.ceilings(self.context)? {
+            let roles = visible_roles.entry(ceiling.entity).or_default();
+            if ceiling.role == os_geometry::plan::PlanRole::Overhead {
+                roles.2 = true;
+            } else {
+                roles.1 = true;
+            }
+        }
+        let convert_override = |style: os_model::PlanStrokeStyle| os_render::plan::PlanStroke {
+            color: style.color,
+            weight_mm: style.weight_mm,
+            dashed: style.pattern == os_model::PlanLinePattern::Dashed,
+        };
+        for (element, override_style) in self.element_graphics_overrides {
+            let Some((has_cut, has_projected, has_overhead)) = visible_roles.get(&element).copied()
+            else {
+                continue;
+            };
+            let appearance = appearances
+                .entry(element)
+                .or_insert_with(os_render::plan::PlanElementAppearance::default);
+            if has_cut {
+                if let Some(style) = override_style.cut {
+                    appearance.cut = Some(convert_override(style));
+                }
+            }
+            if has_projected {
+                if let Some(style) = override_style.projected {
+                    appearance.projected = Some(convert_override(style));
+                }
+            }
+            if has_overhead {
+                if let Some(style) = override_style.projected {
+                    appearance.overhead = Some(convert_override(style));
+                }
+            }
+        }
         drawing = drawing.with_appearances(appearances)?;
+        drawing = drawing.with_wall_join_graphics(&self.wall_contacts, &join_boundaries)?;
         Ok(drawing)
     }
 }
@@ -1912,6 +2177,9 @@ struct SectionFloor {
 /// Additional independent solids travel with the frozen section source, without
 /// changing the existing curtain/stair source constructors.
 pub(crate) struct PreparedSectionSnapshot {
+    text_notes: Vec<os_render::plan::NoteGraphic>,
+    detail_lines: Vec<os_render::plan::PlanDetailLine>,
+    callouts: Vec<os_render::plan::PlanCalloutGraphic>,
     dimensions: Vec<os_render::plan::PlanDimensionItem>,
     settings: os_model::SectionViewSettings,
     columns: Vec<(Id, os_model::ColumnParams, f64)>,
@@ -1969,12 +2237,41 @@ impl PreparedSectionSnapshot {
         self.source
             .derive_with_components(self.railing_members, self.openings, additional, projection)
             .and_then(|drawing| {
-                drawing
+                let drawing = drawing
                     .with_material_colors(self.material_colors)
                     .with_section_hatches(self.material_patterns, hatch_plane)?
-                    .with_dimensions(self.dimensions)
+                    .with_dimensions(self.dimensions)?
+                    .with_detail_lines(self.detail_lines)?
+                    .with_text_notes(self.text_notes)?
+                    .with_callouts(self.callouts)?;
+                // Provider lines already contribute their checked line segments.
+                // Section-only solids need not also own a plan footprint item.
+                drawing.with_snap_segments(Vec::new())
             })
     }
+}
+
+fn note_graphics(
+    model: &os_model::Model,
+    context: PlanContext,
+) -> Result<Vec<os_render::plan::NoteGraphic>> {
+    model
+        .text_notes
+        .values()
+        .filter(|n| n.parameters.view == context.view_id)
+        .map(|n| {
+            let mut parameters = n.parameters.clone();
+            parameters.position = context.basis.world_to_plane(parameters.position)?;
+            parameters.leader = parameters
+                .leader
+                .map(|p| context.basis.world_to_plane(p))
+                .transpose()?;
+            Ok(os_render::plan::NoteGraphic {
+                entity: n.id(),
+                parameters,
+            })
+        })
+        .collect()
 }
 
 pub(crate) struct SectionSnapshot {
@@ -2657,6 +2954,7 @@ mod stair_section_tests {
 
     fn context() -> PlanContext {
         PlanContext {
+            annotation_crop: None,
             session_id: Id::new(),
             model_revision: 1,
             view_id: Id::new(),

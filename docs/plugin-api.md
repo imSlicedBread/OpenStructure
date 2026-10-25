@@ -1,4 +1,58 @@
-# Plugin protocols: native Model API 51 and generic API 2
+# Plugin protocols: native Model API 63 and generic API 2
+
+Native API 63 requires schema 83; schema 82→83 adds required per-FloorPlan
+`plan_graphics_rules` to the full Model payload. API 62 and older
+native guests must rebuild/reinstall. The Wall manifest and Wasm probe use API 63.
+Family/package 10, generic API 2 and container 2 remain unchanged.
+See [rule-based plan graphics](native-plan-graphics-rules.md).
+
+Native API 60 requires schema 79 and adds the optional independent floor-plan
+annotation crop. API 59 and older native guests must rebuild/reinstall.
+Opening family/package 10, generic API 2 and container 2 are unchanged.
+See [annotation crops](native-annotation-crops.md).
+
+Native API 59 requires model schema 78 and adds the Drafting view kind and
+annotation crop/scale settings. Older native guests must rebuild. Opening
+family/package remain 10, generic API 2 and container 2 are unchanged.
+See [standalone drafting views](native-drafting-views.md).
+
+Native API 58 requires model schema 77 and adds typed Length/Scalar formulas and
+extrusion property bindings. Opening family and package contracts advance to 10.
+Older native guests must rebuild. See [typed parameter formulas](native-parameter-formulas.md).
+
+Native API 57 required model schema 76: `text_notes` is a required map, and
+view-owned detail lines may belong to configured Sections. Plan line coordinates
+remain world XY; Section line/note coordinates are station/project elevation.
+Older native guests must rebuild. Generic API 2, container 2, opening family 9
+and package 9 are unchanged. See [detail drafting](native-detail-drafting.md).
+
+Native API 56 required model schema 75 and adds the distinct `section_callouts`
+map to the native Model ABI. API 55 and older native guests must rebuild.
+Generic API 2, container 2 and opening-family/package 9 are unchanged. See
+[native section callouts](native-section-callouts.md).
+
+Native API 55 required model schema 74 and adds plan-callout records plus
+sheet-local viewport detail numbers to the full-model payload. No generic API 2
+or pointer-gesture protocol changes are introduced. API 54 remains the prior
+paired-door accessory increment; older native guests must rebuild/reinstall.
+
+Native API 54 requires schema 73 / opening family 9 and adds explicit paired-door
+`ActiveLeaf`/`InactiveLeaf` accessory attachments. API 53 and older native guests
+must rebuild/reinstall. The current bundled Wall manifest and probe use API 63. Generic
+API 2 and pointer-gesture protocols are unchanged.
+
+Native API 53 required schema 72 / opening family 8. Full Model transport added
+explicit `MovingSash` authored accessory attachment semantics. Older native
+guests required rebuilding/reinstalling for that increment.
+Generic API 2 is unchanged. See [moving-sash accessories](native-hosted-openings.md#moving-sash-accessories-schema-72--family-8).
+
+Native API 52 requires schema 71. Full Model transport adds ordered sheet sets
+and frozen drawing-issue metadata; archive/PDF bytes remain in standalone
+`.osissue` bundles and never cross the Model transport. API 51 and older native
+guests must rebuild/reinstall. That increment used API 52; generic API 2
+and pointer-gesture protocols are unchanged. Provider activation IDs and actual
+software/API versions are captured in issue manifests. See
+[native drawing issues](native-sheet-preview.md#frozen-ordered-drawing-issues-schema-71--native-api-52).
 
 Native API 51 requires model schema 70. Full Model transport includes the
 project material-pattern collection and optional material cut-pattern
@@ -83,7 +137,7 @@ current schema agreement in `os-plugin-api` and `os-plugin-host` tests.
 
 API 35/schema 54 added required Fixed/Sliding/Casement window-symbol metadata;
 older models migrate existing types to Fixed. At that increment native full-model
-transport used API 50/schema 69; current transport uses API 51/schema 70. Native
+transport used API 50/schema 69; current transport uses API 63/schema 83. Native
 API 50 and older guests must rebuild and reinstall. Generic API 2 and container 2
 are unchanged.
 
@@ -112,7 +166,7 @@ authored code and choose its license. Contributions submitted to this repository
 follow [CONTRIBUTING.md](../CONTRIBUTING.md).
 
 Current compatibility boundary: native Wall guests that receive the full model
-must use API 46 with model schema 65. API-45 and older native guests are rejected and must be
+must use API 63 with model schema 83. API-62 and older native guests are rejected and must be
 rebuilt/reinstalled; API 2 remains the independent generic DTO protocol. The
 [B/C baseline audit](bc-baseline-audit.md) verifies independently
 installed Wall/column commands, descriptor forms, checked geometry, workers,

@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn new_opening_schedules_pin_latest_but_room_finish_stays_unphased() {
+fn new_schedules_including_room_finish_pin_latest_and_expose_phase_controls() {
     for (size, scale) in [
         (egui::vec2(1280.0, 800.0), 1.0),
         (egui::vec2(1000.0, 650.0), 1.5),
@@ -37,7 +37,16 @@ fn new_opening_schedules_pin_latest_but_room_finish_stays_unphased() {
             .get_mut(&egui::ViewportId::ROOT)
             .unwrap()
             .native_pixels_per_point = Some(scale);
-        let output = ctx.run(input, |ctx| {
+        let mut room_input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+            ..Default::default()
+        };
+        room_input
+            .viewports
+            .get_mut(&egui::ViewportId::ROOT)
+            .unwrap()
+            .native_pixels_per_point = Some(scale);
+        let output = ctx.run(room_input, |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| app.schedule_definition_controls(ui));
         });
         for label in ["Schedule phase", "Phase aware", "Pinned: New Construction"] {
@@ -54,6 +63,7 @@ fn new_opening_schedules_pin_latest_but_room_finish_stays_unphased() {
         assert_eq!(app.editor.document.history_stats(), history_before);
 
         app.begin_definition(Some(ScheduleCategory::RoomFinish));
+        let latest = app.editor.document.model().latest_phase();
         assert_eq!(
             app.opening_schedule
                 .definition_draft
@@ -61,8 +71,17 @@ fn new_opening_schedules_pin_latest_but_room_finish_stays_unphased() {
                 .unwrap()
                 .parameters
                 .phase,
-            SchedulePhase::LegacyUnphased
+            SchedulePhase::PhaseAware {
+                target: latest,
+                filter: os_model::PhaseFilter::ShowAll,
+            }
         );
+        let output = ctx.run(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| app.schedule_definition_controls(ui));
+        });
+        assert!(output.shapes.iter().any(
+            |shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text.contains("Schedule phase"))
+        ));
     }
 }
 

@@ -35,6 +35,14 @@ fn lite_side_frozen_50_migration_only_adds_null_and_advances_all_headers() {
             }
         }
     }
+    expected["plan_callouts"] = json!({});
+    expected["section_callouts"] = json!({});
+    expected["text_notes"] = json!({});
+    expected["plan_hidden_openings"] = json!({});
+    expected["plan_element_graphics_overrides"] = json!({});
+    expected["plan_graphics_rules"] = json!({});
+    expected["group_definitions"] = json!({});
+    expected["group_instances"] = json!({});
     assert_eq!(value, expected);
     let mut model: Model = serde_json::from_value(value).unwrap();
     model.validate().unwrap();

@@ -14,7 +14,7 @@ use std::{
 };
 
 pub const OPENING_TYPE_PACKAGE_FORMAT: &str = "OpenStructure.OpeningTypePackage";
-pub const OPENING_TYPE_PACKAGE_VERSION: u32 = 7;
+pub const OPENING_TYPE_PACKAGE_VERSION: u32 = 11;
 pub const MAX_OPENING_TYPE_PACKAGE_BYTES: usize = 1024 * 1024;
 
 /// Source identities are references for import remapping, not destination identities.
@@ -84,6 +84,22 @@ fn deserialize_type_parameters<'de, D: serde::Deserializer<'de>>(
 }
 
 impl OpeningTypePackage {
+    fn parameter_dependencies(&self) -> Result<BTreeSet<Id>> {
+        let parameters = self
+            .length_parameters
+            .iter()
+            .map(|(id, p)| {
+                let mut entity = LengthParameter::new("core.length_parameter", p.clone());
+                entity.header.id = *id;
+                (*id, entity)
+            })
+            .collect();
+        let mut roots = self.length_bindings.references();
+        for solid in &self.parameters.family.extrusions {
+            roots.extend(solid.bindings.references());
+        }
+        os_model::parameter_dependencies(&parameters, roots)
+    }
     pub fn resolved_parameters(&self) -> Result<OpeningTypeParams> {
         let mut model = Model::new("Package validation");
         let mut ty = OpeningType::new("core.opening_type", self.parameters.clone());
@@ -103,7 +119,7 @@ impl OpeningTypePackage {
     pub fn validate(&self) -> Result<()> {
         ensure(!self.source_type_id.0.is_nil(), "nil opening type identity")?;
         ensure(
-            self.length_parameters.len() <= 3,
+            self.length_parameters.len() <= os_model::MAX_LENGTH_PARAMETERS,
             "too many Length snapshots",
         )?;
         ensure(
@@ -111,8 +127,8 @@ impl OpeningTypePackage {
                 .keys()
                 .copied()
                 .collect::<BTreeSet<_>>()
-                == self.length_bindings.references(),
-            "Length snapshots must exactly match bindings",
+                == self.parameter_dependencies()?,
+            "parameter snapshots must exactly match transitive bindings",
         )?;
         let mut source_identities = BTreeSet::from([self.source_type_id]);
         ensure(
@@ -231,11 +247,7 @@ pub fn export_opening_type_package(model: &Model, type_id: Id) -> Result<Vec<u8>
             .collect::<Result<_>>()?,
         materials,
         length_parameters: model
-            .opening_type_length_bindings
-            .get(&type_id)
-            .copied()
-            .unwrap_or_default()
-            .references()
+            .opening_parameter_dependencies(type_id)?
             .into_iter()
             .map(|id| {
                 model
@@ -301,6 +313,9 @@ pub fn parse_opening_type_package(bytes: &[u8]) -> Result<OpeningTypePackage> {
             }),
             "ambiguous legacy package cut pattern",
         )?;
+    }
+    if value["version"].as_u64().is_some_and(|v| v < 11) {
+        crate::reject_legacy_paired_casement(&value["parameters"])?;
     }
     if value["version"] == 1 {
         let family = value["parameters"]["family"]
@@ -374,6 +389,29 @@ pub fn parse_opening_type_package(bytes: &[u8]) -> Result<OpeningTypePackage> {
         )?;
         value["material_patterns"] = serde_json::json!({});
         value["version"] = 7.into();
+    }
+    if value["version"] == 7 {
+        crate::migrate_opening_family_v7(&mut value["parameters"])?;
+        value["version"] = 8.into();
+    }
+    if value["version"] == 8 {
+        crate::migrate_opening_family_v8(&mut value["parameters"])?;
+        value["version"] = 9.into();
+    }
+    if value["version"] == 9 {
+        for p in value["length_parameters"]
+            .as_object_mut()
+            .ok_or_else(|| storage("missing legacy parameters"))?
+            .values_mut()
+        {
+            crate::migrate_parameters_v76(p)?;
+        }
+        crate::migrate_opening_family_v9(&mut value["parameters"])?;
+        value["version"] = 10.into();
+    }
+    if value["version"] == 10 {
+        crate::migrate_opening_family_v10(&mut value["parameters"])?;
+        value["version"] = 11.into();
     }
     let wire: WirePackage = serde_json::from_value(value).map_err(storage)?;
     ensure(

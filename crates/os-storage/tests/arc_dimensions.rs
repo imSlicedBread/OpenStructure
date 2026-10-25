@@ -1,3 +1,4 @@
+mod common;
 use os_core::Point2;
 use os_document::Document;
 use os_model::*;
@@ -14,17 +15,17 @@ fn arc_length_schema_62_migration_only_advances_headers_and_preserves_opaque_dat
     let mut expected = value.clone();
     expected["schema_version"] = SCHEMA_VERSION.into();
     expected["material_patterns"] = serde_json::json!({});
-    for (key, data) in expected.as_object_mut().unwrap() {
-        if key == "project" {
-            data["header"]["schema_version"] = SCHEMA_VERSION.into();
-        } else if key != "extensions"
-            && let Some(map) = data.as_object_mut()
-        {
-            for entity in map.values_mut().filter(|v| v.get("header").is_some()) {
-                entity["header"]["schema_version"] = SCHEMA_VERSION.into();
-            }
-        }
-    }
+    expected["sheet_sets"] = serde_json::json!({});
+    expected["drawing_issues"] = serde_json::json!({});
+    expected["plan_callouts"] = serde_json::json!({});
+    expected["section_callouts"] = serde_json::json!({});
+    expected["text_notes"] = serde_json::json!({});
+    expected["plan_hidden_openings"] = serde_json::json!({});
+    expected["plan_element_graphics_overrides"] = serde_json::json!({});
+    expected["plan_graphics_rules"] = serde_json::json!({});
+    expected["group_definitions"] = serde_json::json!({});
+    expected["group_instances"] = serde_json::json!({});
+    common::current_native_headers(&mut expected);
     // Schema 66→67 adds an empty authored-solid list and advances the native
     // opening-family version; all older payloads remain unchanged.
     for ty in expected["opening_types"]
@@ -32,7 +33,7 @@ fn arc_length_schema_62_migration_only_advances_headers_and_preserves_opaque_dat
         .unwrap()
         .values_mut()
     {
-        ty["parameters"]["family"]["version"] = 7.into();
+        ty["parameters"]["family"]["version"] = 10.into();
         ty["parameters"]["family"]["extrusions"] = serde_json::json!([]);
     }
     migrate(&mut value, 62).unwrap();

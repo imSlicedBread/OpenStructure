@@ -137,6 +137,7 @@ fn schema_eighteen_migration_preserves_wall_room_and_rejects_ambiguity_atomicall
     expected["columns"] = json!({});
     expected["plan_graphics_templates"] = json!({});
     expected["plan_graphics"] = json!({});
+    expected["plan_graphics_rules"] = json!({});
     expected["stairs"] = json!({});
     expected["roofs"] = json!({});
     expected["phases"] = migrated["phases"].clone();

@@ -33,7 +33,7 @@ was captured from the actual native pointer-wall output before the schema change
 ## Consequences and remaining work
 
 Container 2, plan-settings 1, extension-envelope 1, API 2 and Wasm ABI 1 remain
-unchanged. Legacy native Wall messages use current native header version 4;
+unchanged. At this milestone, legacy native Wall messages used native header version 4;
 independent API-2 Wall projection remains payload 1. Grid plugin authoring is not
 implicitly granted by adding host commands. IFC wall export reports grid loss
 and the loss-rejecting adapter refuses it without acknowledgement.

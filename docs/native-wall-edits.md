@@ -195,3 +195,42 @@ clearance remapping, implicit lifecycle preservation, collision and partial-join
 rejection, snapping, Escape/stale selection, one-step undo/redo, and save/reopen.
 These are automated assertions, not native-window visual qualification. See
 [native wall-set copy](native-wall-set-copy.md) for behavior and limits.
+
+## Wall assembly Rotate/Mirror — 2026-10-23 verified evidence
+
+The existing plan menu now has a native assembly path for 2–64 visible same-level
+straight walls: explicit-pivot Rotate and two-point-axis Mirror. Complete corner
+loops preserve wall/opening identities, types and instance data, transform tags
+across owning views and room seeds, and rederive accepted room signatures against
+the same boundary UUID set. Dimensions retain semantic references and must resolve
+in their owning Plan/Section/Elevation views. Candidate drawings are disposable;
+scene/drawing preflight precedes one document transaction. Installed assembly
+batches reject; compatible single-wall worker operations retain their path.
+
+The focused all-feature `wall_assembly_transform` run, including the installed E:
+Wall guest, reports **8 passed, 0 failed, 0 ignored**. A non-cardinal tee test
+initially exposed last-bit disagreement at the stored host station; the
+candidate now derives the branch endpoint from that transformed host station.
+Scoped rustfmt and `cargo check -p os-ui --all-features --locked --offline` pass.
+See [exact commands and evidence](plan-wall-edit-gestures.md#wall-assembly-rotatemirror--2026-10-23-implementation-evidence).
+The first broader all-feature `wall_` run exposed a test-coordinate issue: the
+2 m endpoint in `plan_grid_selection_and_wall_axis_snap_use_semantic_datum` fell
+13 logical pixels outside the 1000×650 canvas. The test now uses an in-canvas
+1 m endpoint and passes at both profiles. The follow-up `wall_` filter reports
+**70 passed, 0 failed, 3 ignored**; ignored tests require an explicitly installed
+guest. The full workspace, native-window qualification and physical printing
+remain unverified; no schema or plugin protocol changed.
+
+## Static radial wall arrays — 2026-10-23
+
+**Array walls → Radial** adds snapped-pivot placement and an exact signed angular
+step to the existing bounded assembly-copy workflow. Each independent repeat
+rotates the original source; active-plan opening tags rotate with the copied
+walls and hosted doors/windows. Counts, dependency limits, collision checks,
+room preservation, provider refusal and one-step preflighted commit match linear
+arrays. The total sweep must be below 360°. Preview leaves model/scene/history
+unchanged; committed edits regenerate 2D/3D. No schema/storage/protocol changes.
+
+See [radial behavior and evidence](native-wall-set-copy.md#static-radial-wall-assembly-arrays--2026-10-23)
+and `wall_assembly_radial_array_tests.rs`. This increment implements static copies;
+associative Revit array constraints and native-window qualification remain open.

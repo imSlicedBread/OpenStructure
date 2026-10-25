@@ -28,6 +28,7 @@ fn section_dimension_witnesses_and_value_share_sheet_and_vector_pdf_coordinates(
     assert!(mixed_resolved.first.distance(mixed_resolved.second) > mixed_resolved.length_metres);
     let (mixed_a, mixed_b) = mixed.section_line(mixed_resolved);
     let c = PlanContext {
+        annotation_crop: None,
         session_id: Id::new(),
         model_revision: 0,
         view_id: view,

@@ -41,7 +41,7 @@ pub fn roof_plan(
         (
             range.cut + p.thickness,
             range.top + p.thickness,
-            PlanRole::Projected,
+            PlanRole::Overhead,
         ),
     ];
     for [a, b, c] in cap.triangles {
@@ -240,7 +240,12 @@ mod tests {
         };
         let plan = roof_plan(&p, 0., range, HorizontalBasis::default(), None).unwrap();
         assert!((plan.footprints.iter().map(|f| f.area()).sum::<f64>() - 17.6).abs() < 1e-9);
-        for role in [PlanRole::Depth, PlanRole::Cut, PlanRole::Projected] {
+        for role in [
+            PlanRole::Depth,
+            PlanRole::Projected,
+            PlanRole::Overhead,
+            PlanRole::Cut,
+        ] {
             assert!(plan.footprints.iter().any(|f| f.role == role));
         }
         assert!(

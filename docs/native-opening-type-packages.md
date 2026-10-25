@@ -5,10 +5,32 @@ projects using a bounded `.osot` file. The Manage ribbon imports a package; the
 selected opening type's Properties panel exports one. The package is portable
 JSON, independent of the project model schema, and contains the type parameters
 plus exact snapshots of only the referenced panel/pane, frame and optional
-fixed-lite and authored-solid materials and shared Length parameters.
+fixed-lite and authored-solid materials and transitive Length/Scalar parameters.
 It does not include placed openings, hosts, levels, or other project entities.
 
-Version 7 carries an exact `material_patterns` dependency map for hatch patterns
+Version 10 carries family-10 extrusion bindings and typed Length/Scalar formulas.
+Packages include exactly the transitive dependencies of width/height/sill and
+extrusion X/Y/depth/normal-offset bindings, up to 64 definitions. Import allocates
+new parameter UUIDs before remapping all formula references and bindings; names
+and colliding source IDs never overwrite project parameters. Family/package
+9→10 migration adds literal-only formula/binding defaults and rejects ambiguous
+new fields in old input. The frozen v9 fixture and near-budget formula import
+tests are documented in [typed parameter formulas](native-parameter-formulas.md).
+
+Version 9 introduced family-9 `ActiveLeaf` and `InactiveLeaf` paired-door attachments.
+Package 9 explicitly advances family 8→9 while retaining old attachment values;
+new leaf attachments or paired accessory definitions in legacy wires are rejected.
+Import retains exact material dependency remapping and fresh solid UUIDs.
+
+Version 8 introduced family-8 `MovingSash` attachments for rectangular Casement and
+Sliding Start-sash accessories on straight hosts. Package 7 explicitly migrates
+family 7→8, preserving `OpeningFixed` and `PrimaryPanel` exactly; new attachments
+or operable-window accessories hidden in old-version payloads are rejected.
+The same exact material dependency remapping and fresh imported solid UUIDs apply.
+Instance poses are not included in a type package. End-sash and
+curved-host accessory attachments remain unsupported.
+
+Version 7 introduced an exact `material_patterns` dependency map for hatch patterns
 referenced by the included material snapshots. Import remaps each pattern to an
 independent project UUID and preserves sharing among the package's materials;
 name conflicts receive a visible imported name. Version 6 migrates to an empty
@@ -79,7 +101,7 @@ an existing package and writes through a temporary sibling for atomic replacemen
 
 ## Format and limits
 
-Format identifier: `OpenStructure.OpeningTypePackage`, version 7. Version-1
+Format identifier: `OpenStructure.OpeningTypePackage`, version 10. Version-1
 packages remain importable and are upgraded as single-panel families (family
 version 4 to 5 with `side_lite: null`); version-1 and version-2 imports default
 window operation to Fixed. Version 2 can carry the optional two-bay
@@ -89,8 +111,9 @@ metadata. It affects plan symbols only; generated 3D panes remain static.
 Version 4 requires `length_parameters` (source UUID → named metre value) and
 `length_bindings` (three explicit nullable UUIDs). Versions 1–3 migrate to empty
 snapshots and literal-only bindings; pre-existing new fields in legacy input
-are rejected as ambiguous. At most three Length snapshots are allowed, and
-their identities must exactly match the binding references. Labels and validation
+are rejected as ambiguous. Versions 4–9 limited snapshots to three direct Length
+bindings. Version 10 permits up to 64 typed transitive dependencies and rejects
+missing or extra snapshots. Labels and validation
 use resolved package dimensions rather than inactive fallback literals. Version
 5 adds the required family-version-6 `door_leaves` field. Version-4 packages
 migrate to `Single` only when their family version is 5 and the field is absent;

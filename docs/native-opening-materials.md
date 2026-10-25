@@ -43,8 +43,8 @@ are inserted as null, family versions advance to 4, and native entity headers
 advance to 32. Old families therefore retain their prior default appearance.
 Malformed, ambiguous, or inconsistent headers are rejected without partial
 migration. At introduction, native full-model plugin API 13 required schema 32.
-At introduction, native API 32 required schema 51. Current native API 51 requires
-schema 70; generic API 2 and container version 2 remain unchanged.
+At introduction, native API 32 required schema 51. Current native API 55 requires
+schema 74; generic API 2 and container version 2 remain unchanged.
 
 ## Evidence and remaining work
 

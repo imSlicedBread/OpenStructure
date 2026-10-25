@@ -11,12 +11,17 @@ pub enum OpeningKind {
 
 /// Type-level plan symbol and static closed sash representation for rectangular
 /// windows on straight hosts. Curved/custom-profile windows use the symbol only.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum WindowOperation {
     #[default]
     Fixed,
     Sliding,
     Casement,
+    PairedCasement {
+        start_fraction: f64,
+        mullion_width: f64,
+    },
 }
 
 /// Persisted instance pose. Default preserves historical doors at 90 degrees
@@ -33,6 +38,10 @@ pub enum OpeningState {
     },
     SlidingFraction(f64),
     CasementAngle(f64),
+    CasementPairAngles {
+        start_degrees: f64,
+        end_degrees: f64,
+    },
 }
 
 /// Jamb relative to the host's stored start-to-end direction.
@@ -176,11 +185,8 @@ impl OpeningTypeParams {
             "doors require Center pane position",
         )?;
         validate_dimensions(self.kind, self.width, self.height, self.sill)?;
-        ensure(
-            self.family.extrusions.is_empty() || self.window_operation == WindowOperation::Fixed,
-            "authored extrusions support Fixed windows only",
-        )?;
-        self.family.validate_for(self.width, self.height, self.kind)
+        self.family
+            .validate_attachments(self.width, self.height, self.kind, self.window_operation)
     }
 }
 
@@ -273,9 +279,12 @@ impl Model {
                 || (resolved.hinge == DoorHinge::Start && resolved.swing == DoorSwing::Left),
             "windows require default Start/Left orientation",
         )?;
-        resolved
-            .family
-            .validate_for(resolved.width, resolved.height, resolved.kind)?;
+        resolved.family.validate_attachments(
+            resolved.width,
+            resolved.height,
+            resolved.kind,
+            resolved.window_operation,
+        )?;
         resolved.validate_open_state()?;
         Ok(resolved)
     }
@@ -317,9 +326,32 @@ fn validate_dimensions(kind: OpeningKind, width: f64, height: f64, sill: f64) ->
 }
 
 impl ResolvedOpening {
+    pub fn casement_pair_angles(&self) -> [f64; 2] {
+        match self.open_state {
+            OpeningState::CasementPairAngles {
+                start_degrees,
+                end_degrees,
+            } => [start_degrees, end_degrees],
+            _ => [0., 0.],
+        }
+    }
+
     pub fn validate_open_state(&self) -> Result<()> {
         let valid = match self.open_state {
             OpeningState::Default => true,
+            OpeningState::CasementPairAngles {
+                start_degrees,
+                end_degrees,
+            } => {
+                self.kind == OpeningKind::Window
+                    && matches!(
+                        self.window_operation,
+                        WindowOperation::PairedCasement { .. }
+                    )
+                    && [start_degrees, end_degrees]
+                        .iter()
+                        .all(|v| v.is_finite() && (0. ..=90.).contains(v))
+            }
             OpeningState::DoorPairAngles {
                 active_degrees,
                 inactive_degrees,
@@ -348,7 +380,7 @@ impl ResolvedOpening {
         };
         ensure(
             valid,
-            "opening state is out of range or incompatible with its kind/operation; reset paired poses to Default before switching to Single",
+            "opening state is out of range or incompatible with its kind/operation; reset incompatible poses to Default before changing the type",
         )
     }
 
@@ -385,16 +417,26 @@ impl ResolvedOpening {
         self.validate_open_state()?;
         host.validate()?;
         ensure(
-            self.family.extrusions.is_empty()
-                || (host.path.is_straight() && self.window_operation == WindowOperation::Fixed),
-            "authored extrusions require straight hosts and single doors or Fixed windows",
+            !matches!(
+                self.window_operation,
+                WindowOperation::PairedCasement { .. }
+            ) || (host.path.is_straight() && self.rectangular_component()),
+            "paired casements require a straight native host and rectangular profiles",
+        )?;
+        ensure(
+            self.family.extrusions.is_empty() || host.path.is_straight(),
+            "authored extrusions require straight hosts",
         )?;
         ensure(
             self.family.door_leaves == crate::DoorLeaves::Single || host.path.is_straight(),
             "paired doors require a straight host; choose a straight wall or a Single door type",
         )?;
-        self.family
-            .validate_for(self.width, self.height, self.kind)?;
+        self.family.validate_attachments(
+            self.width,
+            self.height,
+            self.kind,
+            self.window_operation,
+        )?;
         validate_dimensions(self.kind, self.width, self.height, self.sill)?;
         let offset = self.offset;
         ensure(
@@ -579,6 +621,94 @@ mod tests {
     }
 
     #[test]
+    fn paired_casement_state_requires_paired_window_and_valid_angles() {
+        let (mut model, mut opening, type_id) = fixture();
+        opening.definition = OpeningDefinition::Typed { type_id };
+        let ty = &mut model.opening_types.get_mut(&type_id).unwrap().parameters;
+        ty.kind = OpeningKind::Window;
+        ty.sill = 0.7;
+        ty.window_operation = WindowOperation::PairedCasement {
+            start_fraction: 0.6,
+            mullion_width: 0.04,
+        };
+        ty.validate().unwrap();
+
+        for state in [
+            OpeningState::CasementPairAngles {
+                start_degrees: 0.,
+                end_degrees: 0.,
+            },
+            OpeningState::CasementPairAngles {
+                start_degrees: 27.,
+                end_degrees: 63.,
+            },
+            OpeningState::CasementPairAngles {
+                start_degrees: 90.,
+                end_degrees: 90.,
+            },
+        ] {
+            opening.open_state = state;
+            let resolved = model.resolve_opening(&opening).unwrap();
+            assert_eq!(
+                resolved.casement_pair_angles(),
+                match state {
+                    OpeningState::CasementPairAngles {
+                        start_degrees,
+                        end_degrees,
+                    } => [start_degrees, end_degrees],
+                    _ => unreachable!(),
+                }
+            );
+        }
+        for (start_degrees, end_degrees) in [
+            (-0.1, 20.),
+            (20., 90.1),
+            (f64::NAN, 0.),
+            (0., f64::INFINITY),
+        ] {
+            opening.open_state = OpeningState::CasementPairAngles {
+                start_degrees,
+                end_degrees,
+            };
+            assert!(model.resolve_opening(&opening).is_err());
+        }
+
+        opening.open_state = OpeningState::CasementPairAngles {
+            start_degrees: 30.,
+            end_degrees: 60.,
+        };
+        model
+            .opening_types
+            .get_mut(&type_id)
+            .unwrap()
+            .parameters
+            .window_operation = WindowOperation::Casement;
+        assert!(model.resolve_opening(&opening).is_err());
+        model
+            .opening_types
+            .get_mut(&type_id)
+            .unwrap()
+            .parameters
+            .window_operation = WindowOperation::PairedCasement {
+            start_fraction: 0.6,
+            mullion_width: 0.04,
+        };
+        model.walls.get_mut(&opening.host).unwrap().parameters.path =
+            crate::WallPath::CircularArc {
+                center: Point2::default(),
+                radius: 6.,
+                start_angle_rad: 0.,
+                signed_sweep_rad: 1.,
+            };
+        let resolved = model.resolve_opening(&opening).unwrap();
+        assert!(
+            resolved
+                .validate_host(&model.walls[&opening.host].parameters)
+                .is_err()
+        );
+    }
+
+    #[test]
     fn window_operation_is_required_type_metadata_and_legacy_is_fixed() {
         let (mut model, mut opening, ty) = fixture();
         assert_eq!(
@@ -590,6 +720,10 @@ mod tests {
             WindowOperation::Fixed,
             WindowOperation::Sliding,
             WindowOperation::Casement,
+            WindowOperation::PairedCasement {
+                start_fraction: 0.6,
+                mullion_width: 0.04,
+            },
         ] {
             let params = &mut model.opening_types.get_mut(&ty).unwrap().parameters;
             params.window_operation = operation;

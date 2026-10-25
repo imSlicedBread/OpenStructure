@@ -7,7 +7,7 @@ use os_storage::{
 };
 
 #[test]
-fn shared_lengths_frozen_legacy_migration_save_reopen_and_package_v7() {
+fn shared_lengths_frozen_legacy_migration_save_reopen_and_package_v8() {
     let mut wire: serde_json::Value =
         serde_json::from_str(include_str!("fixtures/schema-53-straight-walls.json")).unwrap();
     migrate(&mut wire, 53).unwrap();
@@ -25,6 +25,7 @@ fn shared_lengths_frozen_legacy_migration_save_reopen_and_package_v7() {
     let p = LengthParameter::new(
         "core.length_parameter",
         LengthParameterParams {
+            formula: None,
             name: "Width".into(),
             unit: LengthUnit::Metres,
             value: width,
@@ -55,7 +56,7 @@ fn shared_lengths_frozen_legacy_migration_save_reopen_and_package_v7() {
     assert_eq!(package.length_parameters.len(), 1);
     assert_eq!(package.resolved_parameters().unwrap().width, width);
     let mut wire: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(wire["version"], 7);
+    assert_eq!(wire["version"], 10);
     wire["length_parameters"][Id::new().to_string()] =
         serde_json::to_value(&doc.model().length_parameters[&id].parameters).unwrap();
     assert!(parse_opening_type_package(&serde_json::to_vec(&wire).unwrap()).is_err());

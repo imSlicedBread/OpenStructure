@@ -272,15 +272,13 @@ impl ScheduleParams {
         model: &Model,
     ) -> Result<Self> {
         let mut parameters = Self::new(name, category);
-        if category != ScheduleCategory::RoomFinish {
-            let target = model
-                .latest_phase()
-                .ok_or_else(|| os_core::Error::Invalid("schedule phase is unavailable".into()))?;
-            parameters.phase = SchedulePhase::PhaseAware {
-                target: Some(target),
-                filter: PhaseFilter::ShowAll,
-            };
-        }
+        let target = model
+            .latest_phase()
+            .ok_or_else(|| os_core::Error::Invalid("schedule phase is unavailable".into()))?;
+        parameters.phase = SchedulePhase::PhaseAware {
+            target: Some(target),
+            filter: PhaseFilter::ShowAll,
+        };
         parameters.validate()?;
         Ok(parameters)
     }
@@ -318,11 +316,6 @@ impl ScheduleParams {
         }
     }
     pub fn validate(&self) -> Result<()> {
-        ensure(
-            self.category != ScheduleCategory::RoomFinish
-                || self.phase == SchedulePhase::LegacyUnphased,
-            "RoomFinish schedules must remain unphased",
-        )?;
         ensure(
             self.group_by.len() <= 2
                 && self.group_by.iter().collect::<BTreeSet<_>>().len() == self.group_by.len(),

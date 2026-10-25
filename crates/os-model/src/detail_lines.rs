@@ -1,4 +1,4 @@
-//! Independent, view-owned straight drafting geometry in world XY metres.
+//! View-owned straight drafting: Plan world XY, Section station/project elevation.
 use crate::{Entity, Model, ViewKind};
 use os_core::{Id, Point2, Result, ensure};
 use serde::{Deserialize, Serialize};
@@ -18,14 +18,16 @@ impl DetailLineParams {
     pub fn validate(&self, model: &Model) -> Result<()> {
         ensure(
             model.views.get(&self.view).is_some_and(|view| {
-                view.parameters.kind == ViewKind::Plan
-                    && view.parameters.plan.is_some()
-                    && view
-                        .parameters
-                        .level
-                        .is_some_and(|id| model.levels.contains_key(&id))
+                (view.parameters.kind == ViewKind::Drafting && view.parameters.validate().is_ok())
+                    || ((view.parameters.kind == ViewKind::Plan && view.parameters.plan.is_some())
+                        || (view.parameters.kind == ViewKind::Section
+                            && view.parameters.section.is_some()))
+                        && view
+                            .parameters
+                            .level
+                            .is_some_and(|id| model.levels.contains_key(&id))
             }),
-            "detail line requires a configured plan view and valid level",
+            "detail line requires a configured Plan or Section and valid level",
         )?;
         ensure(
             [self.start, self.end]

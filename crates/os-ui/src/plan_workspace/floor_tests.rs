@@ -761,6 +761,7 @@ fn floor_vertex_projection_and_hit_testing_respect_crop_and_logical_radius() {
     let vertices = boundary.iter().chain(holes[0].iter()).copied().collect();
     let floor = PlanFloorItem {
         entity: Id::new(),
+        role: os_geometry::plan::PlanRole::Projected,
         boundary: boundary.clone(),
         holes,
         vertices,

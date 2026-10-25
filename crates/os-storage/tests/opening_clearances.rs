@@ -8,6 +8,17 @@ fn old_model() -> serde_json::Value {
         serde_json::from_str(include_str!("fixtures/schema-53-straight-walls.json")).unwrap();
     migrate(&mut value, 53).unwrap();
     common::remove_door_leaves(&mut value);
+    value.as_object_mut().unwrap().remove("sheet_sets");
+    value.as_object_mut().unwrap().remove("drawing_issues");
+    value.as_object_mut().unwrap().remove("plan_callouts");
+    value.as_object_mut().unwrap().remove("section_callouts");
+    value.as_object_mut().unwrap().remove("text_notes");
+    value
+        .as_object_mut()
+        .unwrap()
+        .remove("plan_hidden_openings");
+    value.as_object_mut().unwrap().remove("group_definitions");
+    value.as_object_mut().unwrap().remove("group_instances");
     for opening in value["openings"].as_object_mut().unwrap().values_mut() {
         opening["parameters"]
             .as_object_mut()

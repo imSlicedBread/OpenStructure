@@ -83,6 +83,14 @@ impl PlanDrawing {
                 && radius_pixels <= 64.0,
             "invalid plan pick query",
         )?;
+        if current.annotation_crop.is_some()
+            && let Some(id) = self
+                .annotation_hits(current, camera, viewport, pointer, radius_pixels, |_| true)?
+                .into_iter()
+                .next()
+        {
+            return Ok(Some(id));
+        }
         if let Some(id) = self.pick_opening_tag_screen(current, camera, viewport, pointer)? {
             return Ok(Some(id));
         }
@@ -107,6 +115,57 @@ impl PlanDrawing {
         }
         if let Some(id) = self.pick(current, point)? {
             return Ok(Some(id));
+        }
+        let outline_hit = |segments: Vec<(Point2, Point2)>| -> Result<bool> {
+            for (start, end) in segments {
+                if point_segment_distance(
+                    pointer,
+                    camera.project(start, viewport)?,
+                    camera.project(end, viewport)?,
+                ) <= radius_pixels
+                {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        };
+        for item in self
+            .items(current)?
+            .iter()
+            .chain(self.columns(current)?)
+            .chain(self.casework(current)?)
+            .rev()
+        {
+            if item.footprint.role == PlanRole::Overhead && outline_hit(item.outline().collect())? {
+                return Ok(Some(item.entity));
+            }
+        }
+        for floor in self
+            .floors(current)?
+            .iter()
+            .chain(self.ceilings(current)?)
+            .rev()
+        {
+            if floor.role == PlanRole::Overhead
+                && current.crop.is_none_or(|c| point_in_crop(c, point))
+            {
+                let mut segments = Vec::new();
+                for ring in std::iter::once(&floor.boundary).chain(floor.holes.iter()) {
+                    for (start, end) in ring
+                        .iter()
+                        .copied()
+                        .zip(ring.iter().copied().cycle().skip(1))
+                        .take(ring.len())
+                    {
+                        if let Some(segment) = clip(start, end, current.crop)? {
+                            segments.push(segment);
+                        }
+                    }
+                }
+                if outline_hit(segments)? {
+                    return Ok(Some(floor.entity));
+                }
+            }
         }
         if let Some(id) =
             self.pick_provider_line(current, camera, viewport, pointer, radius_pixels, false)?

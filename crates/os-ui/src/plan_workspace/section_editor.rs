@@ -39,6 +39,7 @@ impl DesktopApp {
         self.cancel_aligned_dimension();
         self.cancel_opening_placement();
         self.plans.crop.cancel();
+        self.plans.section_callouts.draft = None;
         self.plans.section_placement = Some(SectionPlacementDraft {
             #[cfg(test)]
             numeric_rects: BTreeMap::new(),

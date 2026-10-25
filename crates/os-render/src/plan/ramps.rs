@@ -177,7 +177,7 @@ impl PlanRampItem {
             (
                 station(range.cut + structural_thickness),
                 far,
-                PlanRole::Projected,
+                PlanRole::Overhead,
             ),
         ];
         for (a, b, role) in bands {
@@ -449,7 +449,7 @@ impl PlanDrawing {
                         end,
                         ..line.clone()
                     });
-                    if ramp.source.is_none() {
+                    if ramp.source.is_none() && line.role != PlanRole::Overhead {
                         self.line_segments.push(SnapSegment {
                             entity: ramp.entity,
                             feature: line.feature,
@@ -491,7 +491,8 @@ impl PlanDrawing {
             .iter()
             .rev()
             .find(|i| {
-                i.footprint.contains(point)
+                i.footprint.role != PlanRole::Overhead
+                    && i.footprint.contains(point)
                     && self
                         .ramps
                         .binary_search_by_key(&i.entity, |r| r.entity)
@@ -509,6 +510,7 @@ mod tests {
 
     fn context() -> PlanContext {
         PlanContext {
+            annotation_crop: None,
             session_id: Id::new(),
             model_revision: 1,
             view_id: Id::new(),
@@ -581,7 +583,7 @@ mod tests {
             (PlanRole::Depth, 0.0, 0.8),
             (PlanRole::Projected, 0.8, 2.4),
             (PlanRole::Cut, 2.4, 2.8),
-            (PlanRole::Projected, 2.8, 4.0),
+            (PlanRole::Overhead, 2.8, 4.0),
         ];
         for (area, (role, a, b)) in item.footprints.iter().zip(expected) {
             assert_eq!(area.role, role);
@@ -949,7 +951,8 @@ fn role_order(role: PlanRole) -> u8 {
     match role {
         PlanRole::Depth => 0,
         PlanRole::Projected => 1,
-        PlanRole::Cut => 2,
+        PlanRole::Overhead => 2,
+        PlanRole::Cut => 3,
     }
 }
 
@@ -960,6 +963,7 @@ mod plan_data_tests {
 
     fn context() -> PlanContext {
         PlanContext {
+            annotation_crop: None,
             session_id: Id::new(),
             model_revision: 1,
             view_id: Id::new(),
@@ -1010,7 +1014,7 @@ mod plan_data_tests {
                 PlanRole::Depth,
                 PlanRole::Projected,
                 PlanRole::Cut,
-                PlanRole::Projected
+                PlanRole::Overhead
             ]
         );
         let cut = &ramp.footprints[2];
@@ -1023,11 +1027,8 @@ mod plan_data_tests {
         assert_eq!(ramp.ascent_direction, Some(Point2::new(1.0, 0.0)));
         assert_eq!(ramp.arrow.len(), 3);
         let drawing = empty(ctx).with_ramps(vec![ramp]).unwrap();
-        assert_eq!(drawing.pick(ctx, Point2::new(8.0, 0.0)).unwrap(), Some(id));
-        assert_eq!(
-            drawing.pick_ramp(ctx, Point2::new(8.0, 0.0)).unwrap(),
-            Some(id)
-        );
+        assert_eq!(drawing.pick(ctx, Point2::new(8.0, 0.0)).unwrap(), None);
+        assert_eq!(drawing.pick_ramp(ctx, Point2::new(8.0, 0.0)).unwrap(), None);
         assert!(
             drawing
                 .items(ctx)

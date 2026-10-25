@@ -700,6 +700,7 @@ fn section_sheets_export_linked_cut_lines_and_reopen_in_source_view_space() {
         .clone();
     let mut duplicate = multiple.viewports[0].clone();
     duplicate.id = Id::new();
+    duplicate.detail_number = super::next_sheet_detail_number(&multiple.viewports);
     multiple.viewports.push(duplicate);
     app.editor
         .command(

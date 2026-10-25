@@ -7,6 +7,11 @@ use os_geometry::{
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 mod angular;
+mod annotations;
+mod callouts;
+mod text_notes;
+pub use callouts::PlanCalloutGraphic;
+pub use text_notes::{NoteGraphic, NoteLayout};
 mod arc_length;
 mod casework;
 mod columns;
@@ -28,6 +33,8 @@ pub use room_tags::PlanRoomTag;
 pub use stairs::PlanStairItem;
 mod grids;
 mod overlap;
+mod wall_joins;
+pub use wall_joins::PlanWallContact;
 mod provider_lines;
 mod section_fills;
 mod section_hatches;
@@ -76,9 +83,17 @@ pub struct PlanContext {
     /// Absolute heights, not level-relative offsets.
     pub range: PlanRange,
     pub crop: Option<PlanCrop>,
+    pub annotation_crop: Option<PlanCrop>,
     pub scale_denominator: f64,
     pub show_walls: bool,
     pub show_extensions: bool,
+}
+
+impl PlanContext {
+    /// Legacy and non-Plan views retain their original clipping exactly.
+    pub fn annotation_bounds(self) -> Option<PlanCrop> {
+        self.annotation_crop.or(self.crop)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -105,12 +120,14 @@ pub struct PlanStroke {
 pub struct PlanElementAppearance {
     pub cut: Option<PlanStroke>,
     pub projected: Option<PlanStroke>,
+    pub overhead: Option<PlanStroke>,
 }
 impl PlanElementAppearance {
     pub fn for_role(self, role: PlanRole) -> Option<PlanStroke> {
         match role {
             PlanRole::Cut => self.cut,
             PlanRole::Projected => self.projected,
+            PlanRole::Overhead => self.overhead,
             PlanRole::Depth => self.projected,
         }
     }
@@ -259,6 +276,7 @@ impl PlanDimensionItem {
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlanFloorItem {
     pub entity: Id,
+    pub role: PlanRole,
     pub boundary: Vec<Point2>,
     pub holes: Vec<Vec<Point2>>,
     /// Boundary followed by each opening loop, matching triangle indices.
@@ -283,6 +301,28 @@ impl PlanFloorItem {
                 .iter()
                 .any(|hole| ring_contains_point(hole, point))
     }
+
+    pub fn boundary_contains(&self, point: Point2) -> bool {
+        std::iter::once(&self.boundary)
+            .chain(self.holes.iter())
+            .any(|ring| {
+                ring.iter()
+                    .copied()
+                    .zip(ring.iter().copied().cycle().skip(1))
+                    .take(ring.len())
+                    .any(|(a, b)| point_on_segment(point, a, b, 1e-9))
+            })
+    }
+}
+
+fn point_on_segment(point: Point2, a: Point2, b: Point2, tolerance: f64) -> bool {
+    let cross = (b.x - a.x) * (point.y - a.y) - (b.y - a.y) * (point.x - a.x);
+    let scale = (b.x - a.x).abs().max((b.y - a.y).abs()).max(1.0);
+    cross.abs() <= tolerance * scale
+        && point.x >= a.x.min(b.x) - tolerance
+        && point.x <= a.x.max(b.x) + tolerance
+        && point.y >= a.y.min(b.y) - tolerance
+        && point.y <= a.y.max(b.y) + tolerance
 }
 
 fn ring_contains_point(ring: &[Point2], point: Point2) -> bool {
@@ -348,6 +388,8 @@ impl PlanRoomItem {
 /// Bounded initial polygon IR. Drawing adapters can consume the same ordered list
 /// as picking; screen/output adapters and curves/text/styles are later D/E work.
 pub struct PlanDrawing {
+    callouts: Vec<PlanCalloutGraphic>,
+    text_notes: Vec<NoteGraphic>,
     section_strokes: bool,
     material_colors: BTreeMap<Id, [u8; 3]>,
     line_surfaces: BTreeMap<(Id, u32), os_geometry::SurfaceIdentity>,
@@ -502,6 +544,15 @@ impl PlanDrawing {
         if let Some(crop) = context.crop {
             crop.validate()?;
         }
+        if let Some(annotation) = context.annotation_crop {
+            annotation.validate()?;
+            ensure(
+                context.crop.is_some_and(|c| {
+                    point_in_crop(annotation, c.min) && point_in_crop(annotation, c.max)
+                }),
+                "annotation crop must contain a finite model crop",
+            )?;
+        }
         unavailable.sort();
         ensure(
             unavailable
@@ -530,7 +581,8 @@ impl PlanDrawing {
                 match item.footprint.role {
                     PlanRole::Depth => 0,
                     PlanRole::Projected => 1,
-                    PlanRole::Cut => 2,
+                    PlanRole::Overhead => 2,
+                    PlanRole::Cut => 3,
                 },
                 item.entity,
             )
@@ -555,6 +607,8 @@ impl PlanDrawing {
             rooms: Vec::new(),
             section_strokes: false,
             room_tags: Vec::new(),
+            callouts: Vec::new(),
+            text_notes: Vec::new(),
             opening_tags: Vec::new(),
             detail_lines: Vec::new(),
             detail_segments: Vec::new(),
@@ -581,7 +635,7 @@ impl PlanDrawing {
             appearances: BTreeMap::new(),
         })
     }
-    /// Hide only the portion of an explicitly joined end face left after crop.
+    /// Clean legacy roof and curved-wall seams without changing pick geometry.
     pub fn without_wall_seams(
         mut self,
         seams: &BTreeMap<Id, Vec<(Point2, Point2)>>,
@@ -628,6 +682,7 @@ impl PlanDrawing {
         segments.extend_from_slice(&self.separator_segments);
         self.snaps = Some(
             crate::snapping::SnapScene::new(self.context, segments)?
+                .with_annotation_entities(self.detail_lines.iter().map(|l| l.entity).collect())
                 .with_grid_entities(self.grids.iter().map(|g| g.entity).collect())?,
         );
         Ok(self)
@@ -717,7 +772,8 @@ impl PlanDrawing {
             };
             ensure(
                 appearance.cut.is_none_or(valid_stroke)
-                    && appearance.projected.is_none_or(valid_stroke),
+                    && appearance.projected.is_none_or(valid_stroke)
+                    && appearance.overhead.is_none_or(valid_stroke),
                 "invalid plan appearance weight",
             )?;
             let cut_exists = self
@@ -731,31 +787,63 @@ impl PlanDrawing {
                         .lines
                         .iter()
                         .any(|line| line.entity == *entity && line.role == PlanRole::Cut));
-            let projected_exists = self
+            let projected_items_exist = self
                 .items
                 .iter()
                 .chain(self.columns.iter())
                 .chain(self.casework.iter())
-                .any(|item| item.entity == *entity && item.footprint.role != PlanRole::Cut)
-                || (self.native_line_ids.contains(entity)
-                    && self
-                        .lines
-                        .iter()
-                        .any(|line| line.entity == *entity && line.role != PlanRole::Cut))
+                .any(|item| {
+                    item.entity == *entity
+                        && matches!(item.footprint.role, PlanRole::Projected | PlanRole::Depth)
+                });
+            let projected_lines_exist = self.native_line_ids.contains(entity)
+                && self.lines.iter().any(|line| {
+                    line.entity == *entity
+                        && matches!(line.role, PlanRole::Projected | PlanRole::Depth)
+                });
+            let projected_exists = projected_items_exist
+                || projected_lines_exist
                 || self.rooms.iter().any(|room| room.entity == *entity)
                 || self
                     .room_separation_lines
                     .iter()
                     .any(|line| line.entity == *entity)
-                || self.floors.iter().any(|floor| floor.entity == *entity)
+                || self
+                    .floors
+                    .iter()
+                    .any(|floor| floor.entity == *entity && floor.role != PlanRole::Overhead)
                 || self
                     .ceilings
                     .iter()
-                    .any(|ceiling| ceiling.entity == *entity);
+                    .any(|ceiling| ceiling.entity == *entity && ceiling.role != PlanRole::Overhead);
+            let overhead_items_exist = self
+                .items
+                .iter()
+                .chain(self.columns.iter())
+                .chain(self.casework.iter())
+                .any(|item| item.entity == *entity && item.footprint.role == PlanRole::Overhead);
+            let overhead_lines_exist = self.native_line_ids.contains(entity)
+                && self
+                    .lines
+                    .iter()
+                    .any(|line| line.entity == *entity && line.role == PlanRole::Overhead);
+            let overhead_exists = overhead_items_exist
+                || overhead_lines_exist
+                || self
+                    .floors
+                    .iter()
+                    .any(|floor| floor.entity == *entity && floor.role == PlanRole::Overhead)
+                || self
+                    .ceilings
+                    .iter()
+                    .any(|ceiling| ceiling.entity == *entity && ceiling.role == PlanRole::Overhead);
             ensure(
                 (appearance.cut.is_none() || cut_exists)
                     && (appearance.projected.is_none() || projected_exists)
-                    && (appearance.cut.is_some() || appearance.projected.is_some()),
+                    && (appearance.overhead.is_none() || overhead_exists)
+                    && (appearance.cut.is_some()
+                        || appearance.projected.is_some()
+                        || appearance.overhead.is_some()),
                 "plan appearance references missing native geometry",
             )?;
         }
@@ -769,11 +857,34 @@ impl PlanDrawing {
         role: PlanRole,
     ) -> Result<Option<PlanStroke>> {
         self.items(current)?;
-        Ok(self
+        let configured = self
             .appearances
             .get(&entity)
             .copied()
-            .and_then(|a| a.for_role(role)))
+            .and_then(|a| a.for_role(role));
+        if configured.is_some() || role != PlanRole::Overhead {
+            return Ok(configured);
+        }
+        let has_overhead = self
+            .items
+            .iter()
+            .chain(self.columns.iter())
+            .chain(self.casework.iter())
+            .any(|item| item.entity == entity && item.footprint.role == PlanRole::Overhead)
+            || self
+                .lines
+                .iter()
+                .any(|line| line.entity == entity && line.role == PlanRole::Overhead)
+            || self
+                .floors
+                .iter()
+                .chain(self.ceilings.iter())
+                .any(|floor| floor.entity == entity && floor.role == PlanRole::Overhead);
+        Ok(has_overhead.then_some(PlanStroke {
+            color: [88, 88, 88],
+            weight_mm: 0.18,
+            dashed: true,
+        }))
     }
     /// Native sections resolve per-component material and fixed paper weights.
     /// This does not opt sections into plan-only graphics templates.
@@ -1342,7 +1453,9 @@ impl PlanDrawing {
             .iter()
             .rev()
             .find(|floor| {
-                current.crop.is_none_or(|crop| point_in_crop(crop, point)) && floor.contains(point)
+                floor.role != PlanRole::Overhead
+                    && current.crop.is_none_or(|crop| point_in_crop(crop, point))
+                    && floor.contains(point)
             })
             .map(|floor| floor.entity))
     }
@@ -1353,7 +1466,8 @@ impl PlanDrawing {
             .iter()
             .rev()
             .find(|ceiling| {
-                current.crop.is_none_or(|crop| point_in_crop(crop, point))
+                ceiling.role != PlanRole::Overhead
+                    && current.crop.is_none_or(|crop| point_in_crop(crop, point))
                     && ceiling.contains(point)
             })
             .map(|ceiling| ceiling.entity))
@@ -1388,6 +1502,13 @@ impl PlanDrawing {
             "invalid dimension pick query",
         )?;
         let dimensions = self.dimensions(current)?;
+        if current.annotation_crop.is_some() {
+            return self.annotation_hits(current, camera, viewport, pointer, radius_pixels, |id| {
+                dimensions.iter().any(|d| d.entity == id)
+                    || self.angular_dimensions.iter().any(|d| d.entity == id)
+                    || self.arc_length_dimensions.iter().any(|d| d.entity == id)
+            });
+        }
         let mut hits = Vec::new();
         if let Some(crop) = current.crop
             && !point_in_crop(crop, camera.unproject(pointer, viewport)?)
@@ -1465,7 +1586,9 @@ impl PlanDrawing {
             .items(current)?
             .iter()
             .rev()
-            .find(|item| item.footprint.contains(point))
+            .find(|item| {
+                item.footprint.role != PlanRole::Overhead && item.footprint.contains(point)
+            })
             .map(|item| item.entity)
             .or(self.pick_ceiling(current, point)?))
     }

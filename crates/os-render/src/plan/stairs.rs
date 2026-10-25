@@ -179,7 +179,7 @@ impl PlanStairItem {
             } else {
                 let cut_far = visible_far.min(at_elevation(context.range.cut));
                 add_region(near, cut_far, PlanRole::Cut)?;
-                add_region(cut_far.max(near), visible_far, PlanRole::Projected)?;
+                add_region(cut_far.max(near), visible_far, PlanRole::Overhead)?;
             }
         }
         if let Some((visible_start, visible_end)) = visible_extent {
@@ -374,7 +374,9 @@ impl PlanDrawing {
                         end,
                         ..line.clone()
                     });
-                    self.line_segments.push(raw);
+                    if line.role != PlanRole::Overhead {
+                        self.line_segments.push(raw);
+                    }
                 }
             }
             self.native_line_ids.insert(stair.entity);
@@ -385,7 +387,8 @@ impl PlanDrawing {
                 match item.footprint.role {
                     PlanRole::Depth => 0,
                     PlanRole::Projected => 1,
-                    PlanRole::Cut => 2,
+                    PlanRole::Overhead => 2,
+                    PlanRole::Cut => 3,
                 },
                 item.entity,
             )
@@ -395,7 +398,8 @@ impl PlanDrawing {
                 match line.role {
                     PlanRole::Depth => 0,
                     PlanRole::Projected => 1,
-                    PlanRole::Cut => 2,
+                    PlanRole::Overhead => 2,
+                    PlanRole::Cut => 3,
                 },
                 line.entity,
                 line.feature,
@@ -429,6 +433,7 @@ mod tests {
 
     fn context() -> PlanContext {
         PlanContext {
+            annotation_crop: None,
             session_id: Id::new(),
             model_revision: 1,
             view_id: Id::new(),
@@ -472,7 +477,7 @@ mod tests {
         assert_eq!(stair.footprints.len(), 5);
         assert_eq!(stair.footprints[0].role, PlanRole::Projected);
         assert_eq!(stair.footprints[2].role, PlanRole::Cut);
-        assert_eq!(stair.footprints[3].role, PlanRole::Projected);
+        assert_eq!(stair.footprints[3].role, PlanRole::Overhead);
         assert!((stair.footprints[2].vertices()[2].x - 2.8).abs() < 1e-9);
         assert_eq!(stair.footprint_corners.unwrap()[0], Point2::new(0.0, 0.5));
         assert_eq!(stair.ascent_direction, Some(Point2::new(1.0, 0.0)));

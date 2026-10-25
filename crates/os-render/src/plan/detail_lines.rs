@@ -10,7 +10,7 @@ pub fn clip_detail_line(
     start: Point2,
     end: Point2,
 ) -> Result<Option<(Point2, Point2)>> {
-    grids::clip(start, end, context.crop)
+    grids::clip(start, end, context.annotation_bounds())
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -60,7 +60,9 @@ impl PlanDrawing {
                 start: line.start,
                 end: line.end,
             };
-            if let Some((a, b)) = grids::clip(line.start, line.end, self.context.crop)? {
+            if let Some((a, b)) =
+                grids::clip(line.start, line.end, self.context.annotation_bounds())?
+            {
                 line.start = a;
                 line.end = b;
                 self.detail_lines.push(line);
@@ -90,7 +92,10 @@ impl PlanDrawing {
             "invalid detail line pick",
         )?;
         let plane = camera.unproject(pointer, viewport)?;
-        if current.crop.is_some_and(|crop| !point_in_crop(crop, plane)) {
+        if current
+            .annotation_bounds()
+            .is_some_and(|crop| !point_in_crop(crop, plane))
+        {
             return Ok(None);
         }
         for line in self.detail_lines(current)?.iter().rev() {

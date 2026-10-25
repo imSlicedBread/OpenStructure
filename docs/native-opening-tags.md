@@ -50,7 +50,7 @@ to `Full`, rejects an ambiguous preexisting preset, advances native entity
 headers and validates atomically. Tests cover frozen schema-40 migration,
 ambiguity, malformed input, and non-default preset save/reopen. The tag
 introduction used API 12 / schema 31; current native full-model plugins use API
-24 / schema 43. Generic plugin API 2 and container 2 are unchanged. See
+55 / schema 74. Generic plugin API 2 and container 2 are unchanged. See
 [file format](file-format.md) and [plugin API](plugin-api.md).
 
 ## Evidence and limitations

@@ -54,6 +54,32 @@ impl PlanRange {
     }
 }
 
+/// Classify a checked vertical interval against a downward plan range. Geometry
+/// above the cut plane but below the top clip is retained as overhead rather
+/// than silently dropped. The input heights are absolute project elevations.
+pub fn vertical_span_role(base: f64, top: f64, range: PlanRange) -> Result<Option<PlanRole>> {
+    range.validate()?;
+    ensure(
+        base.is_finite() && top.is_finite() && top > base,
+        "invalid plan vertical span",
+    )?;
+    if top <= range.depth + PLAN_TOLERANCE || base >= range.top - PLAN_TOLERANCE {
+        return Ok(None);
+    }
+    let role = if base <= range.cut + PLAN_TOLERANCE && top > range.cut + PLAN_TOLERANCE {
+        Some(PlanRole::Cut)
+    } else if base > range.cut + PLAN_TOLERANCE {
+        Some(PlanRole::Overhead)
+    } else if top <= range.cut + PLAN_TOLERANCE && top > range.bottom + PLAN_TOLERANCE {
+        Some(PlanRole::Projected)
+    } else if top <= range.bottom + PLAN_TOLERANCE && top > range.depth + PLAN_TOLERANCE {
+        Some(PlanRole::Depth)
+    } else {
+        None
+    };
+    Ok(role)
+}
+
 /// Right-handed horizontal plane: +X right, +Y up, +Z normal; yaw is radians.
 /// The XY origin is subtracted before rotation to retain large-coordinate detail.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -115,6 +141,8 @@ impl PlanCrop {
 pub enum PlanRole {
     Cut,
     Projected,
+    /// Geometry above the plan cut plane, shown with the overhead-line style.
+    Overhead,
     Depth,
 }
 
@@ -194,7 +222,7 @@ impl PlanFootprint {
 
 /// Derive a true horizontal cut or downward projection, never a camera screenshot.
 /// Range is absolute; use `at_level` for level-relative settings. Above-cut-only
-/// prisms are hidden in this initial wall policy (no overhead/symbolic inference).
+/// prisms below the top clip are explicit overhead footprints.
 pub fn rectangular_plan(
     solid: &Solid,
     range: PlanRange,
@@ -212,16 +240,7 @@ pub fn rectangular_plan(
     let base = solid.transform.translation.z;
     let top = base + solid.height;
     ensure(top.is_finite(), "plan prism height overflow")?;
-    if top <= range.depth + PLAN_TOLERANCE || base >= range.top - PLAN_TOLERANCE {
-        return Ok(None);
-    }
-    let role = if base <= range.cut + PLAN_TOLERANCE && top > range.cut + PLAN_TOLERANCE {
-        PlanRole::Cut
-    } else if top <= range.cut + PLAN_TOLERANCE && top > range.bottom + PLAN_TOLERANCE {
-        PlanRole::Projected
-    } else if top <= range.bottom + PLAN_TOLERANCE && top > range.depth + PLAN_TOLERANCE {
-        PlanRole::Depth
-    } else {
+    let Some(role) = vertical_span_role(base, top, range)? else {
         return Ok(None);
     };
     let mut vertices = mesh.vertices[..4]

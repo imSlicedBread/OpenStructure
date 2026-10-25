@@ -2,7 +2,7 @@
 use super::wall_set_move::Candidate;
 use os_core::{Error, Id, Point2, Result, ensure};
 use os_document::{Command, Document};
-use os_model::{Header, Model, WallJoinParams};
+use os_model::{Header, Model, WallEndpoint, WallJoinParams};
 use std::collections::{BTreeMap, BTreeSet};
 
 const MAX_DEPENDENTS: usize = 4096;
@@ -121,6 +121,21 @@ impl Identities {
         )
     }
 
+    pub(super) fn summary_repeated(&self, repeats: usize) -> String {
+        format!(
+            "{} walls, {} openings, {} joins, {} active-plan tags, {} clearance locks",
+            self.walls.len() * repeats,
+            self.openings.len() * repeats,
+            self.joins.len() * repeats,
+            self.tags.len() * repeats,
+            self.clearances * repeats,
+        )
+    }
+
+    pub(super) fn dependent_count(&self) -> usize {
+        self.openings.len() + self.joins.len() + self.tags.len() + self.clearances
+    }
+
     fn header(&self, header: &mut Header, id: Id) {
         header.id = id;
         for target in header.relationships.values_mut().flatten() {
@@ -141,7 +156,31 @@ impl Identities {
             delta.x != 0.0 || delta.y != 0.0,
             "Copy walls requires a nonzero displacement",
         )?;
-        self.build_candidate(original, delta, None)
+        check_point(delta)?;
+        self.build_candidate(
+            original,
+            |p| Point2::new(p.x + delta.x, p.y + delta.y),
+            None,
+        )
+    }
+
+    pub(super) fn candidate_rotated(
+        &self,
+        original: &Model,
+        pivot: Point2,
+        degrees: f64,
+    ) -> Result<Candidate> {
+        check_point(pivot)?;
+        ensure(degrees.is_finite(), "Array angle must be finite")?;
+        let (sin, cos) = degrees.to_radians().sin_cos();
+        self.build_candidate(
+            original,
+            |p| {
+                let (x, y) = (p.x - pivot.x, p.y - pivot.y);
+                Point2::new(pivot.x + cos * x - sin * y, pivot.y + sin * x + cos * y)
+            },
+            None,
+        )
     }
 
     pub(super) fn candidate_on_level(&self, original: &Model, level: Id) -> Result<Candidate> {
@@ -153,16 +192,15 @@ impl Identities {
             original.levels.contains_key(&level),
             "Copy destination level is missing",
         )?;
-        self.build_candidate(original, Point2::default(), Some(level))
+        self.build_candidate(original, |p| p, Some(level))
     }
 
     fn build_candidate(
         &self,
         original: &Model,
-        delta: Point2,
+        transform: impl Fn(Point2) -> Point2,
         level: Option<Id>,
     ) -> Result<Candidate> {
-        check_point(delta)?;
         let remap_header = |header: &mut Header, id: Id| {
             self.header(header, id);
             if let Some(destination) = level {
@@ -177,7 +215,7 @@ impl Identities {
             }
         };
         let shift = |point: Point2| -> Result<Point2> {
-            let point = Point2::new(point.x + delta.x, point.y + delta.y);
+            let point = transform(point);
             check_point(point)?;
             Ok(point)
         };
@@ -208,6 +246,39 @@ impl Identities {
                 });
             }
             copy_lifecycle(original, source, id, &mut commands);
+        }
+        // As in rigid assembly transforms, derive Tee contacts from the transformed
+        // host's stored station; independent endpoint arithmetic can differ by a bit.
+        let mut translated: BTreeMap<_, _> = commands
+            .iter()
+            .filter_map(|command| {
+                if let Command::AddWall(wall) = command {
+                    Some((wall.id(), wall.parameters.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for source in self.joins.keys() {
+            if let WallJoinParams::Tee {
+                host,
+                branch,
+                station,
+                ..
+            } = original.wall_joins[source].parameters
+            {
+                let contact = translated[&self.walls[&host]].path.point(station);
+                let wall = translated.get_mut(&self.walls[&branch.wall]).unwrap();
+                match branch.endpoint {
+                    WallEndpoint::Start => *wall.path.straight_start_mut()? = contact,
+                    WallEndpoint::End => *wall.path.straight_end_mut()? = contact,
+                }
+            }
+        }
+        for command in &mut commands {
+            if let Command::AddWall(wall) = command {
+                wall.parameters = translated[&wall.id()].clone();
+            }
         }
         for (&source, &id) in &self.openings {
             let mut opening = original
@@ -308,7 +379,7 @@ fn check_point(point: Point2) -> Result<()> {
     )
 }
 
-fn validate_rooms(original: &Model, candidate: &Model) -> Result<()> {
+pub(super) fn validate_rooms(original: &Model, candidate: &Model) -> Result<()> {
     ensure(
         original.rooms == candidate.rooms
             && original.room_tags == candidate.room_tags
@@ -445,7 +516,7 @@ fn overlaps(a: &Footprint, b: &Footprint) -> bool {
     true
 }
 
-fn validate_collisions(model: &Model, copied: &BTreeSet<Id>) -> Result<()> {
+pub(super) fn validate_collisions(model: &Model, copied: &BTreeSet<Id>) -> Result<()> {
     let mut cells = BTreeMap::new();
     let mut total = 0;
     for &id in model.walls.keys() {

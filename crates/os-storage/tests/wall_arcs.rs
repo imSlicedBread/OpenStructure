@@ -15,6 +15,14 @@ fn frozen_53_migration_preserves_every_value_and_roundtrips_straights_and_arcs()
     migrate(&mut value, 53).unwrap();
     let mut reverse = value.clone();
     common::reverse_wall_paths(&mut reverse);
+    reverse
+        .as_object_mut()
+        .unwrap()
+        .remove("plan_element_graphics_overrides");
+    reverse
+        .as_object_mut()
+        .unwrap()
+        .remove("plan_graphics_rules");
     reverse["schema_version"] = 53.into();
     for (key, data) in reverse.as_object_mut().unwrap() {
         if key == "project" {

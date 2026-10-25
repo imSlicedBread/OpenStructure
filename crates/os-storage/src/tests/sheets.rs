@@ -91,6 +91,16 @@ fn sheets_schema_thirteen_migration_preserves_native_data_through_schema_ninetee
     expected["casework_types"] = json!({});
     expected["casework"] = json!({});
     expected["material_patterns"] = json!({});
+    expected["sheet_sets"] = json!({});
+    expected["drawing_issues"] = json!({});
+    expected["plan_callouts"] = json!({});
+    expected["section_callouts"] = json!({});
+    expected["text_notes"] = json!({});
+    expected["plan_hidden_openings"] = json!({});
+    expected["plan_element_graphics_overrides"] = json!({});
+    expected["plan_graphics_rules"] = json!({});
+    expected["group_definitions"] = json!({});
+    expected["group_instances"] = json!({});
     expected["phases"] = value["phases"].clone();
     expected["element_lifecycles"] = value["element_lifecycles"].clone();
     apply_schema_38_plan_settings(&mut expected);
@@ -174,11 +184,12 @@ fn sheets_real_archive_migration_and_save_reopen_preserve_centers_ids_and_metada
     view_parameters.plan.as_mut().unwrap().basis.rotation = 0.7;
     view_parameters.plan.as_mut().unwrap().basis.origin = Point2::new(12.0, 19.0);
     let mut params = SheetParams::new("A101", "Ground plan sheet");
-    for (scale, center, title) in [
-        (50.0, Point2::new(30.0, -17.0), Some("Detail".into())),
-        (100.0, Point2::new(-7.0, 12.0), None),
+    for (detail_number, scale, center, title) in [
+        ("1", 50.0, Point2::new(30.0, -17.0), Some("Detail".into())),
+        ("2", 100.0, Point2::new(-7.0, 12.0), None),
     ] {
         params.viewports.push(SheetViewport {
+            detail_number: detail_number.into(),
             id: Id::new(),
             view,
             model_center_m: center,

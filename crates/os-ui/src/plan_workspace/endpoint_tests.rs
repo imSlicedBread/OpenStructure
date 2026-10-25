@@ -8,10 +8,16 @@ mod arc_tests;
 mod crop_tests;
 #[path = "face_tests.rs"]
 mod face_tests;
+#[path = "groups_tests.rs"]
+mod groups_tests;
 #[path = "junction_tests.rs"]
 mod junction_tests;
 #[path = "split_tests.rs"]
 mod split_tests;
+#[path = "wall_assembly_array_tests.rs"]
+mod wall_assembly_array_tests;
+#[path = "wall_assembly_transform_tests.rs"]
+mod wall_assembly_transform_tests;
 #[path = "wall_set_copy_tests.rs"]
 mod wall_set_copy_tests;
 #[path = "wall_set_move_tests.rs"]
@@ -2562,6 +2568,7 @@ fn room_boundaries_and_placement_obey_view_crop_without_changing_area() {
         None
     );
     let context = PlanContext {
+        annotation_crop: None,
         session_id: Id::new(),
         model_revision: 0,
         view_id: Id::new(),
@@ -2591,6 +2598,7 @@ fn annotation_label_and_marker_bounds_stay_inside_the_plan_crop() {
         max: Point2::new(1.0, 1.0),
     };
     let context = PlanContext {
+        annotation_crop: None,
         session_id: Id::new(),
         model_revision: 0,
         view_id: Id::new(),

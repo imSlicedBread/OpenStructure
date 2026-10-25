@@ -270,6 +270,14 @@ impl WallGesture {
     ) -> Result<Self> {
         let original = editor.document.model().resolve_wall(id)?.parameters;
         ensure(
+            editor
+                .document
+                .model()
+                .group_instance_for_member(id)
+                .is_none(),
+            "Grouped walls are locked; use Duplicate group or Ungroup",
+        )?;
+        ensure(
             !installed
                 || !editor
                     .document

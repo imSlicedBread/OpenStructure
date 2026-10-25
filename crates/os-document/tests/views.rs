@@ -1,9 +1,11 @@
 use os_core::{Id, Point2};
-use os_document::{Command, Document};
+use os_document::{Command, Document, PlanDuplicateMode};
 use os_model::{
-    PlanGraphicsBinding, PlanGraphicsStyles, PlanGraphicsTemplate, PlanGraphicsTemplateParams,
-    PlanViewCrop, View, ViewKind, ViewParams,
+    PlanElementGraphicsOverride, PlanGraphicsBinding, PlanGraphicsStyles, PlanGraphicsTemplate,
+    PlanGraphicsTemplateParams, PlanLinePattern, PlanStrokeStyle, PlanViewCrop, View, ViewKind,
+    ViewParams, Wall, WallParams, WallPath,
 };
+use std::collections::BTreeMap;
 
 fn plan(document: &Document) -> View {
     View::new(
@@ -334,4 +336,139 @@ fn graphics_template_link_guard_and_removal_are_atomic_and_undoable() {
     );
     assert!(document.undo());
     assert_eq!(document.model(), &linked);
+}
+
+#[test]
+fn element_graphics_overrides_are_view_specific_undoable_and_cleaned_on_delete() {
+    let mut document = Document::new("Element graphics").unwrap();
+    let first = plan(&document);
+    let first_id = first.id();
+    let second = plan(&document);
+    let second_id = second.id();
+    let level = first.parameters.level.unwrap();
+    let wall = Wall::new(
+        "org.openstructure.walls.wall",
+        WallParams {
+            name: "Override wall".into(),
+            path: WallPath::Straight {
+                start: Point2::new(0.0, 0.0),
+                end: Point2::new(5.0, 0.0),
+            },
+            thickness: 0.2,
+            height: 3.0,
+            level,
+            material: None,
+        },
+    );
+    let wall_id = wall.id();
+    document
+        .execute(
+            "Create plans and wall",
+            vec![
+                Command::AddView(first),
+                Command::AddView(second),
+                Command::AddWall(wall),
+            ],
+        )
+        .unwrap();
+
+    let override_style = PlanElementGraphicsOverride {
+        cut: Some(PlanStrokeStyle {
+            color: [190, 20, 40],
+            weight_mm: 0.8,
+            pattern: PlanLinePattern::Dashed,
+        }),
+        projected: None,
+    };
+    document
+        .execute(
+            "Override one wall in one view",
+            vec![Command::SetPlanElementGraphicsOverrides {
+                view: first_id,
+                overrides: BTreeMap::from([(wall_id, override_style)]),
+            }],
+        )
+        .unwrap();
+    assert_eq!(
+        document.model().plan_element_graphics_overrides[&first_id][&wall_id],
+        override_style
+    );
+    assert!(
+        !document
+            .model()
+            .plan_element_graphics_overrides
+            .contains_key(&second_id)
+    );
+    assert!(document.model().plan_graphics.is_empty());
+    let committed = document.model().clone();
+    assert!(document.undo());
+    assert!(
+        !document
+            .model()
+            .plan_element_graphics_overrides
+            .contains_key(&first_id)
+    );
+    assert!(document.redo());
+    assert_eq!(document.model(), &committed);
+
+    let duplicate = document
+        .prepare_plan_duplicate(first_id, "Override copy".into(), PlanDuplicateMode::Plain)
+        .unwrap();
+    let duplicate_id = duplicate.target();
+    document.apply_plan_duplicate(duplicate).unwrap();
+    assert_eq!(
+        document.model().plan_element_graphics_overrides[&duplicate_id][&wall_id],
+        override_style,
+        "view duplication copies the assignments while sharing model element IDs"
+    );
+    assert!(document.undo());
+    assert!(!document.model().views.contains_key(&duplicate_id));
+    assert!(document.redo());
+
+    let before_invalid = document.model().clone();
+    let history = document.history_stats();
+    assert!(
+        document
+            .execute(
+                "Reject dangling override",
+                vec![Command::SetPlanElementGraphicsOverrides {
+                    view: first_id,
+                    overrides: BTreeMap::from([(
+                        os_core::Id::new(),
+                        PlanElementGraphicsOverride {
+                            cut: None,
+                            projected: Some(PlanStrokeStyle {
+                                color: [0, 0, 0],
+                                weight_mm: 0.18,
+                                pattern: PlanLinePattern::Solid,
+                            }),
+                        },
+                    )]),
+                }],
+            )
+            .is_err()
+    );
+    assert_eq!(document.model(), &before_invalid);
+    assert_eq!(document.history_stats(), history);
+
+    document
+        .execute("Delete override target", vec![Command::RemoveWall(wall_id)])
+        .unwrap();
+    assert!(
+        !document
+            .model()
+            .plan_element_graphics_overrides
+            .contains_key(&first_id)
+    );
+    assert!(
+        !document
+            .model()
+            .plan_element_graphics_overrides
+            .contains_key(&duplicate_id)
+    );
+    assert!(document.undo());
+    assert_eq!(
+        document.model().plan_element_graphics_overrides[&first_id][&wall_id],
+        override_style
+    );
 }

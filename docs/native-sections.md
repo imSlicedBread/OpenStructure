@@ -1,7 +1,7 @@
 # Native linked building sections
 
 Schema 68 introduced `SectionViewSettings` version 2 for linked vertical
-section views; current model schema is 70 / native Model API 51. The plan-space `start`→`end` line defines positive
+section views; current model schema is 74 / native Model API 55. The plan-space `start`→`end` line defines positive
 station; its viewer side selects the looking direction without reversing that
 axis. Bottom/top are absolute project elevations. A section also stores
 `CutOnly` or `CutAndProjection`, finite far depth, an independent station crop

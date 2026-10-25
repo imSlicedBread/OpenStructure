@@ -21,6 +21,7 @@ fn fixture() -> (Document, Id, [Id; 2], [Id; 2]) {
     let driver = LengthParameter::new(
         "core.length_parameter",
         LengthParameterParams {
+            formula: None,
             name: "Shared size".into(),
             unit: LengthUnit::Metres,
             value: 1.,
@@ -96,6 +97,153 @@ fn edit(doc: &Document, id: Id, value: f64) -> Command {
     let mut parameters = doc.model().length_parameters[&id].parameters.clone();
     parameters.value = value;
     Command::UpdateLengthParameter { id, parameters }
+}
+
+#[test]
+fn formula_shared_extrusions_preview_pins_freeze_cycles_and_history() {
+    let (mut doc, pid, types, ids) = fixture();
+    let scalar = LengthParameter::new(
+        "core.length_parameter",
+        LengthParameterParams {
+            name: "Multiplier".into(),
+            unit: LengthUnit::Scalar,
+            value: 2.,
+            formula: None,
+        },
+    );
+    let sid = scalar.id();
+    let depth = LengthParameter::new(
+        "core.length_parameter",
+        LengthParameterParams {
+            name: "Depth".into(),
+            unit: LengthUnit::Metres,
+            value: 0.02,
+            formula: Some(format!("0.01m * @{{{sid}}}")),
+        },
+    );
+    let did = depth.id();
+    let mut commands = vec![
+        Command::AddLengthParameter(scalar),
+        Command::AddLengthParameter(depth),
+    ];
+    for id in types {
+        let mut parameters = doc.model().opening_types[&id].parameters.clone();
+        let mut solid = OpeningExtrusion::new("Driven handle");
+        solid.bindings = OpeningExtrusionBindings {
+            depth: Some(did),
+            x: Some(did),
+            y: Some(did),
+            normal_offset: Some(did),
+        };
+        parameters.family.extrusions.push(solid);
+        commands.push(Command::UpdateOpeningType { id, parameters });
+    }
+    let mut pinned = doc.model().openings[&ids[0]].parameters.clone();
+    pinned.width_override = Some(1.1);
+    commands.push(Command::UpdateOpening {
+        id: ids[0],
+        parameters: pinned.clone(),
+    });
+    doc.execute("Bind formulas", commands).unwrap();
+    let before = doc.model().clone();
+    let history = doc.history_stats();
+    let commands = vec![edit(&doc, sid, 4.), edit(&doc, pid, 1.2)];
+    let preview = doc.preview_commands(commands.clone()).unwrap();
+    assert_eq!(doc.model(), &before);
+    assert_eq!(doc.history_stats(), history);
+    for id in types {
+        let s = &preview
+            .resolve_opening_type(id)
+            .unwrap()
+            .parameters
+            .family
+            .extrusions[0];
+        assert_eq!(
+            (s.depth, s.position.x, s.position.y, s.normal_offset),
+            (0.04, 0.04, 0.04, 0.04)
+        );
+    }
+    assert_eq!(preview.openings[&ids[0]].parameters, pinned);
+    doc.execute("Shared change", commands).unwrap();
+    assert_eq!(doc.model(), &preview);
+    assert_eq!(doc.history_stats().undo_entries, history.undo_entries + 1);
+    doc.undo();
+    assert_eq!(doc.model(), &before);
+    doc.redo();
+    assert_eq!(doc.model(), &preview);
+    let mut p = doc.model().length_parameters[&sid].parameters.clone();
+    p.formula = Some(format!("@{{{did}}} / 1m"));
+    assert!(
+        doc.execute(
+            "Cycle",
+            vec![Command::UpdateLengthParameter {
+                id: sid,
+                parameters: p
+            }]
+        )
+        .is_err()
+    );
+    assert_eq!(doc.model(), &preview);
+    let history = doc.history_stats();
+    assert!(
+        doc.execute("Excessive extrusion depth", vec![edit(&doc, sid, 100.)])
+            .is_err()
+    );
+    assert!(
+        doc.execute(
+            "Wrong dimension",
+            vec![Command::SetOpeningTypeLengthBindings {
+                id: types[0],
+                bindings: OpeningTypeLengthBindings {
+                    width: Some(sid),
+                    ..Default::default()
+                }
+            }]
+        )
+        .is_err()
+    );
+    assert_eq!(doc.model(), &preview);
+    assert_eq!(doc.history_stats(), history);
+    let mut p = doc.model().opening_types[&types[0]].parameters.clone();
+    p.family.extrusions[0].bindings = Default::default();
+    doc.execute(
+        "Unbind",
+        vec![Command::UpdateOpeningType {
+            id: types[0],
+            parameters: p,
+        }],
+    )
+    .unwrap();
+    assert_eq!(
+        doc.model().opening_types[&types[0]]
+            .parameters
+            .family
+            .extrusions[0]
+            .depth,
+        0.04
+    );
+    doc.execute("Change driver", vec![edit(&doc, sid, 3.)])
+        .unwrap();
+    assert_eq!(
+        doc.model()
+            .resolve_opening_type(types[0])
+            .unwrap()
+            .parameters
+            .family
+            .extrusions[0]
+            .depth,
+        0.04
+    );
+    assert_eq!(
+        doc.model()
+            .resolve_opening_type(types[1])
+            .unwrap()
+            .parameters
+            .family
+            .extrusions[0]
+            .depth,
+        0.03
+    );
 }
 
 #[test]

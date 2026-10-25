@@ -3,13 +3,25 @@ use os_core::{Id, Point2, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub const SCHEMA_VERSION: u32 = 70;
+pub const SCHEMA_VERSION: u32 = 84;
+mod groups;
+pub use groups::*;
+mod drafting;
+pub use drafting::*;
+mod text_notes;
+pub use text_notes::*;
+mod section_callouts;
+pub use section_callouts::*;
+mod callouts;
+pub use callouts::*;
 mod material_patterns;
 pub use material_patterns::*;
 mod railings;
 pub use railings::*;
 mod curtain_systems;
 pub use curtain_systems::*;
+mod parameter_formulas;
+pub use parameter_formulas::*;
 mod opening_lengths;
 pub use opening_lengths::*;
 mod opening_clearances;
@@ -20,7 +32,12 @@ mod phases;
 pub use phases::*;
 mod opening_tags;
 pub use opening_tags::*;
+mod plan_element_graphics;
 mod plan_graphics;
+mod plan_graphics_rules;
+pub use plan_graphics_rules::*;
+mod plan_hidden_openings;
+pub use plan_element_graphics::*;
 pub use plan_graphics::*;
 mod columns;
 pub use columns::*;
@@ -34,6 +51,8 @@ mod detail_lines;
 pub use detail_lines::*;
 mod schedules;
 pub use schedules::*;
+mod drawing_issues;
+pub use drawing_issues::*;
 mod sheets;
 pub use sheets::*;
 mod sections;
@@ -150,6 +169,8 @@ pub fn legacy_surface_color(id: Id) -> [u8; 3] {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ViewParams {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub drafting: Option<DraftingViewSettings>,
     pub name: String,
     pub kind: ViewKind,
     pub level: Option<Id>,
@@ -166,6 +187,19 @@ pub struct ViewParams {
     pub facade: Option<FacadeViewSettings>,
 }
 impl ViewParams {
+    pub fn drafting(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            kind: ViewKind::Drafting,
+            level: None,
+            settings_revision: 0,
+            plan: None,
+            section: None,
+            elevation: None,
+            facade: None,
+            drafting: Some(DraftingViewSettings::default()),
+        }
+    }
     pub fn reflected_ceiling_plan(name: impl Into<String>, level: Id) -> Self {
         Self {
             plan: Some(PlanSettings::reflected_ceiling()),
@@ -175,6 +209,7 @@ impl ViewParams {
 
     pub fn floor_plan(name: impl Into<String>, level: Id) -> Self {
         Self {
+            drafting: None,
             name: name.into(),
             kind: ViewKind::Plan,
             level: Some(level),
@@ -186,6 +221,30 @@ impl ViewParams {
         }
     }
     pub fn validate(&self) -> Result<()> {
+        if self.kind == ViewKind::Drafting {
+            ensure(
+                self.level.is_none()
+                    && self.plan.is_none()
+                    && self.section.is_none()
+                    && self.elevation.is_none()
+                    && self.facade.is_none(),
+                "Drafting view cannot have a level or model projection settings",
+            )?;
+            ensure(
+                !self.name.trim().is_empty()
+                    && self.name.len() <= 256
+                    && !self.name.chars().any(char::is_control),
+                "invalid drafting view name",
+            )?;
+            return self
+                .drafting
+                .ok_or_else(|| os_core::Error::Invalid("drafting settings missing".into()))?
+                .validate();
+        }
+        ensure(
+            self.drafting.is_none(),
+            "drafting settings require a Drafting view",
+        )?;
         if self.kind == ViewKind::Facade {
             ensure(
                 self.plan.is_none()
@@ -235,7 +294,7 @@ impl ViewParams {
                 "plan settings cannot be attached to a Section view".into(),
             )),
             (ViewKind::Perspective, None, None) => Ok(()),
-            (ViewKind::Elevation | ViewKind::Facade, _, _) => unreachable!(),
+            (ViewKind::Elevation | ViewKind::Facade | ViewKind::Drafting, _, _) => unreachable!(),
             (ViewKind::Perspective, _, _) => Err(os_core::Error::Invalid(
                 "model-view settings cannot be attached to a Perspective view".into(),
             )),
@@ -263,6 +322,7 @@ impl ViewParams {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ViewKind {
+    Drafting,
     Perspective,
     Plan,
     Section,
@@ -342,6 +402,11 @@ pub type View = Entity<ViewParams>;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Model {
+    pub group_definitions: BTreeMap<Id, GroupDefinition>,
+    pub group_instances: BTreeMap<Id, GroupInstance>,
+    pub text_notes: BTreeMap<Id, TextNote>,
+    pub section_callouts: BTreeMap<Id, SectionCallout>,
+    pub plan_callouts: BTreeMap<Id, PlanCallout>,
     pub schema_version: u32,
     pub project: Project,
     pub sites: BTreeMap<Id, Site>,
@@ -385,7 +450,17 @@ pub struct Model {
     pub views: BTreeMap<Id, View>,
     pub plan_graphics_templates: BTreeMap<Id, PlanGraphicsTemplate>,
     pub plan_graphics: BTreeMap<Id, PlanGraphicsBinding>,
+    #[serde(deserialize_with = "plan_element_graphics::deserialize")]
+    pub plan_element_graphics_overrides: BTreeMap<Id, BTreeMap<Id, PlanElementGraphicsOverride>>,
+    #[serde(deserialize_with = "plan_graphics_rules::deserialize")]
+    pub plan_graphics_rules: BTreeMap<Id, Vec<PlanGraphicsRule>>,
+    #[serde(deserialize_with = "plan_hidden_openings::deserialize")]
+    pub plan_hidden_openings: BTreeMap<Id, BTreeSet<Id>>,
     pub sheets: BTreeMap<Id, Sheet>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub sheet_sets: BTreeMap<Id, SheetSet>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub drawing_issues: BTreeMap<Id, DrawingIssue>,
     pub schedules: BTreeMap<Id, Schedule>,
     pub extensions: BTreeMap<Id, ExtensionEntity>,
     pub plugin_requirements: BTreeMap<String, PluginRequirement>,
@@ -419,6 +494,7 @@ impl Model {
         let view = View::new(
             "core.view",
             ViewParams {
+                drafting: None,
                 facade: None,
                 elevation: None,
                 name: "3D".into(),
@@ -433,6 +509,11 @@ impl Model {
         let new_construction_phase = new_phase("New Construction", 1);
         Self {
             schema_version: SCHEMA_VERSION,
+            group_definitions: BTreeMap::new(),
+            group_instances: BTreeMap::new(),
+            text_notes: BTreeMap::new(),
+            section_callouts: BTreeMap::new(),
+            plan_callouts: BTreeMap::new(),
             project,
             sites: BTreeMap::from([(site.id(), site)]),
             buildings: BTreeMap::from([(building.id(), building)]),
@@ -476,7 +557,12 @@ impl Model {
             views: BTreeMap::from([(view.id(), view)]),
             plan_graphics_templates: BTreeMap::new(),
             plan_graphics: BTreeMap::new(),
+            plan_element_graphics_overrides: BTreeMap::new(),
+            plan_graphics_rules: BTreeMap::new(),
+            plan_hidden_openings: BTreeMap::new(),
             sheets: BTreeMap::new(),
+            sheet_sets: BTreeMap::new(),
+            drawing_issues: BTreeMap::new(),
             schedules: BTreeMap::new(),
             extensions: BTreeMap::new(),
             plugin_requirements: BTreeMap::new(),
@@ -513,6 +599,8 @@ impl Model {
             };
         }
         check_map!(sites, "core.site");
+        check_map!(group_definitions, "core.group_definition");
+        check_map!(group_instances, "core.group_instance");
         check_map!(buildings, "core.building");
         check_map!(levels, "core.level");
         check_map!(columns, "core.column");
@@ -549,6 +637,8 @@ impl Model {
         room_separation_lines::validate(self)?;
         check_map!(room_tags, "core.room_tag");
         check_map!(opening_tags, "core.opening_tag");
+        check_map!(text_notes, "core.text_note");
+        text_notes::validate(self)?;
         check_map!(detail_lines, "core.detail_line");
         detail_lines::validate(self)?;
         check_map!(floors, "core.floor");
@@ -591,12 +681,20 @@ impl Model {
             pattern.parameters.validate()?;
         }
         check_map!(views, "core.view");
+        check_map!(section_callouts, "core.section_callout");
+        check_map!(plan_callouts, "core.plan_callout");
         check_map!(plan_graphics_templates, "core.plan_graphics_template");
         self.validate_plan_graphics()?;
+        self.validate_plan_element_graphics()?;
+        self.validate_plan_graphics_rules()?;
+        self.validate_plan_hidden_openings()?;
         check_map!(sheets, "core.sheet");
         check_map!(schedules, "core.schedule");
         schedules::validate(self)?;
         sheets::validate(self, &mut ids)?;
+        self.validate_section_callouts()?;
+        self.validate_callouts()?;
+        drawing_issues::validate(self, &mut ids)?;
         curtain_systems::validate(self, &mut ids)?;
         extensions::validate(self, &mut ids)?;
         for ty in self.wall_types.values() {
@@ -604,6 +702,7 @@ impl Model {
                 ensure(ids.insert(layer.id), "wall layer identity already in use")?;
             }
         }
+        self.validate_groups(&mut ids)?;
         for h in headers {
             for targets in h.relationships.values() {
                 for target in targets {

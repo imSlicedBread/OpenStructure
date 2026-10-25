@@ -476,12 +476,29 @@ impl DesktopApp {
             ui.label(format!("ID: {}", line.id()));
             return;
         }
+        if let Some(note) = self
+            .selected
+            .and_then(|id| self.editor.document.model().text_notes.get(&id))
+            .cloned()
+        {
+            ui.label("Text note · independent view annotation");
+            ui.label(&note.parameters.text);
+            ui.label(format!(
+                "{} mm text · {} mm wrapping width",
+                note.parameters.text_height_mm, note.parameters.width_mm
+            ));
+            if ui.button("Edit text note").clicked() {
+                self.begin_text_note(Some(note.id()));
+            }
+            ui.label(format!("ID: {}", note.id()));
+            return;
+        }
         if let Some(line) = self
             .selected
             .and_then(|id| self.editor.document.model().detail_lines.get(&id))
             .cloned()
         {
-            ui.label("Detail line · independent plan drafting");
+            ui.label("Detail line · independent view drafting");
             ui.label(format!(
                 "Length: {:.3} m",
                 line.parameters.start.distance(line.parameters.end)

@@ -739,9 +739,19 @@ fn build_import_plan(
     // Always copy shared Length dependencies to fresh project identities. Names
     // never imply identity or permission to overwrite an existing driver.
     commands.extend(additions.iter().cloned().map(Command::AddMaterial));
-    let mut length_remaps = std::collections::BTreeMap::new();
+    let length_remaps: std::collections::BTreeMap<_, _> = package
+        .length_parameters
+        .keys()
+        .map(|id| (*id, Id::new()))
+        .collect();
     for (source, snapshot) in &package.length_parameters {
         let mut p = snapshot.clone();
+        if let Some(formula) = &p.formula {
+            p.formula = Some(os_model::ParameterExpression::remap_source(
+                formula,
+                &length_remaps,
+            )?);
+        }
         p.name = unique_name(
             &p.name,
             candidate
@@ -749,15 +759,15 @@ fn build_import_plan(
                 .values()
                 .map(|p| p.parameters.name.as_str()),
         );
-        let parameter = os_model::LengthParameter::new("core.length_parameter", p);
+        let mut parameter = os_model::LengthParameter::new("core.length_parameter", p);
+        parameter.header.id = length_remaps[source];
         material_remaps.push(format!(
-            "Length {} ({source}) → {} ({}) · {:.3} m · new independent copy",
+            "Parameter {} ({source}) → {} ({}) · {} · new independent copy",
             snapshot.name,
             parameter.parameters.name,
             parameter.id(),
-            parameter.parameters.value
+            parameter.parameters.source_label()
         ));
-        length_remaps.insert(*source, parameter.id());
         candidate
             .length_parameters
             .insert(parameter.id(), parameter.clone());
@@ -771,6 +781,7 @@ fn build_import_plan(
     let mut parameters = package.parameters.clone();
     parameters.family.remap_extrusion_ids();
     for solid in &mut parameters.family.extrusions {
+        solid.bindings.remap(&length_remaps)?;
         if let Some(id) = solid.material {
             solid.material = Some(remapped[&id]);
         }

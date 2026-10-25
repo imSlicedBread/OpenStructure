@@ -64,6 +64,11 @@ fn four_to_current_preserves_all_existing_fields_and_rejects_ambiguous_input_ato
         .unwrap()
         .remove("plan_graphics_templates");
     value.as_object_mut().unwrap().remove("plan_graphics");
+    value
+        .as_object_mut()
+        .unwrap()
+        .remove("plan_element_graphics_overrides");
+    value.as_object_mut().unwrap().remove("plan_graphics_rules");
     value.as_object_mut().unwrap().remove("stairs");
     value.as_object_mut().unwrap().remove("roofs");
     common::reverse_schema_38_migration(&mut value, &original);

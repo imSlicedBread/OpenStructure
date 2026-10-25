@@ -8,6 +8,14 @@ fn legacy56() -> serde_json::Value {
         serde_json::from_str(include_str!("fixtures/schema-53-straight-walls.json")).unwrap();
     migrate(&mut wire, 53).unwrap();
     common::remove_door_leaves(&mut wire);
+    wire.as_object_mut().unwrap().remove("sheet_sets");
+    wire.as_object_mut().unwrap().remove("drawing_issues");
+    wire.as_object_mut().unwrap().remove("plan_callouts");
+    wire.as_object_mut().unwrap().remove("section_callouts");
+    wire.as_object_mut().unwrap().remove("text_notes");
+    wire.as_object_mut().unwrap().remove("plan_hidden_openings");
+    wire.as_object_mut().unwrap().remove("group_definitions");
+    wire.as_object_mut().unwrap().remove("group_instances");
     for opening in wire["openings"].as_object_mut().unwrap().values_mut() {
         opening["parameters"]
             .as_object_mut()

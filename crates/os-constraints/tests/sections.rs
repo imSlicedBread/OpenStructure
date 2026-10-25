@@ -26,6 +26,7 @@ fn model_geometry_changes_invalidate_configured_section_views() {
     let section = View::new(
         "core.view",
         ViewParams {
+            drafting: None,
             name: "Section A".into(),
             kind: ViewKind::Section,
             level: Some(level),

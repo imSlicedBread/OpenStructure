@@ -26,6 +26,14 @@ fn frozen_21_preserves_every_existing_field_and_never_shares_old_walls() {
         .unwrap()
         .remove("plan_graphics_templates");
     restored.as_object_mut().unwrap().remove("plan_graphics");
+    restored
+        .as_object_mut()
+        .unwrap()
+        .remove("plan_element_graphics_overrides");
+    restored
+        .as_object_mut()
+        .unwrap()
+        .remove("plan_graphics_rules");
     restored["schema_version"] = json!(21);
     restored["project"]["header"]["schema_version"] = json!(21);
     for (key, data) in restored.as_object_mut().unwrap() {

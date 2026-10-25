@@ -18,6 +18,14 @@ instead of silently assigning the seed to a different face. Such boundary edits
 remain allowed, and undo can restore the prior enclosure. Hosted doors and
 windows remain part of their host wall boundary.
 
+Room boundaries are phase-aware without changing the room schema. A plan's
+target phase includes physically Existing, New and Temporary straight walls and
+separators; Demolished, Future and PreviouslyDemolished boundaries do not
+enclose current space. This physical topology is independent of the plan's
+graphic Phase filter, so hiding linework cannot change room area. Rooms placed
+from a plan are created in that plan's target phase, and duplicate space
+detection ignores room elements no longer physically present there.
+
 The **Room Separator** tool draws straight, zero-thickness XY lines on a level.
 Two clicks place a line; its endpoints and body can be edited in the plan.
 These lines participate in enclosure on every plan of that level. Their visible
@@ -69,8 +77,8 @@ orphaning and save/reopen, and egui placement/move/selection/cancel/undo at
 performed.
 
 Not implemented: curved/layered/plugin hosts, holes,
-wall-finish area offsets, finish-material quantities, legends,
-phases, or IFC room exchange. See the [coverage ledger](2d-coverage.md) for the
+wall-finish area offsets, finish-material quantities, legends, or IFC room
+exchange. See the [coverage ledger](2d-coverage.md) for the
 remaining architectural workflow and release gates.
 
 ## Room Finish schedules
@@ -121,17 +129,20 @@ to the new category's defaults.
 
 Rows retain room UUIDs and clicking a cell selects the room and opens a plan on
 its level. If none exists, selection remains available with guidance to create
-a plan. Area resolves from current same-level boundary topology on every row
-build; no area or row cache is persisted. Partition edits update the plan and
-table. A broken or changed enclosure preserves the room and finish codes,
-shows a diagnostic, and leaves Area blank. It never publishes zero as an
-unresolved area. Add the saved schedule to a sheet using the existing single
-table placement; preview and vector PDF use those same live rows and explicit
-fit checks. See [sheet preview](native-sheet-preview.md).
+a plan. New Room Finish schedules pin the latest phase and expose saved schedule
+phase/filter controls; migrated schedules remain LegacyUnphased until explicitly
+changed. Phase-aware rows filter rooms by lifecycle and derive areas from
+physical same-level boundaries at the schedule target. ShowDemolished reports a
+demolished room's area from the preceding phase; other visible statuses use
+target-phase topology. No area or row cache is persisted. A broken or changed
+enclosure preserves the room and finish codes, shows a diagnostic, and leaves
+Area blank. It never publishes zero as an unresolved area. The schedule window,
+sheet preview and vector PDF use the same rows and explicit fit checks. See
+[sheet preview](native-sheet-preview.md).
 
 Schema 32→33 atomically initializes all three required nullable fields to null,
 preserving IDs, boundary signatures and legacy schedule definitions. Native
-full-model plugins now require API 32/schema 51; generic API 2 and container 2 remain
+full-model plugins now require API 56/schema 75; generic API 2 and container 2 remain
 unchanged. Frozen migration and save/reopen evidence is in
 `crates/os-storage/tests/room_finishes.rs` and its schema-32 JSON fixture.
 
@@ -143,6 +154,12 @@ Focused evidence:
 - `crates/os-ui/src/opening_schedule/rooms/tests.rs`: current topology, ordering,
   unresolved rows, room navigation, keyboard finish editing, one-step history,
   Escape and stale revision/session cancellation at both display profiles.
+- `crates/os-ui/src/opening_schedule/rooms/tests.rs`:
+  `phased_room_finish_rows_use_target_topology_and_demolished_rooms_previous_area`
+  covers lifecycle filters, target/preceding-phase area and phase-aware room
+  placement in one transaction.
+- `crates/os-ui/src/plan/phase_tests.rs` covers physical boundary inclusion
+  independently of the graphic filter and target-phase RCP resolution.
 - `crates/os-ui/src/opening_schedule/definitions/tests.rs`: saved Room Finish
   creation and category switching at both display profiles.
 - `crates/os-ui/src/plan_workspace/sheet_tests.rs`:
@@ -152,7 +169,7 @@ Focused evidence:
   1000×650/150%.
 
 The schedule uses the existing centerline area convention. Finish-face or
-regulatory area rules, finish quantities, phases/options, legends, CSV,
+regulatory area rules, finish quantities, design options, legends, CSV,
 pagination and multiple-table UI remain outside this increment.
 
 ### Room Finish validation checkpoint (2026-09-26)

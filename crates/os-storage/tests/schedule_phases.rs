@@ -20,6 +20,14 @@ fn frozen_47_schedule_phases_preserve_all_other_values_and_save_reopen() {
     let mut reversed = value;
     common::reverse_wall_paths(&mut reversed);
     common::remove_opening_visibility(&mut reversed);
+    reversed
+        .as_object_mut()
+        .unwrap()
+        .remove("plan_element_graphics_overrides");
+    reversed
+        .as_object_mut()
+        .unwrap()
+        .remove("plan_graphics_rules");
     reversed["schema_version"] = 47.into();
     for (key, data) in reversed.as_object_mut().unwrap() {
         if key == "project" {

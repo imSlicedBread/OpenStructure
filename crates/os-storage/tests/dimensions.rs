@@ -49,6 +49,14 @@ fn schema_eleven_migration_preserves_dimension_and_all_headers() {
     expected["plan_graphics"] = json!({});
     expected["stairs"] = json!({});
     expected["roofs"] = json!({});
+    expected["plan_callouts"] = json!({});
+    expected["section_callouts"] = json!({});
+    expected["text_notes"] = json!({});
+    expected["plan_hidden_openings"] = json!({});
+    expected["plan_element_graphics_overrides"] = json!({});
+    expected["plan_graphics_rules"] = json!({});
+    expected["group_definitions"] = json!({});
+    expected["group_instances"] = json!({});
     expected["phases"] = value["phases"].clone();
     expected["element_lifecycles"] = value["element_lifecycles"].clone();
     common::apply_schema_38_defaults(&mut expected);
@@ -150,6 +158,10 @@ fn six_to_current_adds_native_maps_and_versions_atomically() {
     assert_eq!(value["opening_tags"], json!({}));
     assert_eq!(value["plan_graphics_templates"], json!({}));
     assert_eq!(value["plan_graphics"], json!({}));
+    assert_eq!(value["plan_element_graphics_overrides"], json!({}));
+    assert_eq!(value["sheet_sets"], json!({}));
+    assert_eq!(value["drawing_issues"], json!({}));
+    assert_eq!(value["plan_callouts"], json!({}));
     serde_json::from_value::<Model>(value.clone())
         .unwrap()
         .validate()
@@ -181,6 +193,22 @@ fn six_to_current_adds_native_maps_and_versions_atomically() {
     value.as_object_mut().unwrap().remove("stairs");
     value.as_object_mut().unwrap().remove("roofs");
     value.as_object_mut().unwrap().remove("ceilings");
+    value.as_object_mut().unwrap().remove("sheet_sets");
+    value.as_object_mut().unwrap().remove("drawing_issues");
+    value.as_object_mut().unwrap().remove("plan_callouts");
+    value.as_object_mut().unwrap().remove("section_callouts");
+    value.as_object_mut().unwrap().remove("text_notes");
+    value
+        .as_object_mut()
+        .unwrap()
+        .remove("plan_hidden_openings");
+    value.as_object_mut().unwrap().remove("group_definitions");
+    value.as_object_mut().unwrap().remove("group_instances");
+    value
+        .as_object_mut()
+        .unwrap()
+        .remove("plan_element_graphics_overrides");
+    value.as_object_mut().unwrap().remove("plan_graphics_rules");
     value.as_object_mut().unwrap().remove("phases");
     value.as_object_mut().unwrap().remove("element_lifecycles");
     common::reverse_schema_38_migration(&mut value, &original);

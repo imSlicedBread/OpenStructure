@@ -54,6 +54,7 @@ impl SheetPaperSize {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SheetViewport {
+    pub detail_number: String,
     pub id: Id,
     pub view: Id,
     /// Center in the source 2D view plane: plan-plane metres for Plans, or
@@ -125,7 +126,13 @@ impl SheetParams {
         )?;
         let page = self.paper_size.dimensions_mm();
         let mut ids = BTreeSet::new();
+        let mut detail_numbers = BTreeSet::new();
         for viewport in &self.viewports {
+            ensure(
+                text_valid(&viewport.detail_number, 32)
+                    && detail_numbers.insert(viewport.detail_number.trim().to_ascii_lowercase()),
+                "viewport detail numbers must be nonempty and unique on the sheet",
+            )?;
             ensure(
                 !viewport.id.0.is_nil() && ids.insert(viewport.id),
                 "invalid or duplicate viewport identity",
@@ -146,6 +153,9 @@ impl SheetParams {
                             view.parameters.facade.is_some() && view.parameters.level.is_some()
                         }
                         ViewKind::Perspective => false,
+                        ViewKind::Drafting => {
+                            view.parameters.drafting.is_some() && view.parameters.validate().is_ok()
+                        }
                     }),
                 "sheet viewport requires an existing configured Plan, Section or Elevation view",
             )?;
@@ -288,6 +298,7 @@ mod tests {
             width_mm: 300.0,
             height_mm: 200.0,
             scale_denominator: 100.0,
+            detail_number: "1".into(),
             title_override: Some("Plan".into()),
         });
         let sheet = Sheet::new("core.sheet", params);
@@ -355,6 +366,7 @@ mod tests {
         let sheet = model.sheets.get_mut(&id).unwrap();
         let mut other = sheet.parameters.viewports[0].clone();
         other.id = Id::new();
+        other.detail_number = "2".into();
         other.scale_denominator = 50.0;
         other.model_center_m = Point2::new(-8.0, 6.0);
         other.title_override = None;
@@ -447,6 +459,7 @@ mod tests {
         let section = View::new(
             "core.view",
             ViewParams {
+                drafting: None,
                 facade: None,
                 elevation: None,
                 name: "Building section".into(),
@@ -490,6 +503,7 @@ mod tests {
         let section = View::new(
             "core.view",
             ViewParams {
+                drafting: None,
                 facade: None,
                 elevation: None,
                 name: "Building section".into(),
@@ -523,6 +537,7 @@ mod tests {
             width_mm: 180.0,
             height_mm: 124.0,
             scale_denominator: 50.0,
+            detail_number: "2".into(),
             title_override: None,
         });
 
@@ -594,7 +609,8 @@ mod tests {
         let mut bounded = model.clone();
         let viewport = model.sheets[&id].parameters.viewports[0].clone();
         bounded.sheets.get_mut(&id).unwrap().parameters.viewports = (0..MAX_SHEET_VIEWPORTS)
-            .map(|_| SheetViewport {
+            .map(|n| SheetViewport {
+                detail_number: (n + 1).to_string(),
                 id: Id::new(),
                 ..viewport.clone()
             })

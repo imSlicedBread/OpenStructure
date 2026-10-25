@@ -125,10 +125,11 @@ impl State {
             self.cancel();
             return false;
         };
-        let hits: Vec<_> = hits
-            .into_iter()
-            .filter(|id| filters.allows(editor.document.model(), *id))
-            .collect();
+        let hits = super::groups::hits(
+            editor.document.model(),
+            hits.into_iter()
+                .filter(|id| filters.allows(editor.document.model(), *id)),
+        );
         if hits.len() < 2 {
             self.cancel();
             return false;
@@ -204,7 +205,9 @@ impl State {
             .filter(|id| filters.allows(editor.document.model(), *id))
             .collect::<Vec<_>>();
         let candidate = *preview.hits.get(preview.index)?;
-        fresh.contains(&candidate).then_some(candidate)
+        super::groups::hits(editor.document.model(), fresh)
+            .contains(&candidate)
+            .then_some(candidate)
     }
 
     pub fn paint(
@@ -230,13 +233,14 @@ impl State {
                 .map(|point| canvas.min + egui::vec2(point.x as f32, point.y as f32))
         };
         let stroke = egui::Stroke::new(2.5, theme::ACCENT);
+        let selected = |member| super::groups::owner(model, member) == id;
         let line = |a: Point2, b: Point2| {
             if let (Some(a), Some(b)) = (project(a), project(b)) {
                 painter.line_segment([a, b], stroke);
             }
         };
         if let Ok(items) = drawing.items(context) {
-            for item in items.iter().filter(|item| item.entity == id) {
+            for item in items.iter().filter(|item| selected(item.entity)) {
                 let points: Vec<_> = item
                     .footprint
                     .vertices()
@@ -287,7 +291,7 @@ impl State {
             }
         }
         if let Ok(lines) = drawing.provider_lines(context) {
-            for item in lines.iter().filter(|item| item.entity == id) {
+            for item in lines.iter().filter(|item| selected(item.entity)) {
                 line(item.start, item.end);
             }
         }
@@ -408,7 +412,9 @@ fn cycle_key(ctx: &egui::Context) -> Option<egui::Modifiers> {
 }
 
 fn label_for(model: &os_model::Model, id: Id) -> &'static str {
-    if model.walls.contains_key(&id) {
+    if model.group_instances.contains_key(&id) {
+        "Wall group"
+    } else if model.walls.contains_key(&id) {
         "Wall"
     } else if let Some(opening) = model.openings.get(&id) {
         match model

@@ -95,17 +95,53 @@ fn paired_doors_package_replace_explicit_reset_atomic_history_both_dpis() {
 fn shared_lengths_package_copy_conflicts_bindings_preview_history_both_dpi() {
     for (size, scale) in PROFILES {
         let mut source = Model::new("Shared parameter source");
-        let ty = sample_type("Shared window", OpeningKind::Window, 1.);
+        let mut ty = sample_type("Shared window", OpeningKind::Window, 1.);
         let type_id = ty.id();
-        let p = os_model::LengthParameter::new(
+        let scalar = os_model::LengthParameter::new(
             "core.length_parameter",
             os_model::LengthParameterParams {
+                name: "Factor".into(),
+                unit: os_model::LengthUnit::Scalar,
+                value: 2.,
+                formula: None,
+            },
+        );
+        let sid = scalar.id();
+        source.length_parameters.insert(sid, scalar);
+        let mut p = os_model::LengthParameter::new(
+            "core.length_parameter",
+            os_model::LengthParameterParams {
+                formula: None,
                 name: "Shared size".into(),
                 unit: os_model::LengthUnit::Metres,
                 value: 1.2,
             },
         );
         let pid = p.id();
+        fn references(id: Id, n: usize) -> String {
+            if n == 1 {
+                format!("@{{{id}}}")
+            } else {
+                format!("({}+{})", references(id, n / 2), references(id, n - n / 2))
+            }
+        }
+        p.parameters.formula = Some(format!("({})*0.0125m", references(sid, 48)));
+        let source_formula_bytes = p.parameters.formula.as_ref().unwrap().len();
+        assert!((2000..=os_model::MAX_FORMULA_BYTES).contains(&source_formula_bytes));
+        let offset = os_model::LengthParameter::new(
+            "core.length_parameter",
+            os_model::LengthParameterParams {
+                name: "Offset".into(),
+                unit: os_model::LengthUnit::Metres,
+                value: 0.01,
+                formula: Some(format!("@{{{pid}}} * 0.01")),
+            },
+        );
+        let oid = offset.id();
+        source.length_parameters.insert(oid, offset);
+        let mut solid = os_model::OpeningExtrusion::new("Driven position");
+        solid.bindings.x = Some(oid);
+        ty.parameters.family.extrusions.push(solid);
         source.length_parameters.insert(pid, p.clone());
         source.opening_types.insert(type_id, ty);
         source.opening_type_length_bindings.insert(
@@ -122,6 +158,7 @@ fn shared_lengths_package_copy_conflicts_bindings_preview_history_both_dpi() {
         let mut h = Harness::at_size(size, scale);
         let mut conflicting = p.clone();
         conflicting.parameters.value = 2.;
+        conflicting.parameters.formula = None;
         h.app
             .editor
             .document
@@ -137,6 +174,47 @@ fn shared_lengths_package_copy_conflicts_bindings_preview_history_both_dpi() {
         let bindings = model.opening_type_length_bindings[&id];
         let imported = bindings.width.unwrap();
         assert_ne!(imported, pid);
+        assert!(
+            model.length_parameters[&imported]
+                .parameters
+                .formula
+                .as_ref()
+                .unwrap()
+                .len()
+                <= source_formula_bytes
+        );
+        let refs = os_model::ParameterExpression::parse(
+            model.length_parameters[&imported]
+                .parameters
+                .formula
+                .as_ref()
+                .unwrap(),
+        )
+        .unwrap()
+        .references();
+        assert_eq!(refs.len(), 1);
+        assert!(!refs.contains(&sid));
+        assert!(
+            refs.iter()
+                .all(|id| model.length_parameters.contains_key(id))
+        );
+        let imported_offset = model.opening_types[&id].parameters.family.extrusions[0]
+            .bindings
+            .x
+            .unwrap();
+        assert_ne!(imported_offset, oid);
+        assert_eq!(
+            os_model::ParameterExpression::parse(
+                model.length_parameters[&imported_offset]
+                    .parameters
+                    .formula
+                    .as_ref()
+                    .unwrap()
+            )
+            .unwrap()
+            .references(),
+            [imported].into()
+        );
         assert_eq!(bindings.height, Some(imported));
         assert_eq!(bindings.sill, Some(imported));
         assert_eq!(
@@ -146,7 +224,11 @@ fn shared_lengths_package_copy_conflicts_bindings_preview_history_both_dpi() {
         assert_eq!(model.length_parameters[&pid].parameters.value, 2.);
         assert_eq!(
             model.resolve_opening_type(id).unwrap().parameters.width,
-            1.2
+            source
+                .resolve_opening_type(type_id)
+                .unwrap()
+                .parameters
+                .width
         );
         assert_eq!(
             h.app.editor.document.history_stats().undo_entries,

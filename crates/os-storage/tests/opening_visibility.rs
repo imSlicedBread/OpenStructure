@@ -39,6 +39,8 @@ fn opening_visibility_frozen_48_migrates_only_headers_and_settings_and_reopens()
     let mut expected = original.clone();
     common::apply_wall_paths(&mut expected);
     expected["schema_version"] = SCHEMA_VERSION.into();
+    expected["plan_element_graphics_overrides"] = json!({});
+    expected["plan_graphics_rules"] = json!({});
     for (key, data) in expected.as_object_mut().unwrap() {
         if key == "project" {
             data["header"]["schema_version"] = SCHEMA_VERSION.into();

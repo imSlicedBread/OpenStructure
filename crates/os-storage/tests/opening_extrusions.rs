@@ -22,7 +22,7 @@ fn authored_extrusions_frozen_model_and_package_migration_preserve_old_geometry_
     );
     for (key, ty) in frozen["opening_types"].as_object().unwrap() {
         let mut family = ty["parameters"]["family"].clone();
-        family["version"] = 7.into();
+        family["version"] = 10.into();
         family["extrusions"] = json!([]);
         assert_eq!(
             migrated["opening_types"][key]["parameters"]["family"],
@@ -47,7 +47,7 @@ fn authored_extrusions_frozen_model_and_package_migration_preserve_old_geometry_
     }
     let bytes = include_bytes!("fixtures/package-5-opening-extrusions.osot");
     let package = parse_opening_type_package(bytes).unwrap();
-    assert_eq!(package.parameters.family.version, 7);
+    assert_eq!(package.parameters.family.version, 11);
     assert!(package.parameters.family.extrusions.is_empty());
     let ty = *model.opening_types.keys().next().unwrap();
     assert_eq!(

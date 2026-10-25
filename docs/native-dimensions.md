@@ -94,7 +94,7 @@ paper-scale annotation styling is still outside this increment.
 
 Schema 62→63 advances native headers and the model version without rewriting
 legacy parameters, IDs or opaque metadata. That increment introduced native API
-44/schema 63; current full-model plugins use API 46/schema 65. ZIP container 2
+44/schema 63; current full-model plugins use API 56/schema 75. ZIP container 2
 and generic plugin API 2 stay unchanged.
 Frozen migration evidence: `os-storage/tests/fixtures/schema-62-arc-dimensions.json`.
 Focused suites: `os-model/tests/dimension_arc_length.rs`,

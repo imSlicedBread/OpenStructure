@@ -5,15 +5,29 @@ use os_core::ensure;
 
 pub(super) struct Draft {
     context: PlanContext,
+    session: Id,
+    revision: u64,
     drawing: Id,
     providers: Vec<(String, Id)>,
     primary: Option<Id>,
     ids: BTreeSet<Id>,
+    selection: BTreeSet<Id>,
     excluded: BTreeSet<Id>,
     original: Model,
     pub gesture: WallGesture,
     pressed: bool,
     copy: Option<super::wall_set_copy::Identities>,
+    group: Option<Command>,
+    group_screen: Option<GroupScreenContext>,
+    array: Option<super::wall_assembly_array::Array>,
+    pub(super) radial: bool,
+    pub(super) radial_degrees: String,
+}
+
+struct GroupScreenContext {
+    camera: PlanCamera,
+    canvas: egui::Rect,
+    filters: selection_filters::SelectionFilters,
 }
 
 pub(super) struct Candidate {
@@ -30,6 +44,93 @@ impl Draft {
         Self::begin_mode(app, true, true)
     }
 
+    pub(super) fn begin_group_duplicate(app: &DesktopApp, id: Id) -> Result<Self> {
+        let view = super::groups::check_context(app)?;
+        let model = app.editor.document.model();
+        let instance = &model.group_instances[&id];
+        let definition = &model.group_definitions[&instance.parameters.definition];
+        ensure(
+            definition
+                .parameters
+                .template
+                .opening_tags
+                .values()
+                .all(|tag| Some(tag.parameters.view) == app.plans.active),
+            "Group tags belong to another plan; duplicate in their owning plan",
+        )?;
+        let walls = definition
+            .parameters
+            .template
+            .walls
+            .keys()
+            .map(|slot| instance.parameters.members[slot])
+            .collect();
+        let mut draft = Self::begin_with_walls(app, false, true, walls, true)?;
+        draft.group_screen = Some(GroupScreenContext {
+            camera: *app
+                .plans
+                .cameras
+                .get(&view)
+                .ok_or_else(|| Error::Invalid("Wait for the plan camera".into()))?,
+            canvas: app
+                .plans
+                .canvas_rect
+                .ok_or_else(|| Error::Invalid("Wait for the plan canvas".into()))?,
+            filters: app.plans.selection_filters.clone(),
+        });
+        draft.group = Some(Command::DuplicateGroupInstancePrepared {
+            id,
+            translation: Point2::new(0.0, 0.0),
+            instance: Id::new(),
+            members: instance
+                .parameters
+                .members
+                .keys()
+                .map(|slot| (*slot, Id::new()))
+                .collect(),
+        });
+        Ok(draft)
+    }
+
+    pub(super) fn copied_group(&self) -> Option<Id> {
+        match &self.group {
+            Some(Command::DuplicateGroupInstancePrepared { instance, .. }) => Some(*instance),
+            _ => None,
+        }
+    }
+
+    pub(super) fn begin_array(app: &DesktopApp) -> Result<Self> {
+        let mut draft = Self::begin_copy(app)?;
+        draft.set_array_count(2)?;
+        Ok(draft)
+    }
+
+    pub(super) fn array_count(&self) -> Option<usize> {
+        self.array
+            .as_ref()
+            .map(super::wall_assembly_array::Array::count)
+    }
+
+    pub(super) fn max_array_count(&self) -> usize {
+        let dependents = self.copy.as_ref().map_or(0, |copy| copy.dependent_count());
+        32.min(1 + 64 / self.ids.len()).min(if dependents == 0 {
+            32
+        } else {
+            1 + 4096 / dependents
+        })
+    }
+
+    pub(super) fn set_array_count(&mut self, count: usize) -> Result<()> {
+        let array = super::wall_assembly_array::Array::new(
+            &self.original,
+            &self.ids,
+            self.context.view_id,
+            count,
+        )?;
+        self.array = Some(array);
+        Ok(())
+    }
+
     pub(super) fn begin_level_copy(app: &DesktopApp) -> Result<Self> {
         Self::begin_mode(app, true, false)
     }
@@ -42,6 +143,19 @@ impl Draft {
     }
 
     pub(super) fn copied_ids(&self) -> BTreeSet<Id> {
+        if let Some(Command::DuplicateGroupInstancePrepared { id, members, .. }) = &self.group {
+            let definition = self.original.group_instances[id].parameters.definition;
+            return self.original.group_definitions[&definition]
+                .parameters
+                .template
+                .walls
+                .keys()
+                .map(|slot| members[slot])
+                .collect();
+        }
+        if let Some(array) = &self.array {
+            return array.walls();
+        }
         self.copy
             .as_ref()
             .map(|ids| ids.walls.values().copied().collect())
@@ -49,11 +163,17 @@ impl Draft {
     }
 
     pub fn is_copy(&self) -> bool {
-        self.copy.is_some()
+        self.copy.is_some() || self.group.is_some()
     }
 
     pub fn label(&self) -> &'static str {
-        if self.is_copy() {
+        if self.group.is_some() {
+            "Duplicate group"
+        } else if self.radial {
+            "Radial array walls"
+        } else if self.array.is_some() {
+            "Array walls"
+        } else if self.is_copy() {
             "Copy walls"
         } else {
             "Move walls"
@@ -61,16 +181,29 @@ impl Draft {
     }
 
     pub fn dependency_summary(&self) -> Option<String> {
-        self.copy.as_ref().map(|ids| ids.summary())
+        self.array
+            .as_ref()
+            .map(super::wall_assembly_array::Array::summary)
+            .or_else(|| self.copy.as_ref().map(|ids| ids.summary()))
     }
 
     fn begin_mode(app: &DesktopApp, copy: bool, copy_tags: bool) -> Result<Self> {
+        Self::begin_with_walls(app, copy, copy_tags, app.selected_ids.clone(), false)
+    }
+
+    fn begin_with_walls(
+        app: &DesktopApp,
+        copy: bool,
+        copy_tags: bool,
+        ids: BTreeSet<Id>,
+        group: bool,
+    ) -> Result<Self> {
         ensure(
             !copy || !app.editor.host.worker_supported(os_walls::PLUGIN_ID),
             "Copy wall assemblies requires the bundled native Wall provider",
         )?;
         ensure(
-            (if copy { 1 } else { 2 }..=64).contains(&app.selected_ids.len()),
+            (if copy || group { 1 } else { 2 }..=64).contains(&ids.len()),
             if copy {
                 "Copy walls requires 1–64 selected native straight walls"
             } else {
@@ -107,7 +240,11 @@ impl Draft {
             .ok_or_else(|| Error::Invalid("Wait for the plan drawing".into()))?;
         let items = drawing.items(context)?;
         let level = model.views[&view].parameters.level.unwrap();
-        for id in &app.selected_ids {
+        for id in &ids {
+            ensure(
+                group || model.group_instance_for_member(*id).is_none(),
+                "Grouped members are locked; use Duplicate group or Ungroup",
+            )?;
             let wall = model.walls.get(id).ok_or_else(|| Error::Invalid("Every selected entity must be a native straight wall; selection is mixed or stale".into()))?;
             ensure(
                 wall.header.type_id == os_walls::WALL_TYPE && wall.parameters.path.is_straight(),
@@ -129,47 +266,48 @@ impl Draft {
         for join in model.wall_joins.values() {
             let members = join.parameters.members();
             ensure(
-                !members.iter().any(|id| app.selected_ids.contains(id))
-                    || members.iter().all(|id| app.selected_ids.contains(id)),
+                !members.iter().any(|id| ids.contains(id))
+                    || members.iter().all(|id| ids.contains(id)),
                 "Partial wall join: select every member before moving or copying walls",
             )?;
         }
         // A synthetic origin wall lets the existing Move adapter compute the exact
         // world displacement without subtracting large source coordinates.
-        let mut parameters = model.walls[app.selected_ids.first().unwrap()]
-            .parameters
-            .clone();
+        let mut parameters = model.walls[ids.first().unwrap()].parameters.clone();
         *parameters.path.straight_start_mut()? = Point2::new(0.0, 0.0);
         *parameters.path.straight_end_mut()? = Point2::new(1.0, 0.0);
         let gesture = WallGesture::begin_move_vector(&app.editor, view, parameters)?;
-        let mut excluded = app.selected_ids.clone();
+        let mut excluded = ids.clone();
         excluded.extend(
             model
                 .openings
                 .values()
-                .filter(|o| app.selected_ids.contains(&o.parameters.host))
+                .filter(|o| ids.contains(&o.parameters.host))
                 .map(|o| o.id()),
         );
         Ok(Self {
+            group: None,
+            group_screen: None,
+            array: None,
+            radial: false,
+            radial_degrees: "30".into(),
             copy: if copy {
                 Some(if copy_tags {
-                    super::wall_set_copy::Identities::new(model, &app.selected_ids, view)?
+                    super::wall_set_copy::Identities::new(model, &ids, view)?
                 } else {
-                    super::wall_set_copy::Identities::with_tags(
-                        model,
-                        &app.selected_ids,
-                        view,
-                        false,
-                    )?
+                    super::wall_set_copy::Identities::with_tags(model, &ids, view, false)?
                 })
             } else {
                 None
             },
             context,
+            session: app.editor.document.session_id(),
+            revision: app.editor.document.revision(),
             drawing: drawing.identity(),
             providers: plan_provider_signature(&app.editor),
             primary: app.selected,
-            ids: app.selected_ids.clone(),
+            ids,
+            selection: app.selected_ids.clone(),
             excluded,
             original: model.clone(),
             gesture,
@@ -179,11 +317,18 @@ impl Draft {
 
     pub fn current(&self, app: &DesktopApp) -> bool {
         self.gesture.current(&app.editor, app.plans.active)
+            && self.session == app.editor.document.session_id()
+            && self.revision == app.editor.document.revision()
             && app.plans.active_sheet.is_none()
             && app.selected == self.primary
-            && app.selected_ids == self.ids
+            && app.selected_ids == self.selection
             && !app.editor.plugin_work_pending()
             && plan_provider_signature(&app.editor) == self.providers
+            && self.group_screen.as_ref().is_none_or(|screen| {
+                app.plans.cameras.get(&self.context.view_id) == Some(&screen.camera)
+                    && app.plans.canvas_rect == Some(screen.canvas)
+                    && app.plans.selection_filters == screen.filters
+            })
             && app
                 .plans
                 .drawing
@@ -192,7 +337,55 @@ impl Draft {
     }
 
     pub fn candidate(&self, point: Point2) -> Result<Candidate> {
+        if self.radial {
+            let pivot = self
+                .gesture
+                .start
+                .ok_or_else(|| Error::Invalid("Choose the radial array pivot".into()))?;
+            let degrees = self
+                .radial_degrees
+                .trim()
+                .parse::<f64>()
+                .map_err(|_| Error::Invalid("Angular step needs a number".into()))?;
+            return self
+                .array
+                .as_ref()
+                .ok_or_else(|| Error::Invalid("No array identities".into()))?
+                .radial_candidate(
+                    &self.original,
+                    self.context.basis.plane_to_world(pivot)?,
+                    degrees,
+                );
+        }
         let delta = self.gesture.parameters(point)?.start();
+        if let Some(mut command) = self.group.clone() {
+            ensure(
+                delta.is_finite() && delta != Point2::new(0.0, 0.0),
+                "Duplicate group requires a nonzero displacement",
+            )?;
+            if let Command::DuplicateGroupInstancePrepared { translation, .. } = &mut command {
+                *translation = delta;
+            }
+            let model = Document::from_model(self.original.clone())?
+                .preview_commands(vec![command.clone()])?;
+            let copied = self.copied_ids();
+            for id in &copied {
+                let native = os_geometry::walls::NativeWall::from_model(&model, *id)?;
+                native.mesh()?;
+                for opening in model.openings.values().filter(|o| o.parameters.host == *id) {
+                    crate::opening_tools::panel_mesh(&model, opening.id())?;
+                }
+            }
+            super::wall_set_copy::validate_collisions(&model, &copied)?;
+            super::wall_set_copy::validate_rooms(&self.original, &model)?;
+            return Ok(Candidate {
+                model,
+                commands: vec![command],
+            });
+        }
+        if let Some(array) = &self.array {
+            return array.candidate(&self.original, delta);
+        }
         if let Some(ids) = &self.copy {
             return ids.candidate(&self.original, delta);
         }
@@ -340,7 +533,7 @@ impl Draft {
         snaps: SnapOptions,
     ) -> Result<Point2> {
         let raw = camera.unproject(pointer, size)?;
-        if !snaps.enabled || self.gesture.has_exact_destination() {
+        if !snaps.enabled || (!self.radial && self.gesture.has_exact_destination()) {
             return Ok(raw);
         }
         let query = os_render::snapping::SnapQuery {
@@ -376,8 +569,8 @@ impl Draft {
         rect: egui::Rect,
     ) -> Result<()> {
         let copied;
-        let ids = if let Some(copy) = &self.copy {
-            copied = copy.walls.values().copied().collect();
+        let ids = if self.is_copy() {
+            copied = self.copied_ids();
             &copied
         } else {
             &self.ids
@@ -421,9 +614,14 @@ impl Draft {
                 }
             }
         }
-        let label = |position, text: String| -> Result<()> {
+        let label = |position, text: String, annotation: bool| -> Result<()> {
             let p = self.context.basis.world_to_plane(position)?;
-            if point_in_plan_crop(self.context, p) {
+            let in_crop = if annotation {
+                point_in_annotation_crop(self.context, p)
+            } else {
+                point_in_plan_crop(self.context, p)
+            };
+            if in_crop {
                 let p = camera.project(p, [rect.width() as f64, rect.height() as f64])?;
                 painter.text(
                     rect.min + egui::vec2(p.x as f32, p.y as f32),
@@ -437,8 +635,14 @@ impl Draft {
         };
         for tag in candidate.model.opening_tags.values().filter(|t| {
             t.parameters.view == self.context.view_id
-                && if let Some(copy) = &self.copy {
+                && if let Some(array) = &self.array {
+                    array.contains_tag(t.id())
+                } else if let Some(copy) = &self.copy {
                     copy.tags.values().any(|id| *id == t.id())
+                } else if let Some(Command::DuplicateGroupInstancePrepared { members, .. }) =
+                    &self.group
+                {
+                    members.values().any(|id| *id == t.id())
                 } else {
                     self.excluded.contains(&t.parameters.opening)
                 }
@@ -446,17 +650,20 @@ impl Draft {
             label(
                 tag.parameters.position,
                 tag.parameters.label(&candidate.model).0,
+                true,
             )?;
         }
         for room in candidate.model.rooms.values().filter(|r| {
-            r.parameters
-                .boundary_signature
-                .iter()
-                .any(|(id, _)| ids.contains(id))
+            !self.is_copy()
+                && r.parameters
+                    .boundary_signature
+                    .iter()
+                    .any(|(id, _)| ids.contains(id))
         }) {
             label(
                 room.parameters.seed,
                 format!("{} {}", room.parameters.number, room.parameters.name),
+                false,
             )?;
             for tag in candidate.model.room_tags.values().filter(|t| {
                 t.parameters.room == room.id() && t.parameters.view == self.context.view_id
@@ -464,6 +671,7 @@ impl Draft {
                 label(
                     tag.parameters.position,
                     format!("{} {}", room.parameters.number, room.parameters.name),
+                    false,
                 )?;
             }
         }
@@ -478,6 +686,16 @@ impl DesktopApp {
 
     pub(super) fn begin_wall_set_copy(&mut self) {
         self.begin_wall_set_translation(true);
+    }
+
+    pub(super) fn begin_wall_assembly_array(&mut self) {
+        match Draft::begin_array(self) {
+            Ok(draft) => {
+                self.cancel_wall_set_interactions();
+                self.plans.wall_set_move = Some(draft);
+            }
+            Err(error) => self.report(Err(error), ""),
+        }
     }
 
     fn begin_wall_set_translation(&mut self, copy: bool) {
@@ -610,7 +828,25 @@ impl DesktopApp {
         painter.text(
             rect.left_bottom() + egui::vec2(8.0, -8.0),
             egui::Align2::LEFT_BOTTOM,
-            error.as_deref().unwrap_or(if draft.is_copy() {
+            error.as_deref().unwrap_or(if draft.group.is_some() {
+                if draft.gesture.start.is_none() {
+                    "Duplicate group · choose base point"
+                } else {
+                    "Duplicate group · choose destination · Escape cancels"
+                }
+            } else if draft.radial {
+                if draft.gesture.start.is_none() {
+                    "Radial array walls · choose a snapped pivot"
+                } else {
+                    "Radial array walls · enter signed angular step; click to apply"
+                }
+            } else if draft.array.is_some() {
+                if draft.gesture.start.is_none() {
+                    "Array walls · choose base point"
+                } else {
+                    "Array walls · set per-instance spacing (or enter distance and angle)"
+                }
+            } else if draft.is_copy() {
                 if draft.gesture.start.is_none() {
                     "Copy walls · choose base point"
                 } else {
@@ -631,13 +867,12 @@ impl DesktopApp {
             match point {
                 Some(Ok(p)) if draft.gesture.start.is_none() => draft.gesture.start = Some(p),
                 Some(Ok(p)) => {
-                    let copied_selection = draft
-                        .copy
-                        .as_ref()
-                        .map(|copy| copy.walls.values().copied().collect::<BTreeSet<_>>());
+                    let copied_selection = draft.is_copy().then(|| draft.copied_ids());
                     match draft.commit(self, p) {
                         Ok(()) => {
-                            if let Some(ids) = copied_selection {
+                            if let Some(group) = draft.copied_group() {
+                                self.select(Some(group));
+                            } else if let Some(ids) = copied_selection {
                                 self.select(ids.first().copied());
                                 self.selected_ids = ids;
                             }

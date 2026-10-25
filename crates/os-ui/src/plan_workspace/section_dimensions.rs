@@ -92,6 +92,7 @@ impl DesktopApp {
         else {
             return;
         };
+        self.plans.section_callouts.draft = None;
         self.plans.section_dimension = Some(Draft {
             context,
             drawing: drawing.identity(),

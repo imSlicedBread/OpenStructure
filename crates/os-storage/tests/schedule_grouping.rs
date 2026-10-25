@@ -17,6 +17,8 @@ fn frozen_46_grouping_defaults_preserve_every_other_value_and_reopen() {
     common::apply_wall_paths(&mut expected);
     common::apply_opening_visibility(&mut expected);
     expected["schema_version"] = SCHEMA_VERSION.into();
+    expected["plan_element_graphics_overrides"] = json!({});
+    expected["plan_graphics_rules"] = json!({});
     for (key, data) in expected.as_object_mut().unwrap() {
         if key == "project" {
             data["header"]["schema_version"] = SCHEMA_VERSION.into();

@@ -214,11 +214,12 @@ impl NativeWall {
             .iter()
             .map(|layer| {
                 let mut footprints = Vec::new();
-                let mut intervals: [Vec<(f64, f64)>; 3] = Default::default();
+                let mut intervals: [Vec<(f64, f64)>; 4] = Default::default();
                 for ring in &regions {
                     for (lo, hi, role) in [
                         (range.depth, range.bottom, PlanRole::Depth),
                         (range.bottom, range.cut, PlanRole::Projected),
+                        (range.cut, range.top, PlanRole::Overhead),
                         (range.cut, range.cut, PlanRole::Cut),
                     ] {
                         let lo = lo - self.elevation;
@@ -243,14 +244,20 @@ impl NativeWall {
                         intervals[match role {
                             PlanRole::Depth => 0,
                             PlanRole::Projected => 1,
-                            PlanRole::Cut => 2,
+                            PlanRole::Overhead => 2,
+                            PlanRole::Cut => 3,
                         }]
                         .push((a, b));
                     }
                 }
-                for (role, mut spans) in [PlanRole::Depth, PlanRole::Projected, PlanRole::Cut]
-                    .into_iter()
-                    .zip(intervals)
+                for (role, mut spans) in [
+                    PlanRole::Depth,
+                    PlanRole::Projected,
+                    PlanRole::Overhead,
+                    PlanRole::Cut,
+                ]
+                .into_iter()
+                .zip(intervals)
                 {
                     spans.sort_by(|a, b| a.0.total_cmp(&b.0));
                     let mut merged: Vec<(f64, f64)> = Vec::new();

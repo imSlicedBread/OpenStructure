@@ -80,6 +80,7 @@ fn elevations_preserve_orphans_and_sheet_placements_but_resolve_only_current_nat
     let view = View::new(
         "core.view",
         ViewParams {
+            drafting: None,
             name: "Left elevation".into(),
             kind: ViewKind::Elevation,
             level: None,
@@ -101,6 +102,7 @@ fn elevations_preserve_orphans_and_sheet_placements_but_resolve_only_current_nat
         width_mm: 200.0,
         height_mm: 100.0,
         scale_denominator: 100.0,
+        detail_number: "1".into(),
         title_override: None,
     });
     let sheet = Sheet::new("core.sheet", sheet_params);

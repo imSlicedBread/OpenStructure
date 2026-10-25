@@ -17,7 +17,7 @@ legacy behavior. The generated phase IDs are deterministic per project so
 reopening an unsaved legacy file does not change identity. Strict validation
 checks phase name/identity/order bounds, lifecycle references/order, and
 explicit hosted-opening lifetimes against their wall. Generic plugin API 2 and `.osb`
-container 2 are unchanged. Current full-model native plugins require API 32/schema 51.
+container 2 are unchanged. Current full-model native plugins require API 56/schema 75.
 
 Focused evidence:
 
@@ -128,12 +128,16 @@ Focused evidence for this slice:
   missing/invalid/ambiguous phase fields, invalid references, file preservation
   on rejected open, and native save/reopen.
 
-Room enclosure topology remains based on the full model: phase filtering changes
-room visibility and appearance but does not reconstruct room boundaries or areas.
-Room-bound ceiling resolution shares that limitation. Split 3D remains the full
-committed model.
+Physical room enclosure uses the plan's target phase, independent of its graphic
+Phase filter. Only Existing, New and Temporary straight walls and separators
+participate; a visibility filter cannot change room boundaries or areas. Room
+placement assigns the view's target phase in the same transaction as AddRoom.
+Reflected-ceiling-plan room associations and ceiling authoring resolve against
+that target, with a cache isolated by `(level, phase)`. Section and global 3D
+consumers remain unphased and continue to use full-model topology. Split 3D
+remains the full committed model.
 
-## Phase-aware opening schedules (schema 48)
+## Phase-aware opening and Room Finish schedules (schema 48)
 
 Door, Window and All saved opening schedules own their phase target and filter;
 they do not inherit a plan or sheet view's crop, range, category visibility or
@@ -146,12 +150,16 @@ not present in that phase.
 
 Schema 48 adds the required `ScheduleParams.phase`. The 47→48 migration marks all
 existing saved schedules `LegacyUnphased`, preserving their previous report rows
-and bytes rather than silently changing issued schedules. Configure explicitly
-switches those definitions to phase-aware behavior. RoomFinish remains unphased
-because room enclosure/area is not phase-aware. A pinned phase is a model
-reference; deleting it is rejected atomically. Latest resolves by phase ordering
-each time rows are derived, while pinned identity survives reorder. UI, placed
-sheet tables, PDF, instance CSV and quantity CSV share the same eligible rows.
+and bytes rather than silently changing issued schedules. New Room Finish
+definitions pin the latest phase and expose the same five lifecycle filters. A
+phase-aware Room Finish row is eligible when its room status matches the filter;
+its area resolves against physical boundaries at the schedule target. A
+ShowDemolished room uses the immediately preceding phase for its last valid area.
+Legacy Room Finish schedules remain unphased until explicitly changed. A pinned
+phase is a model reference; deleting it is rejected atomically. Latest resolves
+by phase ordering each time rows are derived, while pinned identity survives
+reorder. UI, placed sheet tables and vector PDF share Room Finish rows; opening
+schedules also share eligible rows with both CSV reports.
 
 Evidence: `os-model/tests/schedule_phases.rs` covers all six derived statuses,
 all five filters, pinned-vs-Latest identity and UUID resolution;
@@ -160,8 +168,27 @@ save/reopen, strict rejection, pinned-phase deletion and atomic history;
 `os-ui/src/opening_schedule/csv_export/tests/phases.rs` checks opening/host
 status disagreements and row parity across UI-derived rows, sheets, PDF and both
 CSV reports, including legacy bytes and empty output. UI draft controls and
-save/cancel/stale/undo have focused egui tests. Design options and linked-model
-phase mapping remain deferred. P01 remains partial, not production-complete.
+save/cancel/stale/undo have focused egui tests. `os-model/tests/room_boundary_phases.rs`
+and `os-geometry/tests/room_phase_enclosures.rs` cover physical topology and
+phase-keyed ceiling resolution. `os-ui/src/plan/phase_tests.rs` checks target-
+phase plan/RCP topology; `os-ui/src/opening_schedule/rooms/tests.rs` covers
+phase-filtered rows and preceding-phase demolition area. Design options and
+linked-model phase mapping remain deferred. Section/global-3D room topology is
+still unphased. P01 remains partial, not production-complete.
 Migrations also remain bounded by the native 64 MiB serialized-model limit;
 legacy files whose added lifecycle records exceed that limit are rejected
 atomically rather than opened in a state that cannot be saved.
+
+### Phase-aware room topology checkpoint (2026-10-23)
+
+- `os-model` boundary/schedule phase integration tests: 5 passed.
+- `os-geometry/tests/room_phase_enclosures.rs`: 3 passed after correcting the
+  fixture's wall type identifier.
+- The filtered `os-ui` phase suite: 23 passed; one existing opening-spacing
+  canvas test still fails its phase-button assertion and also fails in
+  isolation. This does not exercise room boundaries or ceiling resolution.
+- The added Room Finish, plan-topology and RCP integration tests pass; targeted
+  Clippy passes with warnings denied after allowing known unrelated baseline
+  lint classes. Focused rustfmt checks pass for the edited room/schedule/ceiling
+  modules and new test files. The large shared plan files have unrelated
+  file-wide formatting drift, while their edited hunks show no rustfmt diff.

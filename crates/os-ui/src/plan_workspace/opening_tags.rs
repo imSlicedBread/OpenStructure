@@ -24,6 +24,9 @@ pub(super) enum Action {
 }
 
 impl Draft {
+    pub(super) fn editing_id(&self) -> Option<Id> {
+        self.moving
+    }
     fn new(editor: &Editor, context: PlanContext, opening: Option<Id>) -> Self {
         Self {
             context,
@@ -118,7 +121,10 @@ impl DesktopApp {
             .native_plan_context(parameters.view)
             .and_then(|context| {
                 os_core::ensure(
-                    point_in_plan_crop(context, context.basis.world_to_plane(parameters.position)?),
+                    point_in_annotation_crop(
+                        context,
+                        context.basis.world_to_plane(parameters.position)?,
+                    ),
                     "Opening tag position is outside its view crop",
                 )
             });
@@ -147,7 +153,7 @@ impl DesktopApp {
                     )?;
                     let context = draft.context;
                     os_core::ensure(
-                        point_in_plan_crop(context, context.basis.world_to_plane(position)?),
+                        point_in_annotation_crop(context, context.basis.world_to_plane(position)?),
                         "opening tag position outside crop",
                     )?;
                     let mut parameters = if let Some(id) = draft.moving {
@@ -267,6 +273,11 @@ pub(super) fn input(
             ),
         )
         && let Some(tag) = editor.document.model().opening_tags.get(&id)
+        && editor
+            .document
+            .model()
+            .group_instance_for_member(id)
+            .is_none()
     {
         let mut d = Draft::new(editor, context, Some(tag.parameters.opening));
         d.drawing = Some(drawing.identity());
@@ -297,7 +308,8 @@ pub(super) fn input(
         } else {
             world
         };
-        point_in_plan_crop(context, context.basis.world_to_plane(target).ok()?).then_some(target)
+        point_in_annotation_crop(context, context.basis.world_to_plane(target).ok()?)
+            .then_some(target)
     });
     if let Some(id) = d.moving {
         if ctx.input(|i| i.pointer.primary_released()) {
@@ -330,7 +342,7 @@ pub(super) fn paint(
 ) {
     let size = [f64::from(rect.width()), f64::from(rect.height())];
     let leader_clip = context
-        .crop
+        .annotation_bounds()
         .and_then(|crop| {
             let a = camera
                 .project(Point2::new(crop.min.x, crop.max.y), size)
@@ -371,9 +383,20 @@ pub(super) fn paint(
     });
     for tag in tags
         .iter()
+        .filter(|_| context.annotation_crop.is_none())
         .filter(|tag| preview.as_ref().is_none_or(|p| p.entity != tag.entity))
         .chain(preview.iter())
     {
+        if context.annotation_crop.is_some() {
+            if let Ok(drawing) = PlanDrawing::from_prisms(context, &BTreeMap::new(), vec![])
+                .and_then(|d| d.with_opening_tags(vec![tag.clone()]))
+                && let Ok(graphics) = drawing.native_annotation_graphics(context, camera.center)
+            {
+                let marks: Vec<_> = graphics.into_iter().flat_map(|g| g.marks).collect();
+                let _ = paint_native_annotation_marks(painter, rect, context, camera, &marks);
+            }
+            continue;
+        }
         let Ok(Some([a, b])) = tag.bounds(context, camera, size) else {
             continue;
         };
@@ -381,7 +404,7 @@ pub(super) fn paint(
             rect.min + egui::vec2(a.x as f32, a.y as f32),
             rect.min + egui::vec2(b.x as f32, b.y as f32),
         );
-        let active = selected == Some(tag.entity)
+        let active = selected == Some(super::groups::owner(editor.document.model(), tag.entity))
             || preview.as_ref().is_some_and(|p| p.entity == tag.entity)
             || pointer.is_some_and(|p| bounds.contains(p));
         let color = if tag.diagnostic.is_some() {

@@ -271,11 +271,18 @@ impl DesktopApp {
             }
             parameters.validate_in(self.editor.document.model())?;
             if parameters.boundary_room.is_some() {
+                let target =
+                    plan_target_phase(self.editor.document.model(), draft.context.view_id)?;
+                let mut resolver = os_geometry::ceilings::CeilingResolver::default();
                 os_core::ensure(
-                    os_geometry::ceilings::CeilingResolver::default()
-                        .effective_parameters(self.editor.document.model(), &parameters)?
+                    resolver
+                        .effective_parameters_at_phase(
+                            self.editor.document.model(),
+                            &parameters,
+                            target,
+                        )?
                         .is_some(),
-                    "ceiling loop does not fit the current resolved room boundary",
+                    "ceiling loop does not fit the resolved room boundary at this plan phase",
                 )?;
             }
             let elevation = self.editor.document.model().levels[&parameters.level]
@@ -304,10 +311,12 @@ impl DesktopApp {
                 !draft.stale(&self.editor, self.plans.active) && !draft.sketching(),
                 "Finish the current ceiling sketch before applying",
             )?;
+            let target = plan_target_phase(self.editor.document.model(), draft.context.view_id)?;
             validate_for_apply(
                 self.editor.document.model(),
                 &draft.parameters,
                 draft.original.as_ref(),
+                target,
             )?;
             let elevation = self.editor.document.model().levels[&draft.parameters.level]
                 .parameters
@@ -333,17 +342,24 @@ impl DesktopApp {
     }
 
     pub(super) fn detach_ceiling_boundary(&mut self, id: Id) {
-        let Some(parameters) = self
+        let Some((parameters, view)) = self
             .plans
             .ceiling_draft
             .as_ref()
             .filter(|draft| draft.id == id)
-            .map(|draft| draft.parameters.clone())
+            .map(|draft| (draft.parameters.clone(), draft.context.view_id))
         else {
             return;
         };
-        let boundary = os_geometry::ceilings::CeilingResolver::default()
-            .resolved_room_boundary(self.editor.document.model(), &parameters)
+        let mut resolver = os_geometry::ceilings::CeilingResolver::default();
+        let boundary = plan_target_phase(self.editor.document.model(), view)
+            .and_then(|target| {
+                resolver.resolved_room_boundary_at_phase(
+                    self.editor.document.model(),
+                    &parameters,
+                    target,
+                )
+            })
             .ok()
             .flatten()
             .unwrap_or_else(|| parameters.boundary.clone());
@@ -424,10 +440,18 @@ impl DesktopApp {
                         .get(&room_id)
                         .map(|room| room.parameters.name.as_str());
                     let mut resolver = os_geometry::ceilings::CeilingResolver::default();
-                    match resolver.effective_parameters(
+                    let resolved = plan_target_phase(
                         self.editor.document.model(),
-                        &draft.parameters,
-                    ) {
+                        draft.context.view_id,
+                    )
+                    .and_then(|target| {
+                        resolver.effective_parameters_at_phase(
+                            self.editor.document.model(),
+                            &draft.parameters,
+                            target,
+                        )
+                    });
+                    match resolved {
                         Ok(Some(_)) => {
                             ui.label(format!(
                                 "Live room boundary · {}",
@@ -537,11 +561,18 @@ impl DesktopApp {
                         draft.parameters.holes.remove(index);
                     }
                 }
-                let valid = validate_for_apply(
+                let valid = plan_target_phase(
                     self.editor.document.model(),
-                    &draft.parameters,
-                    draft.original.as_ref(),
-                );
+                    draft.context.view_id,
+                )
+                .and_then(|target| {
+                    validate_for_apply(
+                        self.editor.document.model(),
+                        &draft.parameters,
+                        draft.original.as_ref(),
+                        target,
+                    )
+                });
                 if let Err(error) = &valid {
                     ui.colored_label(theme::ERROR, error.to_string());
                 }
@@ -589,6 +620,7 @@ fn validate_for_apply(
     model: &os_model::Model,
     parameters: &CeilingParams,
     original: Option<&CeilingParams>,
+    target: Id,
 ) -> os_core::Result<()> {
     parameters.validate_in(model)?;
     let linked_geometry_changed = parameters.boundary_room.is_some()
@@ -600,12 +632,29 @@ fn validate_for_apply(
     if linked_geometry_changed {
         os_core::ensure(
             os_geometry::ceilings::CeilingResolver::default()
-                .effective_parameters(model, parameters)?
+                .effective_parameters_at_phase(model, parameters, target)?
                 .is_some(),
-            "ceiling openings must fit the current resolved room boundary; fix the source room or detach the boundary",
+            "ceiling openings must fit the room boundary at this plan phase; fix the source room or detach the boundary",
         )?;
     }
     Ok(())
+}
+
+fn plan_target_phase(model: &os_model::Model, view: Id) -> os_core::Result<Id> {
+    let settings = model
+        .views
+        .get(&view)
+        .and_then(|view| view.parameters.plan)
+        .ok_or_else(|| Error::Invalid("ceiling plan settings are missing".into()))?;
+    let target = settings
+        .target_phase
+        .or_else(|| model.latest_phase())
+        .ok_or_else(|| Error::Invalid("ceiling plan phase is unavailable".into()))?;
+    os_core::ensure(
+        model.phases.contains_key(&target),
+        "ceiling plan phase reference is missing",
+    )?;
+    Ok(target)
 }
 
 fn ring_controls(ui: &mut egui::Ui, label: &str, ring: &mut Vec<Point2>) {
@@ -671,6 +720,7 @@ pub(super) fn plan_item(
     let triangulation = os_geometry::floor_holes::triangulate_floor_rings(&boundary, &holes)?;
     Ok(os_render::plan::PlanCeilingItem {
         entity: id,
+        role: os_geometry::plan::PlanRole::Projected,
         boundary,
         holes,
         vertices: triangulation.vertices,

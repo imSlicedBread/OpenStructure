@@ -39,11 +39,19 @@ fn opening_materials_schema_31_family_3_migration_and_save_reopen() {
     let mut model: Model = serde_json::from_value(current.clone()).unwrap();
     assert_eq!(model.schema_version, SCHEMA_VERSION);
     for ty in model.opening_types.values() {
-        assert_eq!(ty.parameters.family.version, 7);
+        assert_eq!(ty.parameters.family.version, 11);
         assert_eq!(ty.parameters.family.panel_material, None);
         assert_eq!(ty.parameters.family.frame_material, None);
     }
     let mut reverse = current;
+    reverse
+        .as_object_mut()
+        .unwrap()
+        .remove("plan_element_graphics_overrides");
+    reverse
+        .as_object_mut()
+        .unwrap()
+        .remove("plan_graphics_rules");
     reverse["schema_version"] = json!(31);
     for (key, value) in reverse.as_object_mut().unwrap() {
         if key == "project" {

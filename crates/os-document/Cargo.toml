@@ -14,3 +14,4 @@ os-core.workspace = true
 os-model.workspace = true
 os-constraints.workspace = true
 serde.workspace = true
+serde_json.workspace = true

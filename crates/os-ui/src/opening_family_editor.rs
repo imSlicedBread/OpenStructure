@@ -11,8 +11,19 @@ impl OpeningTypeDraft {
         view: Option<Id>,
     ) {
         use os_model::{OpeningAttachment, OpeningExtrusion, OpeningFamily};
+        let paired_sashes = matches!(
+            self.window_operation,
+            os_model::WindowOperation::PairedCasement { .. }
+        );
+        let moving_sash = self.kind == OpeningKind::Window
+            && matches!(
+                self.window_operation,
+                os_model::WindowOperation::Casement | os_model::WindowOperation::Sliding
+            );
+        let paired = self.kind == OpeningKind::Door
+            && matches!(self.family.door_leaves, os_model::DoorLeaves::Paired { .. });
         ui.heading("Authored additive solids");
-        ui.small("Closed profile extrusions; opening-fixed or attached to the primary panel. Single rectangular doors / Fixed windows on straight hosts only.");
+        ui.small("Rectangular openings on straight hosts: fixed accessories, single panels, paired door leaves, or moving window sashes. Up to 16 additive solids.");
         ui.horizontal_wrapped(|ui| {
             if ui
                 .add_enabled(
@@ -21,10 +32,16 @@ impl OpeningTypeDraft {
                 )
                 .clicked()
             {
-                self.family.extrusions.push(OpeningExtrusion::new(format!(
-                    "Solid {}",
-                    self.family.extrusions.len() + 1
-                )));
+                let mut solid =
+                    OpeningExtrusion::new(format!("Solid {}", self.family.extrusions.len() + 1));
+                if paired_sashes {
+                    solid.attachment = OpeningAttachment::StartSash;
+                } else if moving_sash {
+                    solid.attachment = OpeningAttachment::MovingSash;
+                } else if paired {
+                    solid.attachment = OpeningAttachment::ActiveLeaf;
+                }
+                self.family.extrusions.push(solid);
                 self.selected_extrusion = self.family.extrusions.len() - 1;
                 self.selected_vertex = 0;
             }
@@ -78,11 +95,67 @@ impl OpeningTypeDraft {
                 OpeningAttachment::OpeningFixed,
                 "Opening fixed",
             );
-            ui.selectable_value(
-                &mut solid.attachment,
-                OpeningAttachment::PrimaryPanel,
-                "Primary panel",
-            );
+            if paired {
+                ui.selectable_value(
+                    &mut solid.attachment,
+                    OpeningAttachment::ActiveLeaf,
+                    "Active leaf",
+                );
+                ui.selectable_value(
+                    &mut solid.attachment,
+                    OpeningAttachment::InactiveLeaf,
+                    "Inactive leaf",
+                );
+            } else if paired_sashes {
+                ui.selectable_value(
+                    &mut solid.attachment,
+                    OpeningAttachment::StartSash,
+                    "Start sash",
+                );
+                ui.selectable_value(
+                    &mut solid.attachment,
+                    OpeningAttachment::EndSash,
+                    "End sash",
+                );
+            } else if moving_sash {
+                ui.selectable_value(
+                    &mut solid.attachment,
+                    OpeningAttachment::MovingSash,
+                    if self.window_operation == os_model::WindowOperation::Sliding {
+                        "Moving Start sash"
+                    } else {
+                        "Moving sash"
+                    },
+                );
+                if solid.attachment == OpeningAttachment::PrimaryPanel {
+                    ui.colored_label(
+                        theme::ERROR,
+                        "Choose a compatible attachment for this operation.",
+                    );
+                }
+            } else {
+                ui.selectable_value(
+                    &mut solid.attachment,
+                    OpeningAttachment::PrimaryPanel,
+                    "Primary panel",
+                );
+                if solid.attachment == OpeningAttachment::MovingSash {
+                    ui.colored_label(theme::ERROR, "Moving sash requires Casement or Sliding.");
+                }
+            }
+            let compatible = match solid.attachment {
+                OpeningAttachment::OpeningFixed => true,
+                OpeningAttachment::PrimaryPanel => !paired && !moving_sash && !paired_sashes,
+                OpeningAttachment::StartSash | OpeningAttachment::EndSash => paired_sashes,
+                OpeningAttachment::MovingSash => moving_sash,
+                OpeningAttachment::ActiveLeaf | OpeningAttachment::InactiveLeaf => paired,
+            };
+            if !compatible {
+                ui.colored_label(
+                    theme::ERROR,
+                    "Explicitly choose an attachment for this family.",
+                );
+            }
         });
         ui.horizontal_wrapped(|ui| {
             for (label, value) in [
@@ -102,6 +175,49 @@ impl OpeningTypeDraft {
             );
         });
         ui.small("Profile fractions use the selected attachment frame. Position is metric; positive normal follows its left side. Nothing changes until Apply type.");
+        let model = editor.document.model();
+        let evaluated = os_model::evaluate_parameters(&model.length_parameters);
+        for (label, binding, value) in [
+            ("X driver", &mut solid.bindings.x, &mut solid.position.x),
+            ("Y driver", &mut solid.bindings.y, &mut solid.position.y),
+            ("Depth driver", &mut solid.bindings.depth, &mut solid.depth),
+            (
+                "Normal driver",
+                &mut solid.bindings.normal_offset,
+                &mut solid.normal_offset,
+            ),
+        ] {
+            ui.horizontal(|ui| {
+                ui.label(label);
+                // Refresh before changing the binding so unbinding freezes the shown value.
+                if let Some(id) = *binding
+                    && let Ok(values) = &evaluated
+                    && let Some(v) = values.get(&id)
+                {
+                    *value = v.value;
+                }
+                egui::ComboBox::from_id_salt(("solid driver", solid.id, label))
+                    .selected_text(
+                        binding
+                            .and_then(|id| model.length_parameters.get(&id))
+                            .map_or("Literal".to_owned(), |p| p.parameters.name.clone()),
+                    )
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(binding, None, "Literal (freeze on unbind)");
+                        for p in model
+                            .length_parameters
+                            .values()
+                            .filter(|p| p.parameters.unit == os_model::LengthUnit::Metres)
+                        {
+                            ui.selectable_value(
+                                binding,
+                                Some(p.id()),
+                                format!("{} · {}", p.parameters.name, p.id()),
+                            );
+                        }
+                    });
+            });
+        }
         self.profile_editor(ui, editor, view);
     }
     pub(super) fn material_editor(&mut self, ui: &mut egui::Ui, editor: &Editor) {
@@ -217,6 +333,7 @@ impl OpeningTypeDraft {
         let context = view
             .and_then(|id| editor.native_plan_context(id).ok())
             .unwrap_or(PlanContext {
+                annotation_crop: None,
                 session_id: self.session,
                 model_revision: self.revision,
                 view_id: self.id,

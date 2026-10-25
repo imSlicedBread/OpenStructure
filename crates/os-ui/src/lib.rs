@@ -642,6 +642,13 @@ impl DesktopApp {
         };
     }
     fn select(&mut self, id: Option<Id>) {
+        let id = id.map(|id| {
+            self.editor
+                .document
+                .model()
+                .group_instance_for_member(id)
+                .map_or(id, |group| group.id())
+        });
         self.lifecycle_draft = None;
         self.cancel_overlap_selection();
         self.cancel_plan_wall();
@@ -654,6 +661,7 @@ impl DesktopApp {
         let selected = id.filter(|id| {
             let model = self.editor.document.model();
             model.walls.contains_key(id)
+                || model.group_instances.contains_key(id)
                 || model.floors.contains_key(id)
                 || model.columns.contains_key(id)
                 || model.casework.contains_key(id)
@@ -669,6 +677,7 @@ impl DesktopApp {
                 || model.room_tags.contains_key(id)
                 || model.opening_tags.contains_key(id)
                 || model.detail_lines.contains_key(id)
+                || model.text_notes.contains_key(id)
                 || model.room_separation_lines.contains_key(id)
                 || model.dimensions.contains_key(id)
                 || model.extensions.contains_key(id)
@@ -768,8 +777,20 @@ impl DesktopApp {
             "Room tool active · click inside an enclosed space. Escape exits.",
         );
     }
-    fn create_room_at(&mut self, level: Id, seed: Point2, boundary_signature: Vec<(Id, bool)>) {
-        let result = room_tools::create_at(&mut self.editor, level, seed, boundary_signature);
+    fn create_room_at(
+        &mut self,
+        level: Id,
+        phase: Id,
+        seed: Point2,
+        boundary_signature: Vec<(Id, bool)>,
+    ) {
+        let result = room_tools::create_at_in_phase(
+            &mut self.editor,
+            level,
+            seed,
+            boundary_signature,
+            Some(phase),
+        );
         match result {
             Ok(id) => {
                 self.select(Some(id));
@@ -1191,6 +1212,22 @@ impl DesktopApp {
     }
 
     fn show(&mut self, ctx: &egui::Context) {
+        let duplicate_modal = self.plans.plan_duplicate.is_some();
+        let hidden_openings_modal = self.plans.hidden_openings.is_some();
+        let plan_modal = duplicate_modal || hidden_openings_modal;
+        let modal_pointer = plan_modal.then(|| ctx.input(|input| input.pointer.clone()));
+        if plan_modal {
+            self.plan_duplicate_window(ctx);
+            self.hidden_openings_window(ctx);
+            // The dialog has consumed text editing. No input, including held
+            // pointer state, may reach canvas gestures on its closing frame.
+            ctx.input_mut(|input| {
+                input.events.clear();
+                input.pointer = Default::default();
+                input.smooth_scroll_delta = egui::Vec2::ZERO;
+                input.raw_scroll_delta = egui::Vec2::ZERO;
+            });
+        }
         let level_copy_modal = self.wall_level_copy_active();
         if level_copy_modal {
             self.wall_level_copy_dialog(ctx);
@@ -1261,6 +1298,7 @@ impl DesktopApp {
         }
         // Modal actions must not let global shortcuts modify the document underneath.
         if self.pending.is_none()
+            && !plan_modal
             && !phase_modal
             && !floor_modal
             && !level_copy_modal
@@ -1314,6 +1352,9 @@ impl DesktopApp {
         #[cfg(feature = "external-plugins")]
         if self.editor.plugin_work_pending() {
             ctx.request_repaint_after(std::time::Duration::from_millis(16));
+        }
+        if let Some(pointer) = modal_pointer {
+            ctx.input_mut(|input| input.pointer = pointer);
         }
     }
 
@@ -1375,6 +1416,7 @@ fn default_wall(level: Id) -> WallParams {
 mod desktop_tests {
     mod phase_tests;
     mod plan_phase_tests;
+    mod plan_rule_graphics_tests;
     use super::*;
     mod opening_family_tests;
     mod opening_length_tests;
@@ -2713,6 +2755,15 @@ mod desktop_tests {
             h.click("Grid 1");
             h.replace_focused("A");
             h.click("Apply grid");
+            assert!(
+                h.app.grid_draft.is_none(),
+                "grid Apply left the draft open: {}",
+                h.app.status
+            );
+            assert_eq!(
+                h.app.status, "Grid applied.",
+                "grid form closed without a successful Apply"
+            );
             let grid = h
                 .app
                 .editor
@@ -2749,11 +2800,22 @@ mod desktop_tests {
                 Some(Point2::new(1.0, 0.0))
             );
             assert_eq!(h.app.editor.document.model(), &before);
-            h.click_at(rect.center() + egui::vec2(65.0, -130.0));
+            let endpoint = rect.center() + egui::vec2(65.0, -65.0);
+            h.frame(vec![egui::Event::PointerMoved(endpoint)]);
+            h.click_at(endpoint);
             settle(&mut h);
+            assert_eq!(
+                h.app.editor.document.model().walls.len(),
+                1,
+                "wall commit failed: status={:?}, error={}, plugin_pending={}, gesture_active={}",
+                h.app.status,
+                h.app.status_error,
+                h.app.editor.plugin_work_pending(),
+                h.app.wall_gesture.is_some(),
+            );
             let wall = h.app.editor.document.model().walls.values().next().unwrap();
             assert_eq!(wall.parameters.start(), Point2::new(1.0, 0.0));
-            assert_eq!(wall.parameters.end(), Point2::new(1.0, 2.0));
+            assert_eq!(wall.parameters.end(), Point2::new(1.0, 1.0));
             assert_eq!(h.app.editor.document.model().grids[&grid.id()], grid);
             h.app.history(false);
             h.frame(vec![]);

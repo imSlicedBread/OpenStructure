@@ -16,6 +16,14 @@ fn room_finishes_frozen_schema32_migration_preserves_intent_and_round_trips() {
     migrate(&mut value, 32).unwrap();
     assert_eq!(value["schema_version"], SCHEMA_VERSION);
     let mut reverse = value.clone();
+    reverse
+        .as_object_mut()
+        .unwrap()
+        .remove("plan_element_graphics_overrides");
+    reverse
+        .as_object_mut()
+        .unwrap()
+        .remove("plan_graphics_rules");
     reverse["schema_version"] = json!(32);
     for (key, value) in reverse.as_object_mut().unwrap() {
         if key == "project" {

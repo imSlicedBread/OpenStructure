@@ -112,6 +112,7 @@ fn section(editor: &mut Editor, start: Point2, end: Point2) -> Id {
     let view = View::new(
         "core.view",
         ViewParams {
+            drafting: None,
             name: format!("Section {}", editor.document.model().views.len()),
             kind: ViewKind::Section,
             level: Some(level),

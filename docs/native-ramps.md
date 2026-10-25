@@ -35,7 +35,7 @@ preview never mutates the live scene.
 Schema 60→61 adds the required `ramps` map. Migration rejects an ambiguous
 pre-existing key, inserts an empty map, advances native headers, and validates
 before adoption. Save/reopen preserves ramp, level, material, and entity
-identities. Native full-model plugins require API 44/schema 63; generic API 2
+identities. Native full-model plugins require API 56/schema 75; generic API 2
 and the `.osb` container version are unchanged. IFC export fails closed when a
 project contains ramps rather than silently omitting them.
 

@@ -41,6 +41,7 @@ impl Editor {
         let view = View::new(
             "core.view",
             ViewParams {
+                drafting: None,
                 name: name.into(),
                 kind: ViewKind::Facade,
                 level: Some(level),
@@ -75,6 +76,7 @@ impl Editor {
             "facade marker level missing",
         )?;
         Ok(PlanContext {
+            annotation_crop: None,
             session_id: self.document.session_id(),
             model_revision: self.document.revision(),
             view_id: id,

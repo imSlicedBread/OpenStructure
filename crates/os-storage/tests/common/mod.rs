@@ -1,7 +1,75 @@
 use serde_json::Value;
 
+/// Advance only native document/entity headers and additive schema-80/81/82 maps.
+/// Never recurse into parameters, properties, or extension-owned payloads.
+#[allow(dead_code)]
+pub fn current_native_headers(value: &mut Value) {
+    value["plan_graphics_rules"] = serde_json::json!({});
+    value["schema_version"] = os_model::SCHEMA_VERSION.into();
+    for (key, data) in value.as_object_mut().unwrap() {
+        if key == "project" {
+            data["header"]["schema_version"] = os_model::SCHEMA_VERSION.into();
+        } else if key != "extensions"
+            && let Some(map) = data.as_object_mut()
+        {
+            for entity in map.values_mut().filter(|v| v.get("header").is_some()) {
+                entity["header"]["schema_version"] = os_model::SCHEMA_VERSION.into();
+            }
+        }
+    }
+    value
+        .as_object_mut()
+        .unwrap()
+        .entry("plan_hidden_openings")
+        .or_insert_with(|| serde_json::json!({}));
+    for key in ["group_definitions", "group_instances"] {
+        value
+            .as_object_mut()
+            .unwrap()
+            .entry(key)
+            .or_insert_with(|| serde_json::json!({}));
+    }
+    value
+        .as_object_mut()
+        .unwrap()
+        .entry("plan_element_graphics_overrides")
+        .or_insert_with(|| serde_json::json!({}));
+}
+
+/// Separate expectations for the existing schema 76 -> 77 migration.
+/// Call only after earlier family migrations have been accounted for.
+#[allow(dead_code)]
+pub fn apply_schema_77_defaults(value: &mut Value) {
+    if let Some(types) = value
+        .get_mut("opening_types")
+        .and_then(Value::as_object_mut)
+    {
+        for ty in types.values_mut() {
+            let family = &mut ty["parameters"]["family"];
+            assert_eq!(family["version"], 9);
+            family["version"] = 10.into();
+            for solid in family["extrusions"].as_array_mut().unwrap() {
+                assert!(solid.get("bindings").is_none());
+                solid["bindings"] = serde_json::json!({
+                    "x": null, "y": null, "depth": null, "normal_offset": null
+                });
+            }
+        }
+    }
+    if let Some(parameters) = value
+        .get_mut("length_parameters")
+        .and_then(Value::as_object_mut)
+    {
+        for parameter in parameters.values_mut() {
+            assert!(parameter["parameters"].get("formula").is_none());
+            parameter["parameters"]["formula"] = Value::Null;
+        }
+    }
+}
+
 #[allow(dead_code)]
 pub fn remove_curtains(value: &mut Value) {
+    value.as_object_mut().unwrap().remove("plan_graphics_rules");
     for key in [
         "curtain_systems",
         "curtain_panel_types",
@@ -19,7 +87,17 @@ pub fn remove_curtains(value: &mut Value) {
 
 #[allow(dead_code)]
 pub fn remove_railings(value: &mut Value) {
+    value.as_object_mut().unwrap().remove("plan_graphics_rules");
     remove_extrusions(value);
+    for key in ["group_definitions", "group_instances"] {
+        if let Some(removed) = value.as_object_mut().unwrap().remove(key) {
+            assert_eq!(
+                removed,
+                serde_json::json!({}),
+                "legacy fixture cannot discard model-group data"
+            );
+        }
+    }
     for key in ["railings", "railing_types"] {
         if let Some(removed) = value.as_object_mut().unwrap().remove(key) {
             assert_eq!(
@@ -35,6 +113,18 @@ pub fn remove_railings(value: &mut Value) {
 
 #[allow(dead_code)]
 pub fn remove_extrusions(value: &mut Value) {
+    value.as_object_mut().unwrap().remove("plan_graphics_rules");
+    if let Some(hidden) = value
+        .as_object_mut()
+        .unwrap()
+        .remove("plan_hidden_openings")
+    {
+        assert_eq!(
+            hidden,
+            serde_json::json!({}),
+            "legacy fixture cannot discard hidden openings"
+        );
+    }
     if let Some(types) = value
         .get_mut("opening_types")
         .and_then(Value::as_object_mut)
@@ -44,7 +134,7 @@ pub fn remove_extrusions(value: &mut Value) {
             if let Some(extrusions) = family.as_object_mut().unwrap().remove("extrusions") {
                 assert_eq!(extrusions, serde_json::json!([]));
             }
-            if family["version"] == 7 {
+            if matches!(family["version"].as_u64(), Some(7..=10)) {
                 family["version"] = 6.into();
             }
         }
@@ -53,6 +143,7 @@ pub fn remove_extrusions(value: &mut Value) {
 
 #[allow(dead_code)]
 pub fn remove_casework(value: &mut Value) {
+    value.as_object_mut().unwrap().remove("plan_graphics_rules");
     if let Some(patterns) = value.as_object_mut().unwrap().remove("material_patterns") {
         assert_eq!(patterns, serde_json::json!({}));
     }
@@ -69,6 +160,7 @@ pub fn remove_casework(value: &mut Value) {
 
 #[allow(dead_code)]
 pub fn remove_ramps(value: &mut Value) {
+    value.as_object_mut().unwrap().remove("plan_graphics_rules");
     if let Some(removed) = value.as_object_mut().unwrap().remove("ramps") {
         assert_eq!(
             removed,
@@ -80,6 +172,7 @@ pub fn remove_ramps(value: &mut Value) {
 
 #[allow(dead_code)]
 pub fn remove_door_leaves(value: &mut Value) {
+    value.as_object_mut().unwrap().remove("plan_graphics_rules");
     remove_railings(value);
     remove_curtains(value);
     if let Some(types) = value
@@ -100,8 +193,33 @@ pub fn remove_door_leaves(value: &mut Value) {
 /// Assert Straight: a legacy fixture must never silently chord-convert an arc.
 #[allow(dead_code)]
 pub fn reverse_wall_paths(value: &mut Value) {
+    value.as_object_mut().unwrap().remove("plan_graphics_rules");
     remove_railings(value);
     remove_door_leaves(value);
+    for key in ["group_definitions", "group_instances"] {
+        if let Some(removed) = value.as_object_mut().unwrap().remove(key) {
+            assert_eq!(
+                removed,
+                serde_json::json!({}),
+                "legacy fixture cannot discard model-group data"
+            );
+        }
+    }
+    for key in [
+        "sheet_sets",
+        "drawing_issues",
+        "plan_callouts",
+        "section_callouts",
+        "text_notes",
+    ] {
+        if let Some(removed) = value.as_object_mut().unwrap().remove(key) {
+            assert_eq!(
+                removed,
+                serde_json::json!({}),
+                "legacy fixture cannot discard drawing issue data"
+            );
+        }
+    }
     if let Some(openings) = value.get_mut("openings").and_then(Value::as_object_mut) {
         for opening in openings.values_mut() {
             opening["parameters"]
@@ -130,6 +248,15 @@ pub fn reverse_wall_paths(value: &mut Value) {
 }
 #[allow(dead_code)]
 pub fn apply_wall_paths(value: &mut Value) {
+    value["plan_hidden_openings"] = serde_json::json!({});
+    value["group_definitions"] = serde_json::json!({});
+    value["group_instances"] = serde_json::json!({});
+    // Current-schema collections added after the frozen migration fixtures.
+    value["sheet_sets"] = serde_json::json!({});
+    value["drawing_issues"] = serde_json::json!({});
+    value["plan_callouts"] = serde_json::json!({});
+    value["section_callouts"] = serde_json::json!({});
+    value["text_notes"] = serde_json::json!({});
     value["material_patterns"] = serde_json::json!({});
     value["railings"] = serde_json::json!({});
     value["railing_types"] = serde_json::json!({});
@@ -148,7 +275,7 @@ pub fn apply_wall_paths(value: &mut Value) {
         .and_then(Value::as_object_mut)
     {
         for ty in types.values_mut() {
-            ty["parameters"]["family"]["version"] = 7.into();
+            ty["parameters"]["family"]["version"] = 10.into();
             ty["parameters"]["family"]["extrusions"] = serde_json::json!([]);
             ty["parameters"]["family"]["door_leaves"] = "Single".into();
         }
@@ -180,6 +307,7 @@ pub fn apply_wall_paths(value: &mut Value) {
 
 #[allow(dead_code)]
 pub fn remove_phase_fields(value: &mut Value) {
+    value.as_object_mut().unwrap().remove("plan_graphics_rules");
     reverse_wall_paths(value);
     remove_grouping(value);
     remove_window_operation(value);
@@ -205,11 +333,20 @@ pub fn remove_phase_fields(value: &mut Value) {
     if let Some(object) = value.as_object_mut() {
         object.remove("phases");
         object.remove("element_lifecycles");
+        object.remove("sheet_sets");
+        object.remove("drawing_issues");
+        object.remove("plan_callouts");
+        object.remove("section_callouts");
+        object.remove("text_notes");
+        object.remove("plan_hidden_openings");
+        object.remove("group_definitions");
+        object.remove("group_instances");
     }
 }
 
 #[allow(dead_code)]
 pub fn remove_window_operation(value: &mut Value) {
+    value.as_object_mut().unwrap().remove("plan_graphics_rules");
     if let Some(types) = value
         .get_mut("opening_types")
         .and_then(serde_json::Value::as_object_mut)
@@ -286,8 +423,14 @@ pub fn apply_schema_38_defaults(model: &mut Value) {
 
 #[allow(dead_code)]
 pub fn reverse_schema_38_migration(model: &mut Value, original: &Value) {
+    model.as_object_mut().unwrap().remove("plan_graphics_rules");
     if original.get("material_patterns").is_none() {
         model.as_object_mut().unwrap().remove("material_patterns");
+    }
+    for collection in ["sheet_sets", "drawing_issues", "plan_callouts"] {
+        if original.get(collection).is_none() {
+            model.as_object_mut().unwrap().remove(collection);
+        }
     }
     if original["schema_version"].as_u64().is_some_and(|v| v < 54) {
         reverse_wall_paths(model);
@@ -391,6 +534,7 @@ pub fn reverse_schema_38_migration(model: &mut Value, original: &Value) {
 
 #[allow(dead_code)]
 pub fn remove_grouping(value: &mut Value) {
+    value.as_object_mut().unwrap().remove("plan_graphics_rules");
     remove_schedule_phase(value);
     if let Some(schedules) = value.get_mut("schedules").and_then(Value::as_object_mut) {
         for schedule in schedules.values_mut() {
@@ -404,6 +548,7 @@ pub fn remove_grouping(value: &mut Value) {
 
 #[allow(dead_code)]
 pub fn remove_schedule_phase(value: &mut Value) {
+    value.as_object_mut().unwrap().remove("plan_graphics_rules");
     remove_opening_visibility(value);
     if let Some(schedules) = value.get_mut("schedules").and_then(Value::as_object_mut) {
         for schedule in schedules.values_mut() {
@@ -417,6 +562,7 @@ pub fn remove_schedule_phase(value: &mut Value) {
 
 #[allow(dead_code)]
 pub fn remove_opening_visibility(value: &mut Value) {
+    value.as_object_mut().unwrap().remove("plan_graphics_rules");
     remove_door_leaves(value);
     remove_window_operation(value);
     remove_lite_override(value);
@@ -464,7 +610,7 @@ pub fn apply_opening_visibility(value: &mut Value) {
         .and_then(Value::as_object_mut)
     {
         for ty in types.values_mut() {
-            ty["parameters"]["family"]["version"] = 7.into();
+            ty["parameters"]["family"]["version"] = 10.into();
             ty["parameters"]["family"]["extrusions"] = serde_json::json!([]);
             ty["parameters"]["family"]["door_leaves"] = "Single".into();
             ty["parameters"]["family"]["side_lite"] = Value::Null;
@@ -482,6 +628,7 @@ pub fn apply_opening_visibility(value: &mut Value) {
 
 #[allow(dead_code)]
 pub fn remove_lite_override(value: &mut Value) {
+    value.as_object_mut().unwrap().remove("plan_graphics_rules");
     if let Some(openings) = value.get_mut("openings").and_then(Value::as_object_mut) {
         for opening in openings.values_mut() {
             opening["parameters"]

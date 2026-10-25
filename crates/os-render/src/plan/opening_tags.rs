@@ -218,6 +218,14 @@ impl PlanDrawing {
         viewport: [f64; 2],
         pointer: Point2,
     ) -> Result<Option<Id>> {
+        if context.annotation_crop.is_some() {
+            return Ok(self
+                .annotation_hits(context, camera, viewport, pointer, 3., |id| {
+                    self.opening_tags.iter().any(|t| t.entity == id)
+                })?
+                .into_iter()
+                .next());
+        }
         for tag in self.opening_tags(context)?.iter().rev() {
             if tag.hit(context, camera, viewport, pointer)? {
                 return Ok(Some(tag.entity));
@@ -259,6 +267,7 @@ mod tests {
     #[test]
     fn opening_tag_leader_crop_canvas_orphan_and_badge_only_pick() {
         let mut context = PlanContext {
+            annotation_crop: None,
             session_id: Id::new(),
             model_revision: 0,
             view_id: Id::new(),

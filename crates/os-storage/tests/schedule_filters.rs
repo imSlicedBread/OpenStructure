@@ -21,6 +21,14 @@ fn schema_41_schedule_filters_frozen_migration_and_persisted_rules_roundtrip() {
         json!([])
     );
     let mut reversed = migrated.clone();
+    reversed
+        .as_object_mut()
+        .unwrap()
+        .remove("plan_element_graphics_overrides");
+    reversed
+        .as_object_mut()
+        .unwrap()
+        .remove("plan_graphics_rules");
     reversed["schema_version"] = 41.into();
     for (key, value) in reversed.as_object_mut().unwrap() {
         if key == "project" {
